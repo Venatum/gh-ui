@@ -6,7 +6,7 @@ mod model;
 mod ui;
 
 use anyhow::Result;
-use app::App;
+use app::{App, Tab};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::path::PathBuf;
@@ -85,6 +85,11 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => open_selected(app),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Tab => app.next_tab(),
+        KeyCode::Char('1') => app.set_tab(Tab::Prs),
+        KeyCode::Char('2') => app.set_tab(Tab::Runs),
+        // Only visible on the Actions tab; harmless on the PRs tab.
+        KeyCode::Char('m') => app.toggle_only_pr_runs(),
         _ => {}
     }
 }
@@ -115,10 +120,10 @@ fn handle_input_key(app: &mut App, code: KeyCode) {
     }
 }
 
-/// Opens the selected PR in the browser.
+/// Opens the selected item (PR or run) in the browser.
 fn open_selected(app: &App) {
-    if let Some(pr) = app.selected_pr() {
-        open_url(&pr.url);
+    if let Some(url) = app.selected_url() {
+        open_url(&url);
     }
 }
 

@@ -391,10 +391,6 @@ impl App {
         }
     }
 
-    pub fn selected_pr(&self) -> Option<&Pr> {
-        self.table_state.selected().and_then(|i| self.prs.get(i))
-    }
-
     /// The URL of the selected item in the active tab (PR or run).
     pub fn selected_url(&self) -> Option<String> {
         match self.active_tab {
