@@ -26,16 +26,29 @@ pub struct RunsResult {
     pub errors: usize,
 }
 
-/// What the background thread returns: either PRs or runs.
+/// What the background thread returns: PRs, runs, or both at once.
 pub enum Loaded {
     Prs(FetchResult),
     Runs(RunsResult),
+    Both(FetchResult, RunsResult),
 }
 
 /// What we ask the thread to load.
+/// `Copy` so the app can stash a job aside while a load is in flight.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Job {
     Prs,
     Runs,
+    Both,
+}
+
+impl Job {
+    /// The single job that covers `self` AND `other`. Used when a refresh is
+    /// requested while another one is still running: instead of dropping one of
+    /// them, we widen the pending job.
+    pub fn merge(self, other: Job) -> Job {
+        if self == other { self } else { Job::Both }
+    }
 }
 
 /// Starts loading `job` in a background thread.
@@ -45,6 +58,24 @@ pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
         let result = match job {
             Job::Prs => Loaded::Prs(load_prs(&root, &filters)),
             Job::Runs => Loaded::Runs(load_runs(&root, &filters)),
+            // Both flows at once, side by side rather than one after the other:
+            // the total wait stays that of the slowest one.
+            Job::Both => {
+                let (prs, runs) = thread::scope(|scope| {
+                    let h = scope.spawn(|| load_prs(&root, &filters));
+                    let runs = load_runs(&root, &filters);
+                    (h.join(), runs)
+                });
+                // The child thread only calls `gh`; if it panicked we would have
+                // nothing to show, so an empty result is the honest fallback.
+                let prs = prs.unwrap_or(FetchResult {
+                    prs: Vec::new(),
+                    all_repos: runs.all_repos.clone(),
+                    scanned: 0,
+                    errors: 1,
+                });
+                Loaded::Both(prs, runs)
+            }
         };
         let _ = tx.send(result);
     });
