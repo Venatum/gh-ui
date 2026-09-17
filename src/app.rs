@@ -1,9 +1,10 @@
 //! The application state and its logic (independent of rendering).
 
-use crate::fetch::{self, FetchResult};
+use crate::fetch::{self, Job, Loaded};
 use crate::filters::Filters;
-use crate::model::Pr;
+use crate::model::{Pr, Run};
 use ratatui::widgets::TableState;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -43,6 +44,23 @@ pub const FILTER_FIELDS: [FilterField; 8] = [
     FilterField::Label,
 ];
 
+/// The application's tabs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Tab {
+    Prs,
+    Runs,
+}
+
+impl Tab {
+    /// The next tab (cycle Prs -> Runs -> Prs).
+    pub fn next(self) -> Tab {
+        match self {
+            Tab::Prs => Tab::Runs,
+            Tab::Runs => Tab::Prs,
+        }
+    }
+}
+
 pub struct App {
     pub root: PathBuf,
     pub prs: Vec<Pr>,
@@ -73,8 +91,17 @@ pub struct App {
     /// Whether the help screen is shown (key `?`).
     pub show_help: bool,
 
-    tx: Sender<FetchResult>,
-    rx: Receiver<FetchResult>,
+    /// The currently displayed tab.
+    pub active_tab: Tab,
+    pub runs: Vec<Run>,
+    pub run_table_state: TableState,
+    /// Filter "only the runs of my PRs' branches". Checked by default.
+    pub only_pr_runs: bool,
+    /// Have we already loaded the runs at least once?
+    runs_loaded: bool,
+
+    tx: Sender<Loaded>,
+    rx: Receiver<Loaded>,
 }
 
 impl App {
@@ -98,6 +125,11 @@ impl App {
             filter_panel_open: false,
             filter_cursor: 0,
             show_help: false,
+            active_tab: Tab::Prs,
+            runs: Vec::new(),
+            run_table_state: TableState::default(),
+            only_pr_runs: true,
+            runs_loaded: false,
             tx,
             rx,
         }
@@ -112,7 +144,16 @@ impl App {
         self.pending_refresh = false;
         self.last_refresh = Instant::now();
         self.status = String::from("Loading…");
-        fetch::spawn(self.root.clone(), self.filters.clone(), self.tx.clone());
+        let job = match self.active_tab {
+            Tab::Prs => Job::Prs,
+            Tab::Runs => Job::Runs,
+        };
+        fetch::spawn(
+            job,
+            self.root.clone(),
+            self.filters.clone(),
+            self.tx.clone(),
+        );
     }
 
     /// Keeps the state alive on every loop iteration. Returns `true` if the
@@ -121,26 +162,47 @@ impl App {
     pub fn on_tick(&mut self) -> bool {
         let mut changed = false;
 
-        while let Ok(result) = self.rx.try_recv() {
-            self.prs = result.prs;
-            self.repos = result.all_repos;
-            self.loading = false;
-            changed = true;
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Loaded::Prs(result) => {
+                    self.prs = result.prs;
+                    self.repos = result.all_repos;
+                    self.loading = false;
+                    changed = true;
 
-            let errors = if result.errors > 0 {
-                format!(" — {} failed", result.errors)
-            } else {
-                String::new()
-            };
-            self.status = format!(
-                "{} PR(s) — {} repo(s){}",
-                self.prs.len(),
-                result.scanned,
-                errors
-            );
+                    let errors = if result.errors > 0 {
+                        format!(" — {} failed", result.errors)
+                    } else {
+                        String::new()
+                    };
+                    self.status = format!(
+                        "{} PR(s) — {} repo(s){}",
+                        self.prs.len(),
+                        result.scanned,
+                        errors
+                    );
 
-            self.table_state
-                .select(if self.prs.is_empty() { None } else { Some(0) });
+                    self.table_state
+                        .select(if self.prs.is_empty() { None } else { Some(0) });
+                }
+                Loaded::Runs(result) => {
+                    self.runs = result.runs;
+                    self.repos = result.all_repos;
+                    self.runs_loaded = true;
+                    self.loading = false;
+                    changed = true;
+
+                    let errors = if result.errors > 0 {
+                        format!(" — {} failed", result.errors)
+                    } else {
+                        String::new()
+                    };
+                    let n = self.visible_runs().len();
+                    self.status = format!("{n} run(s) — {} repo(s){}", result.scanned, errors);
+                    self.run_table_state
+                        .select(if n == 0 { None } else { Some(0) });
+                }
+            }
         }
 
         if !self.loading && self.pending_refresh {
@@ -283,29 +345,148 @@ impl App {
 
     // --- navigation ---
 
+    /// Moves the selection down, in the ACTIVE tab's list.
     pub fn next(&mut self) {
-        if self.prs.is_empty() {
+        // Two steps on purpose: `visible_runs()` borrows the whole `self`, so we
+        // must be done with it BEFORE taking `&mut self.run_table_state`.
+        let len = self.active_len();
+        if len == 0 {
             return;
         }
-        let i = match self.table_state.selected() {
-            Some(i) => (i + 1).min(self.prs.len() - 1),
+        let state = self.active_table_state();
+        let i = match state.selected() {
+            Some(i) => (i + 1).min(len - 1),
             None => 0,
         };
-        self.table_state.select(Some(i));
+        state.select(Some(i));
     }
 
+    /// Moves the selection up, in the ACTIVE tab's list.
     pub fn previous(&mut self) {
-        if self.prs.is_empty() {
+        let len = self.active_len();
+        if len == 0 {
             return;
         }
-        let i = match self.table_state.selected() {
+        let state = self.active_table_state();
+        let i = match state.selected() {
             Some(i) => i.saturating_sub(1),
             None => 0,
         };
-        self.table_state.select(Some(i));
+        state.select(Some(i));
     }
 
-    pub fn selected_pr(&self) -> Option<&Pr> {
-        self.table_state.selected().and_then(|i| self.prs.get(i))
+    /// Number of rows displayed in the active tab.
+    fn active_len(&self) -> usize {
+        match self.active_tab {
+            Tab::Prs => self.prs.len(),
+            Tab::Runs => self.visible_runs().len(),
+        }
+    }
+
+    /// The active tab's selection state (ratatui keeps the selected row there).
+    fn active_table_state(&mut self) -> &mut TableState {
+        match self.active_tab {
+            Tab::Prs => &mut self.table_state,
+            Tab::Runs => &mut self.run_table_state,
+        }
+    }
+
+    /// The URL of the selected item in the active tab (PR or run).
+    pub fn selected_url(&self) -> Option<String> {
+        match self.active_tab {
+            Tab::Prs => self
+                .table_state
+                .selected()
+                .and_then(|i| self.prs.get(i))
+                .map(|pr| pr.url.clone()),
+            Tab::Runs => self
+                .run_table_state
+                .selected()
+                .and_then(|i| self.visible_runs().get(i).map(|r| r.url.clone())),
+        }
+    }
+
+    // --- tabs ---
+
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.active_tab = tab;
+        // First visit to Actions -> load the runs.
+        if tab == Tab::Runs && !self.runs_loaded {
+            self.refresh();
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        self.set_tab(self.active_tab.next());
+    }
+
+    // --- runs view ---
+
+    /// The displayed runs view: filtered on the PR branches if checked.
+    pub fn visible_runs(&self) -> Vec<&Run> {
+        let branches: HashSet<&str> = self.prs.iter().map(|p| p.head_ref_name.as_str()).collect();
+        filter_runs(&self.runs, &branches, self.only_pr_runs)
+    }
+
+    /// Toggles the "my PRs" filter (no re-fetch: local filtering).
+    pub fn toggle_only_pr_runs(&mut self) {
+        self.only_pr_runs = !self.only_pr_runs;
+        // The selection may fall outside the view -> reset it to the start if needed.
+        let n = self.visible_runs().len();
+        self.run_table_state
+            .select(if n == 0 { None } else { Some(0) });
+    }
+}
+
+/// Keeps the runs whose branch is in `pr_branches`, or all if `!only`.
+fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> Vec<&'a Run> {
+    if !only {
+        return runs.iter().collect();
+    }
+    runs.iter()
+        .filter(|r| pr_branches.contains(r.head_branch.as_str()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Run;
+
+    fn run(branch: &str) -> Run {
+        Run {
+            workflow_name: "CI".into(),
+            display_title: "t".into(),
+            head_branch: branch.into(),
+            status: "completed".into(),
+            conclusion: "success".into(),
+            event: "push".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            number: 1,
+            url: "u".into(),
+            repo: "r".into(),
+        }
+    }
+
+    #[test]
+    fn tab_cycle() {
+        assert_eq!(Tab::Prs.next(), Tab::Runs);
+        assert_eq!(Tab::Runs.next(), Tab::Prs);
+    }
+
+    #[test]
+    fn filter_runs_by_pr_branches() {
+        let runs = vec![run("feature/x"), run("main"), run("feature/y")];
+        let mut branches = std::collections::HashSet::new();
+        branches.insert("feature/x");
+        branches.insert("feature/y");
+
+        // only = true: keep only the runs on a PR branch.
+        let kept = filter_runs(&runs, &branches, true);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|r| r.head_branch != "main"));
+
+        // only = false: keep everything.
+        assert_eq!(filter_runs(&runs, &branches, false).len(), 3);
     }
 }
