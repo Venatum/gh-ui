@@ -162,7 +162,7 @@ fn pr_to_row(pr: &Pr) -> Row<'_> {
 
 fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header = Row::new([
-        "repo", "created", "workflow", "branch", "event", "status", "title",
+        "repo", "created", "#", "workflow", "branch", "event", "status", "title",
     ])
     .style(Style::new().bold());
 
@@ -173,9 +173,10 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Length(16),
         Constraint::Length(10),
+        Constraint::Length(7),
         Constraint::Length(18),
         Constraint::Length(22),
-        Constraint::Length(14),
+        Constraint::Length(12),
         Constraint::Length(11),
         Constraint::Fill(1),
     ];
@@ -198,6 +199,7 @@ fn run_to_row(run: &Run) -> Row<'static> {
     Row::new(vec![
         Cell::from(run.repo.clone()),
         Cell::from(date),
+        Cell::from(format!("#{}", run.number)),
         Cell::from(run.workflow_name.clone()),
         Cell::from(run.head_branch.clone()),
         Cell::from(run.event.clone()),
@@ -254,6 +256,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Otherwise, a compact footer; the full detail is in the help (?).
     let hints = [
         ("↑↓", "nav"),
+        ("tab/1/2", "tab"),
         ("f", "filters"),
         ("r", "refresh"),
         ("a", "auto"),
@@ -372,6 +375,8 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("r", "reload now"),
         help_row("a", "toggle auto-refresh (60s)"),
         help_row("f", "open the filter panel"),
+        help_row("tab, 1/2", "switch tab (PRs / Actions)"),
+        help_row("m", "Actions tab: filter on my PRs"),
         help_row("q", "quit"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
