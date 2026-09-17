@@ -1,6 +1,6 @@
 //! The application state and its logic (independent of rendering).
 
-use crate::fetch::{self, FetchResult};
+use crate::fetch::{self, Job, Loaded};
 use crate::filters::Filters;
 use crate::model::Pr;
 use ratatui::widgets::TableState;
@@ -73,8 +73,8 @@ pub struct App {
     /// Whether the help screen is shown (key `?`).
     pub show_help: bool,
 
-    tx: Sender<FetchResult>,
-    rx: Receiver<FetchResult>,
+    tx: Sender<Loaded>,
+    rx: Receiver<Loaded>,
 }
 
 impl App {
@@ -112,7 +112,12 @@ impl App {
         self.pending_refresh = false;
         self.last_refresh = Instant::now();
         self.status = String::from("Loading…");
-        fetch::spawn(self.root.clone(), self.filters.clone(), self.tx.clone());
+        fetch::spawn(
+            Job::Prs,
+            self.root.clone(),
+            self.filters.clone(),
+            self.tx.clone(),
+        );
     }
 
     /// Keeps the state alive on every loop iteration. Returns `true` if the
@@ -121,26 +126,31 @@ impl App {
     pub fn on_tick(&mut self) -> bool {
         let mut changed = false;
 
-        while let Ok(result) = self.rx.try_recv() {
-            self.prs = result.prs;
-            self.repos = result.all_repos;
-            self.loading = false;
-            changed = true;
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Loaded::Prs(result) => {
+                    self.prs = result.prs;
+                    self.repos = result.all_repos;
+                    self.loading = false;
+                    changed = true;
 
-            let errors = if result.errors > 0 {
-                format!(" — {} failed", result.errors)
-            } else {
-                String::new()
-            };
-            self.status = format!(
-                "{} PR(s) — {} repo(s){}",
-                self.prs.len(),
-                result.scanned,
-                errors
-            );
+                    let errors = if result.errors > 0 {
+                        format!(" — {} failed", result.errors)
+                    } else {
+                        String::new()
+                    };
+                    self.status = format!(
+                        "{} PR(s) — {} repo(s){}",
+                        self.prs.len(),
+                        result.scanned,
+                        errors
+                    );
 
-            self.table_state
-                .select(if self.prs.is_empty() { None } else { Some(0) });
+                    self.table_state
+                        .select(if self.prs.is_empty() { None } else { Some(0) });
+                }
+                Loaded::Runs(_) => {} // filled in Task 5
+            }
         }
 
         if !self.loading && self.pending_refresh {
