@@ -1,9 +1,9 @@
 //! The rendering: turns the state (`App`) into ratatui widgets. This module
 //! decides nothing, it only draws what `App` holds.
 
-use crate::app::{App, FILTER_FIELDS, FilterField, InputKind};
+use crate::app::{App, FILTER_FIELDS, FilterField, InputKind, Tab};
 use crate::filters::Filters;
-use crate::model::Pr;
+use crate::model::{Pr, Run};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -16,7 +16,7 @@ const HELP_WIDTH: u16 = 60;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = Layout::vertical([
-        Constraint::Length(4), // header: border + 2 lines (status + filters)
+        Constraint::Length(5), // header: border + 3 lines (status + tabs + subtitle)
         Constraint::Min(0),
         Constraint::Length(1), // footer
     ])
@@ -54,17 +54,48 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         top.push(Span::styled("   ⟳ auto 60s", Style::new().fg(Color::Green)));
     }
 
-    // Line 2: summary of the active filters, in gray.
-    let filters = Line::from(Span::styled(
-        app.filters.summary(),
-        Style::new().fg(Color::DarkGray),
-    ));
+    // Line 2: the tabs, [ PRs ] [ Actions ], the active one highlighted.
+    let tab_span = |label: &str, active: bool| {
+        if active {
+            Span::styled(
+                format!(" {label} "),
+                Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
+            )
+        } else {
+            Span::styled(format!(" {label} "), Style::new().fg(Color::DarkGray))
+        }
+    };
+    let tabs = Line::from(vec![
+        tab_span("PRs", app.active_tab == Tab::Prs),
+        Span::raw(" "),
+        tab_span("Actions", app.active_tab == Tab::Runs),
+    ]);
 
-    let header = Paragraph::new(vec![Line::from(top), filters]).block(Block::bordered());
+    // Line 3: depending on the tab, PRs filters summary OR the runs toggle state.
+    let subtitle = match app.active_tab {
+        Tab::Prs => Span::styled(app.filters.summary(), Style::new().fg(Color::DarkGray)),
+        Tab::Runs => Span::styled(
+            format!(
+                "my PRs: {}   (m to toggle)",
+                if app.only_pr_runs { "[x]" } else { "[ ]" }
+            ),
+            Style::new().fg(Color::DarkGray),
+        ),
+    };
+
+    let header =
+        Paragraph::new(vec![Line::from(top), tabs, Line::from(subtitle)]).block(Block::bordered());
     frame.render_widget(header, area);
 }
 
 fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    match app.active_tab {
+        Tab::Prs => render_pr_table(frame, app, area),
+        Tab::Runs => render_run_table(frame, app, area),
+    }
+}
+
+fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header = Row::new([
         "repo", "updated", "#", "title", "author", "review", "+/-", "labels",
     ])
@@ -127,6 +158,65 @@ fn pr_to_row(pr: &Pr) -> Row<'_> {
         Cell::from(diff),
         Cell::from(Span::styled(labels, Style::new().fg(Color::DarkGray))),
     ])
+}
+
+fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    let header = Row::new([
+        "repo", "created", "workflow", "branch", "event", "status", "title",
+    ])
+    .style(Style::new().bold());
+
+    // `rows` must NOT borrow `app` (see run_to_row -> Row<'static>), otherwise the
+    // `&mut app.run_table_state` below would conflict with it.
+    let rows: Vec<Row<'static>> = app.visible_runs().into_iter().map(run_to_row).collect();
+
+    let widths = [
+        Constraint::Length(16),
+        Constraint::Length(10),
+        Constraint::Length(18),
+        Constraint::Length(22),
+        Constraint::Length(14),
+        Constraint::Length(11),
+        Constraint::Fill(1),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol("▌ ")
+        .block(Block::bordered());
+
+    frame.render_stateful_widget(table, area, &mut app.run_table_state);
+}
+
+/// Builds a run's row. Returns a `Row<'static>`: every cell owns its `String`,
+/// so the row does not keep borrowing the `Run` it was built from.
+fn run_to_row(run: &Run) -> Row<'static> {
+    let date = run.created_at.get(..10).unwrap_or("").to_string();
+    let (status_label, status_style) = run_look(&run.status, &run.conclusion);
+
+    Row::new(vec![
+        Cell::from(run.repo.clone()),
+        Cell::from(date),
+        Cell::from(run.workflow_name.clone()),
+        Cell::from(run.head_branch.clone()),
+        Cell::from(run.event.clone()),
+        Cell::from(Span::styled(status_label, status_style)),
+        Cell::from(run.display_title.clone()),
+    ])
+}
+
+/// Label + color of a run based on (status, conclusion).
+fn run_look(status: &str, conclusion: &str) -> (&'static str, Style) {
+    match (status, conclusion) {
+        ("completed", "success") => ("✓ success", Style::new().fg(Color::Green)),
+        ("completed", "failure") => ("✗ failure", Style::new().fg(Color::Red)),
+        ("completed", "cancelled") => ("cancelled", Style::new().fg(Color::DarkGray)),
+        ("completed", "skipped") => ("skipped", Style::new().fg(Color::DarkGray)),
+        ("in_progress", _) => ("● running", Style::new().fg(Color::Yellow)),
+        ("queued", _) => ("queued", Style::new().fg(Color::Gray)),
+        _ => ("-", Style::new().fg(Color::DarkGray)),
+    }
 }
 
 fn review_look(decision: &str) -> (&'static str, Style) {
@@ -324,4 +414,18 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         .flex(Flex::Center)
         .areas(area);
     area
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_look_colors() {
+        assert_eq!(run_look("completed", "success").0, "✓ success");
+        assert_eq!(run_look("completed", "failure").0, "✗ failure");
+        assert_eq!(run_look("completed", "cancelled").0, "cancelled");
+        assert_eq!(run_look("in_progress", "").0, "● running");
+        assert_eq!(run_look("queued", "").0, "queued");
+    }
 }
