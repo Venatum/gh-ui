@@ -12,7 +12,7 @@ const PR_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each PR.
 const JSON_FIELDS: &str =
-    "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels";
+    "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
 
 /// Lists the subdirectories of `root` that are git repos (contain `.git`).
 /// Returns their names, sorted, as `list-prs.sh` does with `for dir in */`.
