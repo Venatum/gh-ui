@@ -1,7 +1,7 @@
 //! The rendering: turns the state (`App`) into ratatui widgets. This module
 //! decides nothing, it only draws what `App` holds.
 
-use crate::app::{App, FILTER_FIELDS, FilterField, InputKind, Tab};
+use crate::app::{App, FilterField, InputKind, Tab, section_of};
 use crate::filters::Filters;
 use crate::model::{Pr, Run};
 use ratatui::Frame;
@@ -73,10 +73,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     // Line 3: depending on the tab, PRs filters summary OR the runs toggle state.
     let subtitle = match app.active_tab {
-        Tab::Prs => Span::styled(app.filters.summary(), Style::new().fg(Color::DarkGray)),
+        Tab::Prs => Span::styled(
+            format!(
+                "{} · {}",
+                app.filters.summary_common(),
+                app.filters.summary_prs()
+            ),
+            Style::new().fg(Color::DarkGray),
+        ),
         Tab::Runs => Span::styled(
             format!(
-                "my PRs: {}   (m to toggle)",
+                "{} · my PRs: {}   (m to toggle)",
+                app.filters.summary_common(),
                 if app.only_pr_runs { "[x]" } else { "[ ]" }
             ),
             Style::new().fg(Color::DarkGray),
@@ -279,28 +287,35 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     let f = &app.filters;
 
-    // One line per filter; the focused line is highlighted.
-    let mut lines: Vec<Line> = FILTER_FIELDS
-        .iter()
-        .enumerate()
-        .map(|(i, &field)| {
-            let focused = i == app.filter_cursor;
-            let marker = if focused { "▸ " } else { "  " };
-            let text = format!(
-                "{marker}{:<11} {}",
-                field_name(field),
-                field_value(field, f)
-            );
-            if focused {
-                Line::from(Span::styled(
-                    text,
-                    Style::new().fg(Color::Black).bg(Color::Cyan),
-                ))
-            } else {
-                Line::from(Span::raw(text))
-            }
-        })
-        .collect();
+    // One line per filter of the ACTIVE tab, grouped under section titles.
+    // The titles are not navigable: `filter_cursor` indexes the fields only.
+    let mut lines: Vec<Line> = Vec::new();
+    let mut section = "";
+    for (i, &field) in app.active_fields().iter().enumerate() {
+        if section_of(field) != section {
+            section = section_of(field);
+            lines.push(Line::from(Span::styled(
+                format!(" {section}"),
+                Style::new().bold().fg(Color::Cyan),
+            )));
+        }
+
+        let focused = i == app.filter_cursor;
+        let marker = if focused { "▸ " } else { "  " };
+        let text = format!(
+            "{marker}{:<11} {}",
+            field_name(field),
+            field_value(field, f, app.only_pr_runs)
+        );
+        lines.push(if focused {
+            Line::from(Span::styled(
+                text,
+                Style::new().fg(Color::Black).bg(Color::Cyan),
+            ))
+        } else {
+            Line::from(Span::raw(text))
+        });
+    }
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -327,13 +342,15 @@ fn field_name(field: FilterField) -> &'static str {
         FilterField::Repo => "Repo",
         FilterField::Author => "Author",
         FilterField::Label => "Label",
+        FilterField::OnlyPrRuns => "Only my PRs",
     }
 }
 
 /// The displayed value of a field: cycle "◂ x ▸", box "[x]", or text.
-fn field_value(field: FilterField, f: &Filters) -> String {
+fn field_value(field: FilterField, f: &Filters, only_pr_runs: bool) -> String {
     let empty = "(empty)  ⏎ edit";
     match field {
+        FilterField::OnlyPrRuns => toggle_box(only_pr_runs),
         FilterField::Mode => format!("◂ {} ▸", f.filter.label()),
         FilterField::Since => format!("◂ {} ▸", f.since.label()),
         FilterField::NoDraft => toggle_box(f.no_draft),

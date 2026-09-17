@@ -166,8 +166,17 @@ impl Filters {
         };
     }
 
-    /// Readable summary for the header: "filter:me · since:1w · no-draft · repo:…".
-    pub fn summary(&self) -> String {
+    /// The part of the summary that ALSO applies to the Actions tab.
+    /// Today only the repo filter restricts both flows.
+    pub fn summary_common(&self) -> String {
+        match &self.repo {
+            Some(r) => format!("repo:{r}"),
+            None => "repo:all".to_string(),
+        }
+    }
+
+    /// The part that only goes to `gh pr list`: "filter:me · since:1w · no-draft".
+    pub fn summary_prs(&self) -> String {
         let mut parts = vec![format!("filter:{}", self.filter.label())];
         if self.since != Since::Off {
             parts.push(format!("since:{}", self.since.label()));
@@ -180,10 +189,6 @@ impl Filters {
         }
         if self.not_mine {
             parts.push("not-mine".to_string());
-        }
-        match &self.repo {
-            Some(r) => parts.push(format!("repo:{r}")),
-            None => parts.push("repo:all".to_string()),
         }
         if let Some(a) = &self.author {
             parts.push(format!("author:{a}"));
@@ -301,6 +306,23 @@ impl Filters {
 // `#[cfg(test)]`: this module is compiled ONLY for `cargo test`.
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn summary_splits_common_from_pr_only_filters() {
+        let mut f = Filters::default();
+        f.repo = Some("api".to_string());
+        f.no_draft = true;
+        f.author = Some("moi".to_string());
+
+        // "Common" = what also applies to the Actions tab: the repo, and only it.
+        assert_eq!(f.summary_common(), "repo:api");
+
+        // "PRs" = everything that is only sent to `gh pr list`.
+        let prs = f.summary_prs();
+        assert!(prs.contains("no-draft"), "got {prs}");
+        assert!(prs.contains("author:moi"), "got {prs}");
+        assert!(!prs.contains("repo:"), "repo must not appear twice: {prs}");
+    }
     use super::*;
 
     #[test]
