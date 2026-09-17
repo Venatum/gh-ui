@@ -1,38 +1,38 @@
-# Onglet « Actions » (runs GitHub) — Implementation Plan
+# "Actions" tab (GitHub runs) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ajouter un 2ᵉ onglet affichant le flux des runs GitHub Actions (multi-repo), avec un filtre « seulement mes PRs » coché par défaut et une navigation par onglets.
+**Goal:** Add a 2nd tab displaying the stream of GitHub Actions runs (multi-repo), with an "only my PRs" filter checked by default and tab-based navigation.
 
-**Architecture:** Approche « état typé parallèle » : `App` garde `prs: Vec<Pr>` ET `runs: Vec<Run>`. Un `enum Tab` choisit l'onglet affiché ; un `enum Loaded` transporte le résultat du thread de fond dans le canal mpsc existant ; un `enum Job` dit au thread quoi charger. Aucune généricité ni trait. Le filtre « mes PRs » est une vue dérivée (filtrage local par branche), pas un re-fetch.
+**Architecture:** "Parallel typed state" approach: `App` keeps `prs: Vec<Pr>` AND `runs: Vec<Run>`. An `enum Tab` picks the displayed tab; an `enum Loaded` carries the background thread's result through the existing mpsc channel; an `enum Job` tells the thread what to load. No genericity and no trait. The "my PRs" filter is a derived view (local filtering by branch), not a re-fetch.
 
-**Tech Stack:** Rust edition 2024, ratatui 0.30 + crossterm, serde/serde_json, anyhow, `std::thread::scope`, `std::sync::mpsc`, `std::collections::HashSet`.
+**Tech Stack:** Rust 2024 edition, ratatui 0.30 + crossterm, serde/serde_json, anyhow, `std::thread::scope`, `std::sync::mpsc`, `std::collections::HashSet`.
 
 **Spec:** `docs/superpowers/specs/2026-09-17-onglet-actions-design.md`
 
 ## Global Constraints
 
-- Rust edition 2024 ; aucune nouvelle dépendance (tout est en std + deps existantes).
-- Commentaires et libellés UI en **français**, ton pédagogique (projet d'apprentissage).
-- `Run` suit exactement le style de `Pr` : `#[derive(Debug, Deserialize)]` + `#[serde(rename_all = "camelCase")]`, champ `repo` en `#[serde(skip)]`.
-- Chaque tâche finit **compilable** (`cargo build`) avec les tests existants au vert.
-- Messages de commit terminés par les 2 lignes d'attribution (voir chaque étape « Commit »).
-- Après la dernière tâche : `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` doivent passer.
+- Rust 2024 edition; no new dependency (everything is in std + existing deps).
+- Comments and UI labels in **English**, pedagogical tone (learning project).
+- `Run` follows exactly the style of `Pr`: `#[derive(Debug, Deserialize)]` + `#[serde(rename_all = "camelCase")]`, `repo` field as `#[serde(skip)]`.
+- Each task ends up **compilable** (`cargo build`) with the existing tests green.
+- Commit messages ended by the 2 attribution lines (see each "Commit" step).
+- After the last task: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` must pass.
 
 ---
 
-### Task 1: Champ branche sur `Pr`
+### Task 1: Branch field on `Pr`
 
 **Files:**
-- Modify: `src/model.rs` (struct `Pr`, + module de tests)
+- Modify: `src/model.rs` (struct `Pr`, + tests module)
 - Modify: `src/gh.rs:14-15` (const `JSON_FIELDS`)
 
 **Interfaces:**
-- Produces: `Pr.head_ref_name: String` (branche de la PR, ex. `feature/x`), utilisé par le filtre « mes PRs » (Task 5).
+- Produces: `Pr.head_ref_name: String` (the PR's branch, e.g. `feature/x`), used by the "my PRs" filter (Task 5).
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
-Dans `src/model.rs`, ajouter en bas du fichier :
+In `src/model.rs`, add at the bottom of the file:
 
 ```rust
 #[cfg(test)]
@@ -40,7 +40,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pr_deserialise_la_branche() {
+    fn pr_deserializes_head_ref_name() {
         let json = r#"{
             "number": 1, "title": "t", "author": {"login": "moi"},
             "isDraft": false, "url": "u", "updatedAt": "2026-01-01T00:00:00Z",
@@ -53,33 +53,33 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Lancer le test pour le voir échouer**
+- [ ] **Step 2: Run the test to see it fail**
 
-Run: `cargo test pr_deserialise_la_branche`
-Expected: FAIL à la compilation — `no field head_ref_name on type Pr`.
+Run: `cargo test pr_deserializes_head_ref_name`
+Expected: FAIL at compilation — `no field head_ref_name on type Pr`.
 
-- [ ] **Step 3: Ajouter le champ**
+- [ ] **Step 3: Add the field**
 
-Dans `src/model.rs`, struct `Pr`, après `pub labels: Vec<Label>,` (avant le champ `repo`) :
+In `src/model.rs`, struct `Pr`, after `pub labels: Vec<Label>,` (before the `repo` field):
 
 ```rust
-    // La branche source de la PR (ex. "feature/x"). Sert à relier une PR à ses
-    // runs GitHub Actions (on croise sur cette branche dans l'onglet Actions).
+    // The PR's source branch (e.g. "feature/x"). Used to link a PR to its
+    // GitHub Actions runs (we cross-reference on this branch in the Actions tab).
     pub head_ref_name: String,
 ```
 
-- [ ] **Step 4: Demander le champ à `gh`**
+- [ ] **Step 4: Request the field from `gh`**
 
-Dans `src/gh.rs`, remplacer la const `JSON_FIELDS` (lignes 14-15) par :
+In `src/gh.rs`, replace the const `JSON_FIELDS` (lines 14-15) with:
 
 ```rust
 const JSON_FIELDS: &str =
     "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
 ```
 
-- [ ] **Step 5: Lancer le test pour le voir passer**
+- [ ] **Step 5: Run the test to see it pass**
 
-Run: `cargo test pr_deserialise_la_branche`
+Run: `cargo test pr_deserializes_head_ref_name`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -87,37 +87,34 @@ Expected: PASS.
 ```bash
 git add src/model.rs src/gh.rs
 git commit -m "$(cat <<'EOF'
-feat(model): ajoute head_ref_name (branche) à Pr
+feat(model): add head_ref_name (branch) to Pr
 
-Nécessaire pour croiser une PR avec ses runs GitHub Actions.
+Required to cross-reference a PR with its GitHub Actions runs.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-### Task 2: Struct `Run`
+### Task 2: `Run` struct
 
 **Files:**
-- Modify: `src/model.rs` (nouvelle struct + test)
+- Modify: `src/model.rs` (new struct + test)
 
 **Interfaces:**
-- Produces: `struct Run { workflow_name, display_title, head_branch, status, conclusion, event, created_at, number, url: String/u64, repo: String }` — tous `pub`. `conclusion` vaut `""` si le run n'est pas terminé.
+- Produces: `struct Run { workflow_name, display_title, head_branch, status, conclusion, event, created_at, number, url: String/u64, repo: String }` — all `pub`. `conclusion` is `""` if the run is not finished.
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
-Dans le `mod tests` de `src/model.rs`, ajouter :
+In the `mod tests` of `src/model.rs`, add:
 
 ```rust
     #[test]
-    fn run_deserialise_et_gere_conclusion_absente() {
-        // "conclusion" est absent tant que le run n'est pas terminé.
+    fn run_deserializes_and_defaults_conclusion() {
+        // "conclusion" is absent as long as the run is not finished.
         let json = r#"{
-            "workflowName": "CI", "displayTitle": "corrige un bug",
+            "workflowName": "CI", "displayTitle": "fixes a bug",
             "headBranch": "feature/x", "status": "in_progress",
             "event": "push", "createdAt": "2026-01-01T00:00:00Z",
             "number": 42, "url": "u"
@@ -125,22 +122,22 @@ Dans le `mod tests` de `src/model.rs`, ajouter :
         let run: Run = serde_json::from_str(json).unwrap();
         assert_eq!(run.workflow_name, "CI");
         assert_eq!(run.head_branch, "feature/x");
-        assert_eq!(run.conclusion, ""); // défaut car absent
+        assert_eq!(run.conclusion, ""); // default because absent
     }
 ```
 
-- [ ] **Step 2: Lancer le test pour le voir échouer**
+- [ ] **Step 2: Run the test to see it fail**
 
-Run: `cargo test run_deserialise`
-Expected: FAIL à la compilation — `cannot find type Run`.
+Run: `cargo test run_deserializes`
+Expected: FAIL at compilation — `cannot find type Run`.
 
-- [ ] **Step 3: Ajouter la struct**
+- [ ] **Step 3: Add the struct**
 
-Dans `src/model.rs`, après la struct `Pr` :
+In `src/model.rs`, after the `Pr` struct:
 
 ```rust
-/// Un run GitHub Actions, tel que `gh run list --json ...` le renvoie.
-/// Même style que `Pr` : `repo` est rempli par nous (pas dans le JSON).
+/// A GitHub Actions run, as `gh run list --json ...` returns it.
+/// Same style as `Pr`: `repo` is filled in by us (not in the JSON).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
@@ -149,7 +146,7 @@ pub struct Run {
     pub head_branch: String,
     /// "queued" | "in_progress" | "completed".
     pub status: String,
-    /// "success" | "failure" | "cancelled" | "skipped"... ; "" si pas terminé.
+    /// "success" | "failure" | "cancelled" | "skipped"... ; "" if not finished.
     #[serde(default)]
     pub conclusion: String,
     /// "push" | "pull_request" | "schedule"...
@@ -162,9 +159,9 @@ pub struct Run {
 }
 ```
 
-- [ ] **Step 4: Lancer le test pour le voir passer**
+- [ ] **Step 4: Run the test to see it pass**
 
-Run: `cargo test run_deserialise`
+Run: `cargo test run_deserializes`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -172,11 +169,8 @@ Expected: PASS.
 ```bash
 git add src/model.rs
 git commit -m "$(cat <<'EOF'
-feat(model): ajoute la struct Run (run GitHub Actions)
+feat(model): add the Run struct (GitHub Actions run)
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -190,43 +184,43 @@ EOF
 
 **Interfaces:**
 - Consumes: `model::Run`.
-- Produces: `pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>>` — lance `gh run list --limit 20 --json ...` dans `repo_dir`.
+- Produces: `pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>>` — runs `gh run list --limit 20 --json ...` in `repo_dir`.
 
-- [ ] **Step 1: Élargir l'import du modèle**
+- [ ] **Step 1: Widen the model import**
 
-Dans `src/gh.rs`, ligne 5, remplacer :
+In `src/gh.rs`, line 5, replace:
 
 ```rust
 use crate::model::Pr;
 ```
 
-par :
+with:
 
 ```rust
 use crate::model::{Pr, Run};
 ```
 
-- [ ] **Step 2: Ajouter les constantes**
+- [ ] **Step 2: Add the constants**
 
-Dans `src/gh.rs`, après la const `JSON_FIELDS` :
+In `src/gh.rs`, after the const `JSON_FIELDS`:
 
 ```rust
-/// Nombre de runs récupérés par repo (derniers runs, toutes branches).
+/// Number of runs fetched per repo (most recent runs, all branches).
 const RUN_LIMIT: &str = "20";
 
-/// Champs JSON demandés à `gh` pour chaque run.
+/// JSON fields requested from `gh` for each run.
 const RUN_JSON_FIELDS: &str =
     "workflowName,displayTitle,headBranch,status,conclusion,event,createdAt,number,url";
 ```
 
-- [ ] **Step 3: Ajouter la fonction**
+- [ ] **Step 3: Add the function**
 
-Dans `src/gh.rs`, après `fetch_prs` :
+In `src/gh.rs`, after `fetch_prs`:
 
 ```rust
-/// Lance `gh run list` dans `repo_dir` et parse le JSON en `Vec<Run>`.
-/// Pas de filtres ici : on récupère les N derniers runs bruts ; le croisement
-/// avec les PRs se fait côté App (voir `App::visible_runs`).
+/// Runs `gh run list` in `repo_dir` and parses the JSON into `Vec<Run>`.
+/// No filters here: we fetch the N most recent raw runs; the cross-referencing
+/// with the PRs is done on the App side (see `App::visible_runs`).
 pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
     let output = Command::new("gh")
         .args([
@@ -239,47 +233,44 @@ pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
         ])
         .current_dir(repo_dir)
         .output()
-        .context("lancement de `gh` (est-il installé et dans le PATH ?)")?;
+        .context("launching `gh` (is it installed and in the PATH?)")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`gh run list` a échoué : {}", stderr.trim());
+        anyhow::bail!("`gh run list` failed: {}", stderr.trim());
     }
 
     let runs: Vec<Run> = serde_json::from_slice(&output.stdout)
-        .context("parsing du JSON renvoyé par `gh run list`")?;
+        .context("parsing the JSON returned by `gh run list`")?;
     Ok(runs)
 }
 ```
 
-- [ ] **Step 4: Vérifier la compilation**
+- [ ] **Step 4: Check compilation**
 
 Run: `cargo build`
-Expected: compile (warning « fonction jamais utilisée » toléré — elle sera branchée en Task 4).
+Expected: compiles ("never used function" warning tolerated — it will be wired up in Task 4).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/gh.rs
 git commit -m "$(cat <<'EOF'
-feat(gh): ajoute fetch_runs (gh run list --json)
+feat(gh): add fetch_runs (gh run list --json)
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-### Task 4: Canal générique `Loaded` + couche fetch des runs
+### Task 4: Generic `Loaded` channel + runs fetch layer
 
-Refactor sans changement de comportement visible : le canal transporte désormais un `enum Loaded`. L'app continue de ne charger que les PRs ; la couche runs existe mais n'est pas encore déclenchée.
+Refactor with no visible behavior change: the channel now carries a `enum Loaded`. The app keeps loading only the PRs; the runs layer exists but is not triggered yet.
 
 **Files:**
-- Modify: `src/fetch.rs` (import `Run`, `RunsResult`, `Loaded`, `Job`, renommage `load`→`load_prs`, ajout `load_runs`, nouvelle signature `spawn`)
-- Modify: `src/app.rs` (types du canal → `Loaded`, `refresh` passe `Job::Prs`, `on_tick` fait un `match`)
+- Modify: `src/fetch.rs` (import `Run`, `RunsResult`, `Loaded`, `Job`, rename `load`→`load_prs`, add `load_runs`, new `spawn` signature)
+- Modify: `src/app.rs` (channel types → `Loaded`, `refresh` passes `Job::Prs`, `on_tick` does a `match`)
 
 **Interfaces:**
 - Produces:
@@ -288,18 +279,18 @@ Refactor sans changement de comportement visible : le canal transporte désormai
   - `pub struct RunsResult { runs: Vec<Run>, all_repos: Vec<String>, scanned: usize, errors: usize }`
   - `pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>)`
 
-- [ ] **Step 1: `fetch.rs` — imports et types**
+- [ ] **Step 1: `fetch.rs` — imports and types**
 
-Dans `src/fetch.rs`, élargir l'import modèle :
+In `src/fetch.rs`, widen the model import:
 
 ```rust
 use crate::model::{Pr, Run};
 ```
 
-et remplacer l'import du canal `use std::sync::mpsc::Sender;` (inchangé). Ajouter, après la struct `FetchResult` :
+and keep the channel import `use std::sync::mpsc::Sender;` (unchanged). Add, after the `FetchResult` struct:
 
 ```rust
-/// Miroir de `FetchResult`, mais pour les runs.
+/// Mirror of `FetchResult`, but for the runs.
 pub struct RunsResult {
     pub runs: Vec<Run>,
     pub all_repos: Vec<String>,
@@ -307,25 +298,25 @@ pub struct RunsResult {
     pub errors: usize,
 }
 
-/// Ce que le thread de fond renvoie : soit des PRs, soit des runs.
+/// What the background thread returns: either PRs or runs.
 pub enum Loaded {
     Prs(FetchResult),
     Runs(RunsResult),
 }
 
-/// Ce qu'on demande au thread de charger.
+/// What we ask the thread to load.
 pub enum Job {
     Prs,
     Runs,
 }
 ```
 
-- [ ] **Step 2: `fetch.rs` — nouvelle `spawn` + aiguillage**
+- [ ] **Step 2: `fetch.rs` — new `spawn` + dispatch**
 
-Remplacer la fonction `spawn` par :
+Replace the `spawn` function with:
 
 ```rust
-/// Démarre le chargement de `job` dans un thread de fond.
+/// Starts loading `job` in a background thread.
 pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
     thread::spawn(move || {
         let result = match job {
@@ -337,17 +328,17 @@ pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
 }
 ```
 
-- [ ] **Step 3: `fetch.rs` — renommer `load` en `load_prs`**
+- [ ] **Step 3: `fetch.rs` — rename `load` to `load_prs`**
 
-Renommer la fonction `load` existante en `load_prs` (signature et corps inchangés, seul le nom change).
+Rename the existing `load` function to `load_prs` (signature and body unchanged, only the name changes).
 
-- [ ] **Step 4: `fetch.rs` — ajouter `load_runs`**
+- [ ] **Step 4: `fetch.rs` — add `load_runs`**
 
-Après `load_prs`, ajouter le miroir pour les runs (même logique `thread::scope`, mais `gh::fetch_runs` ne prend pas de filtres) :
+After `load_prs`, add the mirror for the runs (same `thread::scope` logic, but `gh::fetch_runs` takes no filters):
 
 ```rust
-/// Comme `load_prs`, mais pour les runs. Le filtre repo (s'il est posé)
-/// restreint aussi les repos scannés ici, par cohérence avec l'onglet PRs.
+/// Like `load_prs`, but for the runs. The repo filter (if set)
+/// also restricts the repos scanned here, for consistency with the PRs tab.
 fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
 
@@ -387,38 +378,38 @@ fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
 }
 ```
 
-- [ ] **Step 5: `app.rs` — types du canal**
+- [ ] **Step 5: `app.rs` — channel types**
 
-Dans `src/app.rs`, remplacer l'import :
+In `src/app.rs`, replace the import:
 
 ```rust
 use crate::fetch::{self, FetchResult};
 ```
 
-par :
+with:
 
 ```rust
 use crate::fetch::{self, Job, Loaded};
 ```
 
-et les deux champs de `App` :
+and the two `App` fields:
 
 ```rust
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
 ```
 
-- [ ] **Step 6: `app.rs` — `refresh` passe un `Job`**
+- [ ] **Step 6: `app.rs` — `refresh` passes a `Job`**
 
-Dans `refresh`, remplacer l'appel `fetch::spawn(...)` par :
+In `refresh`, replace the `fetch::spawn(...)` call with:
 
 ```rust
         fetch::spawn(Job::Prs, self.root.clone(), self.filters.clone(), self.tx.clone());
 ```
 
-- [ ] **Step 7: `app.rs` — `on_tick` fait un `match`**
+- [ ] **Step 7: `app.rs` — `on_tick` does a `match`**
 
-Dans `on_tick`, remplacer la boucle `while let Ok(result) = self.rx.try_recv() { ... }` par un `match` sur `Loaded` (le corps PRs est l'existant ; l'arm Runs est un placeholder rempli en Task 5) :
+In `on_tick`, replace the `while let Ok(result) = self.rx.try_recv() { ... }` loop with a `match` on `Loaded` (the PRs body is the existing one; the Runs arm is a placeholder filled in Task 5):
 
 ```rust
         while let Ok(msg) = self.rx.try_recv() {
@@ -430,7 +421,7 @@ Dans `on_tick`, remplacer la boucle `while let Ok(result) = self.rx.try_recv() {
                     changed = true;
 
                     let errors = if result.errors > 0 {
-                        format!(" — {} en erreur", result.errors)
+                        format!(" — {} failed", result.errors)
                     } else {
                         String::new()
                     };
@@ -444,54 +435,51 @@ Dans `on_tick`, remplacer la boucle `while let Ok(result) = self.rx.try_recv() {
                     self.table_state
                         .select(if self.prs.is_empty() { None } else { Some(0) });
                 }
-                Loaded::Runs(_) => {} // rempli en Task 5
+                Loaded::Runs(_) => {} // filled in Task 5
             }
         }
 ```
 
-- [ ] **Step 8: Vérifier build + tests existants**
+- [ ] **Step 8: Check build + existing tests**
 
 Run: `cargo build && cargo test`
-Expected: build OK ; tous les tests existants (filtres, model) PASS. Comportement identique à avant (seules les PRs se chargent).
+Expected: build OK; all existing tests (filters, model) PASS. Behavior identical to before (only the PRs are loaded).
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add src/fetch.rs src/app.rs
 git commit -m "$(cat <<'EOF'
-refactor(fetch): canal générique Loaded + couche fetch des runs
+refactor(fetch): generic Loaded channel + runs fetch layer
 
-Le thread de fond renvoie désormais un enum Loaded (Prs|Runs) et prend un
-Job. Comportement inchangé : seules les PRs sont encore déclenchées.
+The background thread now returns a Loaded enum (Prs|Runs) and takes a
+Job. Behavior unchanged: only the PRs are still triggered.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-### Task 5: État onglets + filtre « mes PRs » (logique App)
+### Task 5: Tab state + "my PRs" filter (App logic)
 
 **Files:**
-- Modify: `src/app.rs` (enum `Tab`, nouveaux champs, `set_tab`/`next_tab`, `filter_runs`, `visible_runs`, `toggle_only_pr_runs`, navigation tab-aware, `selected_url`, `on_tick` arm Runs, `refresh` par onglet)
+- Modify: `src/app.rs` (enum `Tab`, new fields, `set_tab`/`next_tab`, `filter_runs`, `visible_runs`, `toggle_only_pr_runs`, tab-aware navigation, `selected_url`, `on_tick` Runs arm, per-tab `refresh`)
 
 **Interfaces:**
 - Consumes: `fetch::Job`, `fetch::Loaded`, `model::Run`.
-- Produces (tous `pub` sauf `filter_runs`) :
+- Produces (all `pub` except `filter_runs`):
   - `pub enum Tab { Prs, Runs }` + `pub fn next(self) -> Tab`
-  - champs `active_tab: Tab`, `runs: Vec<Run>`, `run_table_state: TableState`, `only_pr_runs: bool`, `runs_loaded: bool`
+  - fields `active_tab: Tab`, `runs: Vec<Run>`, `run_table_state: TableState`, `only_pr_runs: bool`, `runs_loaded: bool`
   - `pub fn set_tab(&mut self, tab: Tab)`, `pub fn next_tab(&mut self)`
   - `pub fn visible_runs(&self) -> Vec<&Run>`
   - `pub fn toggle_only_pr_runs(&mut self)`
   - `pub fn selected_url(&self) -> Option<String>`
-  - `next`/`previous` deviennent tab-aware (agissent sur l'onglet actif)
+  - `next`/`previous` become tab-aware (act on the active tab)
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Dans un `#[cfg(test)] mod tests` en bas de `src/app.rs` (créer si absent) :
+In a `#[cfg(test)] mod tests` at the bottom of `src/app.rs` (create it if absent):
 
 ```rust
 #[cfg(test)]
@@ -521,40 +509,40 @@ mod tests {
     }
 
     #[test]
-    fn filtre_runs_par_branches_de_pr() {
+    fn filter_runs_by_pr_branches() {
         let runs = vec![run("feature/x"), run("main"), run("feature/y")];
         let mut branches = std::collections::HashSet::new();
         branches.insert("feature/x");
         branches.insert("feature/y");
 
-        // only = true : on ne garde que les runs sur une branche de PR.
+        // only = true: keep only the runs on a PR branch.
         let kept = filter_runs(&runs, &branches, true);
         assert_eq!(kept.len(), 2);
         assert!(kept.iter().all(|r| r.head_branch != "main"));
 
-        // only = false : on garde tout.
+        // only = false: keep everything.
         assert_eq!(filter_runs(&runs, &branches, false).len(), 3);
     }
 }
 ```
 
-- [ ] **Step 2: Lancer les tests pour les voir échouer**
+- [ ] **Step 2: Run the tests to see them fail**
 
 Run: `cargo test --lib app::tests`
-Expected: FAIL à la compilation (`Tab`, `filter_runs` inexistants).
+Expected: FAIL at compilation (`Tab`, `filter_runs` do not exist).
 
-- [ ] **Step 3: Ajouter `Tab` et l'import `HashSet`**
+- [ ] **Step 3: Add `Tab` and the `HashSet` import**
 
-En haut de `src/app.rs`, après les `use` existants :
+At the top of `src/app.rs`, after the existing `use`s:
 
 ```rust
 use std::collections::HashSet;
 ```
 
-Après l'enum `FilterField` (ou près des autres enums) :
+After the `FilterField` enum (or near the other enums):
 
 ```rust
-/// Les onglets de l'application.
+/// The application's tabs.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Prs,
@@ -562,7 +550,7 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// L'onglet suivant (cycle Prs → Runs → Prs).
+    /// The next tab (cycle Prs → Runs → Prs).
     pub fn next(self) -> Tab {
         match self {
             Tab::Prs => Tab::Runs,
@@ -572,21 +560,21 @@ impl Tab {
 }
 ```
 
-- [ ] **Step 4: Ajouter les champs à `App` + les initialiser**
+- [ ] **Step 4: Add the fields to `App` + initialize them**
 
-Dans la struct `App`, ajouter :
+In the `App` struct, add:
 
 ```rust
     pub active_tab: Tab,
     pub runs: Vec<Run>,
     pub run_table_state: TableState,
-    /// Filtre « seulement les runs des branches de mes PRs ». Coché par défaut.
+    /// Filter "only the runs of my PRs' branches". Checked by default.
     pub only_pr_runs: bool,
-    /// A-t-on déjà chargé les runs au moins une fois ?
+    /// Have we already loaded the runs at least once?
     runs_loaded: bool,
 ```
 
-Ajouter l'import `use crate::model::{Pr, Run};` (élargir l'import `Pr` existant). Dans `App::new`, initialiser :
+Add the import `use crate::model::{Pr, Run};` (widen the existing `Pr` import). In `App::new`, initialize:
 
 ```rust
             active_tab: Tab::Prs,
@@ -596,12 +584,12 @@ Ajouter l'import `use crate::model::{Pr, Run};` (élargir l'import `Pr` existant
             runs_loaded: false,
 ```
 
-- [ ] **Step 5: Ajouter `filter_runs` + `visible_runs` + `toggle`**
+- [ ] **Step 5: Add `filter_runs` + `visible_runs` + `toggle`**
 
-En bas de `src/app.rs`, hors du `impl App` (fonction libre, pure, testable) :
+At the bottom of `src/app.rs`, outside the `impl App` (a free, pure, testable function):
 
 ```rust
-/// Garde les runs dont la branche est dans `pr_branches`, ou tous si `!only`.
+/// Keeps the runs whose branch is in `pr_branches`, or all if `!only`.
 fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> Vec<&'a Run> {
     if !only {
         return runs.iter().collect();
@@ -612,33 +600,33 @@ fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> 
 }
 ```
 
-Dans `impl App`, ajouter :
+In `impl App`, add:
 
 ```rust
-    /// La vue des runs affichée : filtrée sur les branches de PRs si coché.
+    /// The displayed runs view: filtered on the PR branches if checked.
     pub fn visible_runs(&self) -> Vec<&Run> {
         let branches: HashSet<&str> = self.prs.iter().map(|p| p.head_ref_name.as_str()).collect();
         filter_runs(&self.runs, &branches, self.only_pr_runs)
     }
 
-    /// Bascule le filtre « mes PRs » (pas de re-fetch : filtrage local).
+    /// Toggles the "my PRs" filter (no re-fetch: local filtering).
     pub fn toggle_only_pr_runs(&mut self) {
         self.only_pr_runs = !self.only_pr_runs;
-        // La sélection peut sortir de la vue → on la remet au début si besoin.
+        // The selection may fall outside the view → reset it to the start if needed.
         let n = self.visible_runs().len();
         self.run_table_state
             .select(if n == 0 { None } else { Some(0) });
     }
 ```
 
-- [ ] **Step 6: Navigation par onglets**
+- [ ] **Step 6: Tab navigation**
 
-Dans `impl App`, ajouter :
+In `impl App`, add:
 
 ```rust
     pub fn set_tab(&mut self, tab: Tab) {
         self.active_tab = tab;
-        // Premier passage sur Actions → on charge les runs.
+        // First visit to Actions → load the runs.
         if tab == Tab::Runs && !self.runs_loaded {
             self.refresh();
         }
@@ -649,9 +637,9 @@ Dans `impl App`, ajouter :
     }
 ```
 
-- [ ] **Step 7: `refresh` charge l'onglet actif**
+- [ ] **Step 7: `refresh` loads the active tab**
 
-Dans `refresh`, remplacer la ligne `fetch::spawn(Job::Prs, ...)` par :
+In `refresh`, replace the `fetch::spawn(Job::Prs, ...)` line with:
 
 ```rust
         let job = match self.active_tab {
@@ -661,9 +649,9 @@ Dans `refresh`, remplacer la ligne `fetch::spawn(Job::Prs, ...)` par :
         fetch::spawn(job, self.root.clone(), self.filters.clone(), self.tx.clone());
 ```
 
-- [ ] **Step 8: Remplir l'arm `Loaded::Runs` de `on_tick`**
+- [ ] **Step 8: Fill the `Loaded::Runs` arm of `on_tick`**
 
-Dans `on_tick`, remplacer `Loaded::Runs(_) => {}` par :
+In `on_tick`, replace `Loaded::Runs(_) => {}` with:
 
 ```rust
                 Loaded::Runs(result) => {
@@ -674,7 +662,7 @@ Dans `on_tick`, remplacer `Loaded::Runs(_) => {}` par :
                     changed = true;
 
                     let errors = if result.errors > 0 {
-                        format!(" — {} en erreur", result.errors)
+                        format!(" — {} failed", result.errors)
                     } else {
                         String::new()
                     };
@@ -685,9 +673,9 @@ Dans `on_tick`, remplacer `Loaded::Runs(_) => {}` par :
                 }
 ```
 
-- [ ] **Step 9: Navigation tab-aware + `selected_url`**
+- [ ] **Step 9: Tab-aware navigation + `selected_url`**
 
-Remplacer `next`, `previous` et `selected_pr` par des versions qui tiennent compte de l'onglet actif :
+Replace `next`, `previous` and `selected_pr` with versions that take the active tab into account:
 
 ```rust
     pub fn next(&mut self) {
@@ -720,7 +708,7 @@ Remplacer `next`, `previous` et `selected_pr` par des versions qui tiennent comp
         state.select(Some(i));
     }
 
-    /// L'URL de l'élément sélectionné dans l'onglet actif (PR ou run).
+    /// The URL of the selected item in the active tab (PR or run).
     pub fn selected_url(&self) -> Option<String> {
         match self.active_tab {
             Tab::Prs => self
@@ -736,49 +724,46 @@ Remplacer `next`, `previous` et `selected_pr` par des versions qui tiennent comp
     }
 ```
 
-> Note : `selected_pr` est supprimée ; `main.rs` (Task 7) utilisera `selected_url`.
+> Note: `selected_pr` is removed; `main.rs` (Task 7) will use `selected_url`.
 
-- [ ] **Step 10: Lancer les tests**
+- [ ] **Step 10: Run the tests**
 
 Run: `cargo test --lib app::tests`
-Expected: `tab_cycle` et `filtre_runs_par_branches_de_pr` PASS.
+Expected: `tab_cycle` and `filter_runs_by_pr_branches` PASS.
 
-- [ ] **Step 11: Vérifier le build global**
+- [ ] **Step 11: Check the global build**
 
 Run: `cargo build`
-Expected: échoue probablement dans `ui.rs`/`main.rs` (`selected_pr` disparue, pas encore d'onglet Runs affiché). **C'est attendu** — Tasks 6 et 7 réparent. Si tu veux un point de commit propre, commit maintenant le seul `app.rs` (les tests de la lib passent isolément avec `cargo test --lib`).
+Expected: probably fails in `ui.rs`/`main.rs` (`selected_pr` gone, no Runs tab displayed yet). **This is expected** — Tasks 6 and 7 fix it. If you want a clean commit point, commit only `app.rs` now (the lib tests pass in isolation with `cargo test --lib`).
 
 - [ ] **Step 12: Commit**
 
 ```bash
 git add src/app.rs
 git commit -m "$(cat <<'EOF'
-feat(app): état onglets (Tab) + filtre "mes PRs" (runs)
+feat(app): tab state (Tab) + "my PRs" filter (runs)
 
-Tab enum, champs runs/active_tab/only_pr_runs, navigation tab-aware,
-visible_runs (filtrage local par branche), selected_url.
+Tab enum, runs/active_tab/only_pr_runs fields, tab-aware navigation,
+visible_runs (local filtering by branch), selected_url.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-### Task 6: Rendu de l'onglet Actions (UI)
+### Task 6: Rendering the Actions tab (UI)
 
 **Files:**
-- Modify: `src/ui.rs` (import `Run`/`Tab`, `run_look` + test, `run_to_row`, barre d'onglets, dispatch `render_table`, entête/pied)
+- Modify: `src/ui.rs` (import `Run`/`Tab`, `run_look` + test, `run_to_row`, tab bar, `render_table` dispatch, header/footer)
 
 **Interfaces:**
 - Consumes: `App.active_tab`, `App.visible_runs()`, `App.run_table_state`, `App.only_pr_runs`.
-- Produces: rendu de la table runs quand `active_tab == Tab::Runs` ; barre d'onglets `[ PRs ] [ Actions ]`.
+- Produces: rendering of the runs table when `active_tab == Tab::Runs`; tab bar `[ PRs ] [ Actions ]`.
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
-Dans `src/ui.rs`, ajouter un `#[cfg(test)] mod tests` :
+In `src/ui.rs`, add a `#[cfg(test)] mod tests`:
 
 ```rust
 #[cfg(test)]
@@ -786,7 +771,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_look_couleurs() {
+    fn run_look_colors() {
         assert_eq!(run_look("completed", "success").0, "✓ success");
         assert_eq!(run_look("completed", "failure").0, "✗ failure");
         assert_eq!(run_look("completed", "cancelled").0, "cancelled");
@@ -796,26 +781,26 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Lancer le test pour le voir échouer**
+- [ ] **Step 2: Run the test to see it fail**
 
 Run: `cargo test --lib ui::tests`
-Expected: FAIL à la compilation (`run_look` inexistant).
+Expected: FAIL at compilation (`run_look` does not exist).
 
-- [ ] **Step 3: Élargir les imports**
+- [ ] **Step 3: Widen the imports**
 
-Dans `src/ui.rs`, ajouter à l'import modèle et à l'import app :
+In `src/ui.rs`, add to the model import and the app import:
 
 ```rust
 use crate::app::{App, FILTER_FIELDS, FilterField, InputKind, Tab};
 use crate::model::{Pr, Run};
 ```
 
-- [ ] **Step 4: Ajouter `run_look` + `run_to_row`**
+- [ ] **Step 4: Add `run_look` + `run_to_row`**
 
-Après `review_look` dans `src/ui.rs` :
+After `review_look` in `src/ui.rs`:
 
 ```rust
-/// Libellé + couleur d'un run selon (status, conclusion).
+/// Label + color of a run based on (status, conclusion).
 fn run_look(status: &str, conclusion: &str) -> (&'static str, Style) {
     match (status, conclusion) {
         ("completed", "success") => ("✓ success", Style::new().fg(Color::Green)),
@@ -844,9 +829,9 @@ fn run_to_row(run: &Run) -> Row<'_> {
 }
 ```
 
-- [ ] **Step 5: Dispatch dans `render_table`**
+- [ ] **Step 5: Dispatch in `render_table`**
 
-Remplacer le corps de `render_table` pour choisir la table selon l'onglet. Extraire l'existant PRs dans `render_pr_table` et ajouter `render_run_table` :
+Replace the body of `render_table` to choose the table based on the tab. Extract the existing PRs one into `render_pr_table` and add `render_run_table`:
 
 ```rust
 fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -857,7 +842,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 ```
 
-Garder le corps actuel de `render_table` sous le nom `render_pr_table` (signature identique). Ajouter :
+Keep the current body of `render_table` under the name `render_pr_table` (identical signature). Add:
 
 ```rust
 fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -887,12 +872,12 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 ```
 
-- [ ] **Step 6: Barre d'onglets dans l'entête**
+- [ ] **Step 6: Tab bar in the header**
 
-Dans `render_header`, ajouter une ligne d'onglets. Après la construction de `top` et avant `filters`, insérer une ligne `tabs` et l'inclure dans le `Paragraph`. Remplacer la fin de `render_header` par :
+In `render_header`, add a tabs line. After building `top` and before `filters`, insert a `tabs` line and include it in the `Paragraph`. Replace the end of `render_header` with:
 
 ```rust
-    // Ligne onglets : [ PRs ] [ Actions ], l'actif surligné.
+    // Tabs line: [ PRs ] [ Actions ], the active one highlighted.
     let tab_span = |label: &str, active: bool| {
         if active {
             Span::styled(
@@ -909,12 +894,12 @@ Dans `render_header`, ajouter une ligne d'onglets. Après la construction de `to
         tab_span("Actions", app.active_tab == Tab::Runs),
     ]);
 
-    // Ligne 2 : selon l'onglet, résumé des filtres PRs OU état du toggle runs.
+    // Line 2: depending on the tab, PRs filters summary OR runs toggle state.
     let subtitle = match app.active_tab {
         Tab::Prs => Span::styled(app.filters.summary(), Style::new().fg(Color::DarkGray)),
         Tab::Runs => Span::styled(
             format!(
-                "mes PRs : {}   (m pour basculer)",
+                "my PRs: {}   (m to toggle)",
                 if app.only_pr_runs { "[x]" } else { "[ ]" }
             ),
             Style::new().fg(Color::DarkGray),
@@ -926,49 +911,46 @@ Dans `render_header`, ajouter une ligne d'onglets. Après la construction de `to
     frame.render_widget(header, area);
 ```
 
-Passer la hauteur de l'entête de 4 à 5 lignes : dans `render`, `Constraint::Length(4)` → `Constraint::Length(5)`.
+Grow the header height from 4 to 5 lines: in `render`, `Constraint::Length(4)` → `Constraint::Length(5)`.
 
-- [ ] **Step 7: Lancer les tests + build**
+- [ ] **Step 7: Run the tests + build**
 
 Run: `cargo test --lib ui::tests && cargo build`
-Expected: `run_look_couleurs` PASS. Le build peut encore échouer sur `main.rs` (`selected_pr`), réparé en Task 7.
+Expected: `run_look_colors` PASS. The build may still fail on `main.rs` (`selected_pr`), fixed in Task 7.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add src/ui.rs
 git commit -m "$(cat <<'EOF'
-feat(ui): table des runs + barre d'onglets + run_look
+feat(ui): runs table + tab bar + run_look
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-### Task 7: Clavier & câblage final (main.rs)
+### Task 7: Keyboard & final wiring (main.rs)
 
 **Files:**
-- Modify: `src/main.rs` (touches `Tab`/`1`/`2`/`m`, `open_selected` via `selected_url`)
-- Modify: `src/ui.rs` (pied : mention onglets) et `render_help` (raccourcis)
+- Modify: `src/main.rs` (keys `Tab`/`1`/`2`/`m`, `open_selected` via `selected_url`)
+- Modify: `src/ui.rs` (footer: tabs mention) and `render_help` (shortcuts)
 
 **Interfaces:**
 - Consumes: `App.next_tab`, `App.set_tab`, `App.toggle_only_pr_runs`, `App.selected_url`, `Tab`.
 
-- [ ] **Step 1: Import `Tab` dans main**
+- [ ] **Step 1: Import `Tab` into main**
 
-Dans `src/main.rs`, ajouter à l'import app :
+In `src/main.rs`, add to the app import:
 
 ```rust
 use app::{App, Tab};
 ```
 
-- [ ] **Step 2: Touches onglets en mode normal**
+- [ ] **Step 2: Tab keys in normal mode**
 
-Dans `handle_normal_key`, ajouter les bras (avant le `_ => {}`) :
+In `handle_normal_key`, add the arms (before the `_ => {}`):
 
 ```rust
         KeyCode::Tab => app.next_tab(),
@@ -977,11 +959,11 @@ Dans `handle_normal_key`, ajouter les bras (avant le `_ => {}`) :
         KeyCode::Char('m') => app.toggle_only_pr_runs(),
 ```
 
-> `m` n'a d'effet visible que sur l'onglet Actions ; sur PRs il bascule un booléen ignoré par le rendu, sans conséquence.
+> `m` only has a visible effect on the Actions tab; on PRs it toggles a boolean ignored by the rendering, with no consequence.
 
 - [ ] **Step 3: `open_selected` via `selected_url`**
 
-Remplacer `open_selected` :
+Replace `open_selected`:
 
 ```rust
 fn open_selected(app: &App) {
@@ -991,49 +973,46 @@ fn open_selected(app: &App) {
 }
 ```
 
-- [ ] **Step 4: Pied + aide**
+- [ ] **Step 4: Footer + help**
 
-Dans `src/ui.rs`, `render_footer`, ajouter un indice onglets dans le tableau `hints` (après `("↑↓", "nav")`) :
+In `src/ui.rs`, `render_footer`, add a tabs hint in the `hints` array (after `("↑↓", "nav")`):
 
 ```rust
-        ("tab/1/2", "onglet"),
+        ("tab/1/2", "tab"),
 ```
 
-Dans `render_help`, ajouter après la ligne `help_row("f", ...)` :
+In `render_help`, add after the `help_row("f", ...)` line:
 
 ```rust
-        help_row("tab, 1/2", "changer d'onglet (PRs / Actions)"),
-        help_row("m", "onglet Actions : filtrer sur mes PRs"),
+        help_row("tab, 1/2", "switch tab (PRs / Actions)"),
+        help_row("m", "Actions tab: filter on my PRs"),
 ```
 
 - [ ] **Step 5: Build + lint + format + tests**
 
 Run: `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt --check`
-Expected: tout PASS, zéro warning clippy, format OK. Si `cargo fmt --check` signale des diffs, lancer `cargo fmt` puis re-vérifier.
+Expected: everything PASS, zero clippy warning, format OK. If `cargo fmt --check` reports diffs, run `cargo fmt` then re-check.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add src/main.rs src/ui.rs
 git commit -m "$(cat <<'EOF'
-feat(main): navigation onglets (tab/1/2), toggle m, ouverture par onglet
+feat(main): tab navigation (tab/1/2), toggle m, per-tab opening
 
-Câble l'onglet Actions de bout en bout : bascule PRs/Actions, filtre "mes
-PRs" (m), ouverture de la PR ou du run sélectionné.
+Wires the Actions tab end to end: PRs/Actions switch, "my PRs" filter
+(m), opening the selected PR or run.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```
 
 ---
 
-## Self-Review (fait à la rédaction)
+## Self-Review (done at writing time)
 
-**Couverture spec :** §2 décisions → Task 1 (Q2 branche), Task 3 (Q3 limit 20), Task 5 (Q2 toggle défaut, Q4 nav), Task 6 (barre onglets Q4), Task 7 (touches Q4 + m). §3.1 model → Tasks 1-2. §3.2 gh → Task 3. §3.3 fetch/Loaded/Job → Task 4. §3.4-3.5 état/logique → Task 5. §3.6 ui → Task 6. §3.7 clavier → Task 7. §4 erreurs → arm errors dans load_runs (Task 4) + on_tick (Task 5). §5 tests → Task 1/2 (serde), Task 5 (filter_runs, Tab), Task 6 (run_look). ✅ Aucun trou.
+**Spec coverage:** §2 decisions → Task 1 (Q2 branch), Task 3 (Q3 limit 20), Task 5 (Q2 default toggle, Q4 nav), Task 6 (tab bar Q4), Task 7 (keys Q4 + m). §3.1 model → Tasks 1-2. §3.2 gh → Task 3. §3.3 fetch/Loaded/Job → Task 4. §3.4-3.5 state/logic → Task 5. §3.6 ui → Task 6. §3.7 keyboard → Task 7. §4 errors → errors arm in load_runs (Task 4) + on_tick (Task 5). §5 tests → Task 1/2 (serde), Task 5 (filter_runs, Tab), Task 6 (run_look). ✅ No gap.
 
-**Placeholders :** l'arm `Loaded::Runs(_) => {}` de Task 4 est volontaire et explicitement remplacé en Task 5 (pas un TODO orphelin). Aucun autre.
+**Placeholders:** the `Loaded::Runs(_) => {}` arm of Task 4 is deliberate and explicitly replaced in Task 5 (not an orphan TODO). No other.
 
-**Cohérence des types :** `Loaded`/`Job`/`RunsResult` (Task 4) réutilisés à l'identique en Task 5. `filter_runs(&[Run], &HashSet<&str>, bool)` défini et testé en Task 5. `run_look(&str,&str)` défini et testé en Task 6. `selected_url` (Task 5) remplace `selected_pr` et est consommé en Task 7. ✅
+**Type consistency:** `Loaded`/`Job`/`RunsResult` (Task 4) reused identically in Task 5. `filter_runs(&[Run], &HashSet<&str>, bool)` defined and tested in Task 5. `run_look(&str,&str)` defined and tested in Task 6. `selected_url` (Task 5) replaces `selected_pr` and is consumed in Task 7. ✅
