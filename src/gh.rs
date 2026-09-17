@@ -11,8 +11,7 @@ use std::process::Command;
 const PR_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each PR.
-const JSON_FIELDS: &str =
-    "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
+const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
 
 /// Number of runs fetched per repo (most recent runs, all branches).
 const RUN_LIMIT: &str = "20";
