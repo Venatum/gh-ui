@@ -306,13 +306,16 @@ impl Filters {
 // `#[cfg(test)]`: this module is compiled ONLY for `cargo test`.
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn summary_splits_common_from_pr_only_filters() {
-        let mut f = Filters::default();
-        f.repo = Some("api".to_string());
-        f.no_draft = true;
-        f.author = Some("moi".to_string());
+        let f = Filters {
+            repo: Some("api".to_string()),
+            no_draft: true,
+            author: Some("moi".to_string()),
+            ..Default::default()
+        };
 
         // "Common" = what also applies to the Actions tab: the repo, and only it.
         assert_eq!(f.summary_common(), "repo:api");
@@ -323,7 +326,6 @@ mod tests {
         assert!(prs.contains("author:moi"), "got {prs}");
         assert!(!prs.contains("repo:"), "repo must not appear twice: {prs}");
     }
-    use super::*;
 
     #[test]
     fn default_filters_produce_no_gh_args() {

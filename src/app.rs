@@ -1,6 +1,6 @@
 //! The application state and its logic (independent of rendering).
 
-use crate::fetch::{self, Job, Loaded};
+use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
 use crate::filters::Filters;
 use crate::model::{Pr, Run};
 use ratatui::widgets::TableState;
@@ -58,10 +58,18 @@ pub fn fields_for(tab: Tab) -> &'static [FilterField] {
     }
 }
 
+/// Does this filter feed BOTH flows? Today only the repo filter does: it
+/// restricts the repos scanned by `gh pr list` AND by `gh run list`.
+pub fn is_common(field: FilterField) -> bool {
+    matches!(field, FilterField::Repo)
+}
+
 /// The section a field is displayed under, in the panel.
 pub fn section_of(field: FilterField) -> &'static str {
+    if is_common(field) {
+        return "Common";
+    }
     match field {
-        FilterField::Repo => "Common",
         FilterField::OnlyPrRuns => "Actions",
         _ => "PRs",
     }
@@ -95,7 +103,9 @@ pub struct App {
 
     pub filters: Filters,
     pub repos: Vec<String>,
-    pending_refresh: bool,
+    /// A refresh asked for while another one was still running (widened with
+    /// `Job::merge` if several pile up).
+    pending_job: Option<Job>,
 
     /// Auto-refresh: disabled by default (key `a`).
     pub auto_refresh: bool,
@@ -140,7 +150,7 @@ impl App {
             should_quit: false,
             filters: Filters::load(),
             repos: Vec::new(),
-            pending_refresh: false,
+            pending_job: None,
             auto_refresh: false,
             last_refresh: Instant::now(),
             input_kind: None,
@@ -158,19 +168,34 @@ impl App {
         }
     }
 
+    /// Reloads what the active tab shows.
     pub fn refresh(&mut self) {
+        self.refresh_job(self.active_job());
+    }
+
+    /// The flow the active tab displays.
+    fn active_job(&self) -> Job {
+        match self.active_tab {
+            Tab::Prs => Job::Prs,
+            Tab::Runs => Job::Runs,
+        }
+    }
+
+    /// Starts `job` in the background — or remembers it if a load is already in
+    /// flight. Two jobs waiting are merged, never replaced: asking for the PRs
+    /// then the runs must not lose the PRs.
+    fn refresh_job(&mut self, job: Job) {
         if self.loading {
-            self.pending_refresh = true;
+            self.pending_job = Some(match self.pending_job {
+                Some(pending) => pending.merge(job),
+                None => job,
+            });
             return;
         }
         self.loading = true;
-        self.pending_refresh = false;
+        self.pending_job = None;
         self.last_refresh = Instant::now();
         self.status = String::from("Loading…");
-        let job = match self.active_tab {
-            Tab::Prs => Job::Prs,
-            Tab::Runs => Job::Runs,
-        };
         fetch::spawn(
             job,
             self.root.clone(),
@@ -186,50 +211,26 @@ impl App {
         let mut changed = false;
 
         while let Ok(msg) = self.rx.try_recv() {
-            match msg {
-                Loaded::Prs(result) => {
-                    self.prs = result.prs;
-                    self.repos = result.all_repos;
-                    self.loading = false;
-                    changed = true;
-
-                    let errors = if result.errors > 0 {
-                        format!(" — {} failed", result.errors)
-                    } else {
-                        String::new()
-                    };
-                    self.status = format!(
-                        "{} PR(s) — {} repo(s){}",
-                        self.prs.len(),
-                        result.scanned,
-                        errors
-                    );
-
-                    self.table_state
-                        .select(if self.prs.is_empty() { None } else { Some(0) });
+            let status = match msg {
+                Loaded::Prs(result) => self.apply_prs(result),
+                Loaded::Runs(result) => self.apply_runs(result),
+                // PRs FIRST: `apply_runs` counts the visible runs, which are
+                // cross-referenced against `self.prs`.
+                Loaded::Both(prs, runs) => {
+                    let left = self.apply_prs(prs);
+                    let right = self.apply_runs(runs);
+                    format!("{left} · {right}")
                 }
-                Loaded::Runs(result) => {
-                    self.runs = result.runs;
-                    self.repos = result.all_repos;
-                    self.runs_loaded = true;
-                    self.loading = false;
-                    changed = true;
-
-                    let errors = if result.errors > 0 {
-                        format!(" — {} failed", result.errors)
-                    } else {
-                        String::new()
-                    };
-                    let n = self.visible_runs().len();
-                    self.status = format!("{n} run(s) — {} repo(s){}", result.scanned, errors);
-                    self.run_table_state
-                        .select(if n == 0 { None } else { Some(0) });
-                }
-            }
+            };
+            self.status = status;
+            self.loading = false;
+            changed = true;
         }
 
-        if !self.loading && self.pending_refresh {
-            self.refresh();
+        if !self.loading
+            && let Some(job) = self.pending_job
+        {
+            self.refresh_job(job);
         }
 
         // Auto-refresh: if enabled, no load is in progress and the interval has
@@ -247,6 +248,35 @@ impl App {
         }
 
         changed
+    }
+
+    /// Stores a PR load and returns the status line describing it.
+    fn apply_prs(&mut self, result: FetchResult) -> String {
+        self.prs = result.prs;
+        self.repos = result.all_repos;
+        self.table_state
+            .select(if self.prs.is_empty() { None } else { Some(0) });
+        format!(
+            "{} PR(s) — {} repo(s){}",
+            self.prs.len(),
+            result.scanned,
+            errors_suffix(result.errors)
+        )
+    }
+
+    /// Same for a run load. Call it AFTER `apply_prs` when both arrive together.
+    fn apply_runs(&mut self, result: RunsResult) -> String {
+        self.runs = result.runs;
+        self.repos = result.all_repos;
+        self.runs_loaded = true;
+        let n = self.visible_runs().len();
+        self.run_table_state
+            .select(if n == 0 { None } else { Some(0) });
+        format!(
+            "{n} run(s) — {} repo(s){}",
+            result.scanned,
+            errors_suffix(result.errors)
+        )
     }
 
     // --- auto-refresh ---
@@ -283,7 +313,8 @@ impl App {
 
     /// Changes the value of the focused field. `forward` = cycle direction (←/→).
     pub fn filter_change(&mut self, forward: bool) {
-        match self.active_fields()[self.filter_cursor] {
+        let field = self.active_fields()[self.filter_cursor];
+        match field {
             FilterField::Mode => {
                 if forward {
                     self.filters.cycle_filter();
@@ -316,7 +347,7 @@ impl App {
             // text fields are edited with Enter, not with ←/→
             FilterField::Author | FilterField::Label => return,
         }
-        self.apply_filter_change();
+        self.apply_filter_change(field);
     }
 
     /// Enter on the focused field: opens the input (text) or advances (others).
@@ -328,9 +359,23 @@ impl App {
         }
     }
 
-    fn apply_filter_change(&mut self) {
+    fn apply_filter_change(&mut self, field: FilterField) {
         self.filters.save();
-        self.refresh();
+        self.refresh_job(self.job_after_change(field));
+    }
+
+    /// What to reload after `field` changed. A common filter narrows both
+    /// flows, so both must be reloaded: otherwise the tab we are not looking at
+    /// keeps the previous scope — and on the Actions tab `visible_runs` would
+    /// cross-reference PR branches that no longer match the filter.
+    /// Exception: as long as the runs have never been loaded we stay lazy, the
+    /// first visit to the Actions tab will fetch them with the current filters.
+    fn job_after_change(&self, field: FilterField) -> Job {
+        if is_common(field) && self.runs_loaded {
+            Job::Both
+        } else {
+            self.active_job()
+        }
     }
 
     // --- input mode (author / label) ---
@@ -361,13 +406,19 @@ impl App {
 
     /// Commits the input: applies it to the matching filter, then reloads.
     pub fn input_commit(&mut self) {
-        match self.input_kind {
-            Some(InputKind::Author) => self.filters.set_author(&self.input_buffer),
-            Some(InputKind::Label) => self.filters.set_labels(&self.input_buffer),
+        let field = match self.input_kind {
+            Some(InputKind::Author) => {
+                self.filters.set_author(&self.input_buffer);
+                FilterField::Author
+            }
+            Some(InputKind::Label) => {
+                self.filters.set_labels(&self.input_buffer);
+                FilterField::Label
+            }
             None => return,
-        }
+        };
         self.input_cancel();
-        self.apply_filter_change();
+        self.apply_filter_change(field);
     }
 
     // --- help ---
@@ -473,6 +524,15 @@ impl App {
     }
 }
 
+/// The " — N failed" tail of a status line, empty when nothing failed.
+fn errors_suffix(errors: usize) -> String {
+    if errors > 0 {
+        format!(" — {errors} failed")
+    } else {
+        String::new()
+    }
+}
+
 /// Keeps the runs whose branch is in `pr_branches`, or all if `!only`.
 fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> Vec<&'a Run> {
     if !only {
@@ -536,6 +596,48 @@ mod tests {
         // indexing of the fields array would panic.
         app.set_tab(Tab::Runs);
         assert!(app.filter_cursor < fields_for(Tab::Runs).len());
+    }
+
+    #[test]
+    fn repo_is_the_only_common_filter() {
+        assert!(is_common(FilterField::Repo));
+        assert!(!is_common(FilterField::Mode));
+        assert!(!is_common(FilterField::OnlyPrRuns));
+    }
+
+    #[test]
+    fn merging_two_jobs_covers_both_flows() {
+        assert_eq!(Job::Prs.merge(Job::Prs), Job::Prs);
+        assert_eq!(Job::Runs.merge(Job::Runs), Job::Runs);
+        // Asking for one then the other means "reload everything".
+        assert_eq!(Job::Prs.merge(Job::Runs), Job::Both);
+        assert_eq!(Job::Both.merge(Job::Prs), Job::Both);
+    }
+
+    #[test]
+    fn a_common_filter_reloads_both_flows() {
+        let mut app = App::new(PathBuf::from("."));
+        app.runs_loaded = true;
+
+        // A PR-only filter never touches the runs.
+        assert_eq!(app.job_after_change(FilterField::Mode), Job::Prs);
+        // The shared filter narrows BOTH flows: reload both, or the tab we are
+        // not looking at keeps data from the previous scope.
+        assert_eq!(app.job_after_change(FilterField::Repo), Job::Both);
+
+        // Same from the Actions tab: `visible_runs` cross-references `prs`, so
+        // stale PRs would show the wrong branches there too.
+        app.active_tab = Tab::Runs;
+        assert_eq!(app.job_after_change(FilterField::Repo), Job::Both);
+    }
+
+    #[test]
+    fn a_common_filter_stays_lazy_until_the_runs_are_loaded() {
+        let mut app = App::new(PathBuf::from("."));
+        // Never visited the Actions tab: there is nothing to keep in sync yet,
+        // the first visit will load the runs with the current filters.
+        app.runs_loaded = false;
+        assert_eq!(app.job_after_change(FilterField::Repo), Job::Prs);
     }
 
     #[test]
