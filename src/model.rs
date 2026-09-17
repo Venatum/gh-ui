@@ -52,6 +52,28 @@ pub struct Pr {
     pub repo: String,
 }
 
+/// A GitHub Actions run, as `gh run list --json ...` returns it.
+/// Same style as `Pr`: `repo` is filled in by us (not in the JSON).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub workflow_name: String,
+    pub display_title: String,
+    pub head_branch: String,
+    /// "queued" | "in_progress" | "completed".
+    pub status: String,
+    /// "success" | "failure" | "cancelled" | "skipped"... ; "" if not finished.
+    #[serde(default)]
+    pub conclusion: String,
+    /// "push" | "pull_request" | "schedule"...
+    pub event: String,
+    pub created_at: String,
+    pub number: u64,
+    pub url: String,
+    #[serde(skip)]
+    pub repo: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +88,20 @@ mod tests {
         }"#;
         let pr: Pr = serde_json::from_str(json).unwrap();
         assert_eq!(pr.head_ref_name, "feature/x");
+    }
+
+    #[test]
+    fn run_deserializes_and_defaults_conclusion() {
+        // "conclusion" is absent as long as the run is not finished.
+        let json = r#"{
+            "workflowName": "CI", "displayTitle": "fixes a bug",
+            "headBranch": "feature/x", "status": "in_progress",
+            "event": "push", "createdAt": "2026-01-01T00:00:00Z",
+            "number": 42, "url": "u"
+        }"#;
+        let run: Run = serde_json::from_str(json).unwrap();
+        assert_eq!(run.workflow_name, "CI");
+        assert_eq!(run.head_branch, "feature/x");
+        assert_eq!(run.conclusion, ""); // default because absent
     }
 }
