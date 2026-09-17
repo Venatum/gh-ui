@@ -1,0 +1,7 @@
+/target
+
+# IDE
+/.idea
+
+# Personal learning tutorial (French), not versioned.
+/TUTO.md
