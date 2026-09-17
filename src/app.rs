@@ -20,7 +20,7 @@ pub enum InputKind {
 }
 
 /// The rows of the filter panel, in display order.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FilterField {
     Mode,
     Since,
@@ -30,19 +30,42 @@ pub enum FilterField {
     Repo,
     Author,
     Label,
+    /// Actions tab only: show the runs of my PRs' branches only.
+    OnlyPrRuns,
 }
 
-/// The order of the fields in the panel (the cursor is an index into this array).
-pub const FILTER_FIELDS: [FilterField; 8] = [
+/// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
+const PR_FIELDS: [FilterField; 8] = [
+    FilterField::Repo,
     FilterField::Mode,
     FilterField::Since,
     FilterField::NoDraft,
     FilterField::Unreviewed,
     FilterField::NotMine,
-    FilterField::Repo,
     FilterField::Author,
     FilterField::Label,
 ];
+
+/// Panel rows on the Actions tab: the shared filter, plus its own toggle.
+const RUN_FIELDS: [FilterField; 2] = [FilterField::Repo, FilterField::OnlyPrRuns];
+
+/// The panel rows for `tab`. The cursor is an index into THIS slice, so its
+/// length changes with the tab (hence the clamping in `set_tab`).
+pub fn fields_for(tab: Tab) -> &'static [FilterField] {
+    match tab {
+        Tab::Prs => &PR_FIELDS,
+        Tab::Runs => &RUN_FIELDS,
+    }
+}
+
+/// The section a field is displayed under, in the panel.
+pub fn section_of(field: FilterField) -> &'static str {
+    match field {
+        FilterField::Repo => "Common",
+        FilterField::OnlyPrRuns => "Actions",
+        _ => "PRs",
+    }
+}
 
 /// The application's tabs.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -245,9 +268,14 @@ impl App {
         self.filter_panel_open = false;
     }
 
+    /// The panel rows of the active tab.
+    pub fn active_fields(&self) -> &'static [FilterField] {
+        fields_for(self.active_tab)
+    }
+
     /// Moves the panel cursor (clamped, without wrapping).
     pub fn filter_cursor_next(&mut self) {
-        self.filter_cursor = (self.filter_cursor + 1).min(FILTER_FIELDS.len() - 1);
+        self.filter_cursor = (self.filter_cursor + 1).min(self.active_fields().len() - 1);
     }
     pub fn filter_cursor_prev(&mut self) {
         self.filter_cursor = self.filter_cursor.saturating_sub(1);
@@ -255,7 +283,7 @@ impl App {
 
     /// Changes the value of the focused field. `forward` = cycle direction (←/→).
     pub fn filter_change(&mut self, forward: bool) {
-        match FILTER_FIELDS[self.filter_cursor] {
+        match self.active_fields()[self.filter_cursor] {
             FilterField::Mode => {
                 if forward {
                     self.filters.cycle_filter();
@@ -280,6 +308,11 @@ impl App {
                     self.filters.cycle_repo_prev(&self.repos);
                 }
             }
+            // A view filter: local, so no re-fetch and nothing saved to disk.
+            FilterField::OnlyPrRuns => {
+                self.toggle_only_pr_runs();
+                return;
+            }
             // text fields are edited with Enter, not with ←/→
             FilterField::Author | FilterField::Label => return,
         }
@@ -288,7 +321,7 @@ impl App {
 
     /// Enter on the focused field: opens the input (text) or advances (others).
     pub fn filter_activate(&mut self) {
-        match FILTER_FIELDS[self.filter_cursor] {
+        match self.active_fields()[self.filter_cursor] {
             FilterField::Author => self.start_input(InputKind::Author),
             FilterField::Label => self.start_input(InputKind::Label),
             _ => self.filter_change(true),
@@ -410,6 +443,8 @@ impl App {
 
     pub fn set_tab(&mut self, tab: Tab) {
         self.active_tab = tab;
+        // The panel is shorter on Actions: keep the cursor inside the new slice.
+        self.filter_cursor = self.filter_cursor.min(fields_for(tab).len() - 1);
         // First visit to Actions -> load the runs.
         if tab == Tab::Runs && !self.runs_loaded {
             self.refresh();
@@ -466,6 +501,41 @@ mod tests {
             url: "u".into(),
             repo: "r".into(),
         }
+    }
+
+    #[test]
+    fn fields_are_scoped_to_the_active_tab() {
+        let prs = fields_for(Tab::Prs);
+        let runs = fields_for(Tab::Runs);
+
+        // Repo is the shared filter: first in both, under the "Common" section.
+        assert_eq!(prs[0], FilterField::Repo);
+        assert_eq!(runs[0], FilterField::Repo);
+
+        // The Actions tab only exposes Repo + its own toggle.
+        assert_eq!(runs, [FilterField::Repo, FilterField::OnlyPrRuns]);
+
+        // The PR-only filters never show up on the Actions tab.
+        assert!(prs.contains(&FilterField::Mode));
+        assert!(!prs.contains(&FilterField::OnlyPrRuns));
+    }
+
+    #[test]
+    fn section_groups_the_fields() {
+        assert_eq!(section_of(FilterField::Repo), "Common");
+        assert_eq!(section_of(FilterField::Mode), "PRs");
+        assert_eq!(section_of(FilterField::OnlyPrRuns), "Actions");
+    }
+
+    #[test]
+    fn switching_tab_clamps_the_filter_cursor() {
+        let mut app = App::new(PathBuf::from("."));
+        // Last row of the PRs panel (8 fields) …
+        app.filter_cursor = fields_for(Tab::Prs).len() - 1;
+        // … then switch to Actions, which only has 2. Without clamping the next
+        // indexing of the fields array would panic.
+        app.set_tab(Tab::Runs);
+        assert!(app.filter_cursor < fields_for(Tab::Runs).len());
     }
 
     #[test]
