@@ -41,9 +41,30 @@ pub struct Pr {
     // `Vec<Label>` = a list (dynamic array) of labels.
     pub labels: Vec<Label>,
 
+    // The PR's source branch (e.g. "feature/x"). Used to link a PR to its
+    // GitHub Actions runs (we cross-reference on this branch in the Actions tab).
+    pub head_ref_name: String,
+
     // This field is NOT in gh's JSON: we fill it ourselves with the name of the
     // directory/repo the PR comes from. `#[serde(skip)]` = serde ignores it at
     // parsing and gives it its default value ("").
     #[serde(skip)]
     pub repo: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pr_deserializes_head_ref_name() {
+        let json = r#"{
+            "number": 1, "title": "t", "author": {"login": "moi"},
+            "isDraft": false, "url": "u", "updatedAt": "2026-01-01T00:00:00Z",
+            "additions": 0, "deletions": 0, "labels": [],
+            "headRefName": "feature/x"
+        }"#;
+        let pr: Pr = serde_json::from_str(json).unwrap();
+        assert_eq!(pr.head_ref_name, "feature/x");
+    }
 }
