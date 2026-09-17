@@ -2,7 +2,7 @@
 //! running `gh` to fetch the PRs.
 
 use crate::filters::Filters;
-use crate::model::Pr;
+use crate::model::{Pr, Run};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -11,8 +11,14 @@ use std::process::Command;
 const PR_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each PR.
-const JSON_FIELDS: &str =
-    "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels";
+const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
+
+/// Number of runs fetched per repo (most recent runs, all branches).
+const RUN_LIMIT: &str = "20";
+
+/// JSON fields requested from `gh` for each run.
+const RUN_JSON_FIELDS: &str =
+    "workflowName,displayTitle,headBranch,status,conclusion,event,createdAt,number,url";
 
 /// Lists the subdirectories of `root` that are git repos (contain `.git`).
 /// Returns their names, sorted, as `list-prs.sh` does with `for dir in */`.
@@ -73,4 +79,31 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
         serde_json::from_slice(&output.stdout).context("parsing the JSON returned by gh")?;
 
     Ok(prs)
+}
+
+/// Runs `gh run list` in `repo_dir` and parses the JSON into `Vec<Run>`.
+/// No filters here: we fetch the N most recent raw runs; the cross-referencing
+/// with the PRs is done on the App side (see `App::visible_runs`).
+pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
+    let output = Command::new("gh")
+        .args([
+            "run",
+            "list",
+            "--limit",
+            RUN_LIMIT,
+            "--json",
+            RUN_JSON_FIELDS,
+        ])
+        .current_dir(repo_dir)
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh run list` failed: {}", stderr.trim());
+    }
+
+    let runs: Vec<Run> = serde_json::from_slice(&output.stdout)
+        .context("parsing the JSON returned by `gh run list`")?;
+    Ok(runs)
 }

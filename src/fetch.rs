@@ -3,7 +3,7 @@
 
 use crate::filters::Filters;
 use crate::gh;
-use crate::model::Pr;
+use crate::model::{Pr, Run};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -18,11 +18,34 @@ pub struct FetchResult {
     pub errors: usize,
 }
 
-/// Starts the load in a background thread.
+/// Mirror of `FetchResult`, but for the runs.
+pub struct RunsResult {
+    pub runs: Vec<Run>,
+    pub all_repos: Vec<String>,
+    pub scanned: usize,
+    pub errors: usize,
+}
+
+/// What the background thread returns: either PRs or runs.
+pub enum Loaded {
+    Prs(FetchResult),
+    Runs(RunsResult),
+}
+
+/// What we ask the thread to load.
+pub enum Job {
+    Prs,
+    Runs,
+}
+
+/// Starts loading `job` in a background thread.
 /// `root` and `filters` are cloned then MOVED into the thread (`move`).
-pub fn spawn(root: PathBuf, filters: Filters, tx: Sender<FetchResult>) {
+pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
     thread::spawn(move || {
-        let result = load(&root, &filters);
+        let result = match job {
+            Job::Prs => Loaded::Prs(load_prs(&root, &filters)),
+            Job::Runs => Loaded::Runs(load_runs(&root, &filters)),
+        };
         let _ = tx.send(result);
     });
 }
@@ -30,7 +53,7 @@ pub fn spawn(root: PathBuf, filters: Filters, tx: Sender<FetchResult>) {
 /// The slow work: discover the repos, filter, fetch the PRs.
 /// The repos are queried IN PARALLEL (one thread each), so the total duration
 /// ≈ that of the slowest repo, instead of their sum.
-fn load(root: &Path, filters: &Filters) -> FetchResult {
+fn load_prs(root: &Path, filters: &Filters) -> FetchResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
 
     // Which repos to scan? All of them, or only the selected one.
@@ -74,6 +97,46 @@ fn load(root: &Path, filters: &Filters) -> FetchResult {
 
     FetchResult {
         prs,
+        scanned: to_scan.len(),
+        errors,
+        all_repos,
+    }
+}
+
+/// Like `load_prs`, but for the runs. The repo filter (if set)
+/// also restricts the repos scanned here, for consistency with the PRs tab.
+fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
+    let all_repos = gh::discover_repos(root).unwrap_or_default();
+
+    let to_scan: Vec<&String> = match &filters.repo {
+        Some(sel) => all_repos.iter().filter(|r| *r == sel).collect(),
+        None => all_repos.iter().collect(),
+    };
+
+    let joined = thread::scope(|scope| {
+        let handles: Vec<_> = to_scan
+            .iter()
+            .map(|&repo| scope.spawn(move || (repo.clone(), gh::fetch_runs(&root.join(repo)))))
+            .collect();
+        handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
+    });
+
+    let mut runs = Vec::new();
+    let mut errors = 0;
+    for result in joined {
+        match result {
+            Ok((repo, Ok(mut list))) => {
+                for run in &mut list {
+                    run.repo = repo.clone();
+                }
+                runs.extend(list);
+            }
+            Ok((_, Err(_))) | Err(_) => errors += 1,
+        }
+    }
+
+    RunsResult {
+        runs,
         scanned: to_scan.len(),
         errors,
         all_repos,
