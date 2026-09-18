@@ -84,6 +84,7 @@ PRs.
 | `r`          | reload now                                    |
 | `a`          | enable / disable auto-refresh (60 s)         |
 | `f`          | open the filters panel                       |
+| `c`          | open the columns panel                       |
 | `?`          | help screen                                  |
 | `q`          | quit                                         |
 
@@ -101,11 +102,33 @@ Available filters: `filter` (all/me/review-asked), `since`, `no-draft`,
 
 Auto-refresh is **disabled by default**.
 
-## Filter memory
+### Columns panel (`c`)
 
-Filters are saved on every change to
-`~/.config/gh-ui/filters.json` and reloaded at startup — no need to
-retype the same selection on each launch.
+| Key          | Action                                             |
+|--------------|----------------------------------------------------|
+| `↑/↓`, `j/k` | choose a column (or move the grabbed one, see below) |
+| `enter`      | show / hide the focused column                     |
+| `space`      | grab the focused column, or drop it if already grabbed |
+| `esc`        | drop the grabbed column, or close the panel if none is grabbed |
+| `c`          | close the panel (dropping any grabbed column)       |
+
+Moving a column is a direct-manipulation gesture: `space` grabs the column
+under the cursor, then `↑`/`↓` move it left/right in the table (the cursor
+follows it), and `space`, `enter` or `esc` drops it again. The panel's own
+hint line changes to match the mode.
+
+The panel edits the columns of the **active tab**: PRs and Actions keep their
+own order and their own hidden columns. At least one column always stays
+visible.
+
+## Memory
+
+Filters are saved on every change to `~/.config/gh-ui/filters.json` and
+reloaded at startup — no need to retype the same selection on each launch.
+
+The column layout is saved the same way, to `~/.config/gh-ui/columns.json`.
+A column added by a future version is appended to your saved layout instead of
+resetting it.
 
 ## Development
 
@@ -124,6 +147,7 @@ cargo build --release
 | `app.rs`       | application state and its logic                             |
 | `model.rs`     | data structures (`Pr`, deserialization of `gh` JSON)        |
 | `filters.rs`   | filter state, `gh` args, persistence                        |
+| `columns.rs`   | table columns: registry, order/visibility, persistence      |
 | `gh.rs`        | repo discovery + launching `gh pr list`                     |
 | `fetch.rs`     | background loading (thread + `mpsc` channel)                |
 | `ui.rs`        | ratatui rendering                                           |
