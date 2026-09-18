@@ -14,10 +14,24 @@ use std::process::Command;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    let root: PathBuf = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let arg = std::env::args().nth(1);
+
+    // The two flags every command is expected to answer, handled before we take
+    // over the terminal: they print one line and leave.
+    match arg.as_deref() {
+        Some("-V" | "--version") => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("-h" | "--help") => {
+            print_usage();
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Anything else is the folder to scan, defaulting to the current one.
+    let root: PathBuf = arg.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
     let mut app = App::new(root);
     app.refresh(); // first load, BEFORE entering the TUI
@@ -26,6 +40,31 @@ fn main() -> Result<()> {
     let result = run(&mut terminal, &mut app); // capture the result...
     ratatui::restore(); // ...so we restore the terminal no matter what
     result
+}
+
+/// What `gh-ui --help` prints. `env!` reads the values Cargo bakes in at
+/// compile time, so they can never drift from `Cargo.toml`.
+fn print_usage() {
+    println!(
+        "\
+{name} {version}
+{description}
+
+Usage: {name} [FOLDER]
+
+Arguments:
+  [FOLDER]  Folder holding the git repos to scan [default: .]
+
+Options:
+  -h, --help     Print this help
+  -V, --version  Print the version
+
+Requires `gh` to be installed and authenticated (`gh auth login`).
+Press `?` inside the app for the keyboard shortcuts.",
+        name = env!("CARGO_PKG_NAME"),
+        version = env!("CARGO_PKG_VERSION"),
+        description = env!("CARGO_PKG_DESCRIPTION"),
+    );
 }
 
 /// Loop cadence: we wake up at most every 100ms.
