@@ -1,0 +1,190 @@
+# Cuts a release when a `v*` tag is pushed:
+#   1. checks the tag against Cargo.toml and runs the tests
+#   2. builds one binary per platform
+#   3. publishes the GitHub release + the rendered Homebrew formula
+#   4. publishes the crate to crates.io
+#
+# Triggered by: git tag v0.1.0 && git push origin v0.1.0
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  BINARY: gh-ui
+  # Publishing switches, both off. Turn one on by flipping it to "true" once
+  # its one-time setup is done (see "Releasing" in the README): the tap repo
+  # plus HOMEBREW_TAP_TOKEN, or CARGO_REGISTRY_TOKEN. Until then a release only
+  # produces the binaries `gh extension install` needs.
+  PUBLISH_HOMEBREW: "false"
+  PUBLISH_CRATES: "false"
+
+jobs:
+  check:
+    name: Check the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A tag that disagrees with Cargo.toml would publish a crate under the
+      # wrong number, so we stop before anything is built.
+      - name: Compare the tag with Cargo.toml
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$tagged" != "$manifest" ]; then
+            echo "::error::tag v$tagged does not match Cargo.toml version $manifest"
+            exit 1
+          fi
+          echo "Releasing $manifest"
+
+      - name: Run the tests
+        run: cargo test --locked
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `platform` uses Go's OS/arch spelling: that is what `gh` looks for
+          # at the end of an asset name when installing an extension.
+          - platform: darwin-arm64
+            target: aarch64-apple-darwin
+            os: macos-latest
+          - platform: darwin-amd64
+            target: x86_64-apple-darwin
+            os: macos-latest
+          - platform: linux-amd64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            cross: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      # macOS builds both arches natively; Linux arm64 is cross-compiled, which
+      # only needs a matching linker.
+      - name: Install the cross-linker
+        if: matrix.cross != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross }}
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          out="target/${{ matrix.target }}/release/$BINARY"
+          mkdir -p dist
+          # Raw binary: `gh extension install` downloads this one as-is.
+          cp "$out" "dist/${BINARY}_${version}_${{ matrix.platform }}"
+          # Archive: what the Homebrew formula downloads.
+          tar -czf "dist/${BINARY}_${version}_${{ matrix.platform }}.tar.gz" \
+            -C "$(dirname "$out")" "$BINARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Publish the GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      # Read here rather than in `if:`, which cannot see the secrets context.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Render the Homebrew formula
+        if: env.PUBLISH_HOMEBREW == 'true'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha() { sha256sum "artifacts/${BINARY}_${version}_$1.tar.gz" | cut -d' ' -f1; }
+          # The source tarball GitHub generates for the tag, used by the
+          # formula's fallback on platforms we ship no binary for.
+          curl -sSfL -o source.tar.gz \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          mkdir -p out
+          sed -e "s|@VERSION@|$version|g" \
+              -e "s|@SHA_SOURCE@|$(sha256sum source.tar.gz | cut -d' ' -f1)|g" \
+              -e "s|@SHA_DARWIN_ARM64@|$(sha darwin-arm64)|g" \
+              -e "s|@SHA_DARWIN_AMD64@|$(sha darwin-amd64)|g" \
+              -e "s|@SHA_LINUX_ARM64@|$(sha linux-arm64)|g" \
+              -e "s|@SHA_LINUX_AMD64@|$(sha linux-amd64)|g" \
+              packaging/homebrew/gh-ui.rb.tmpl > "out/${BINARY}.rb"
+          cat "out/${BINARY}.rb"
+
+      - name: Upload the binaries to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes
+          gh release upload "$tag" artifacts/* --clobber
+
+      - name: Attach the Homebrew formula
+        if: env.PUBLISH_HOMEBREW == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "out/${BINARY}.rb" --clobber
+
+      - name: Update the Homebrew tap
+        if: env.PUBLISH_HOMEBREW == 'true' && env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tap="${{ github.repository_owner }}/homebrew-tap"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${tap}.git" tap
+          mkdir -p tap/Formula
+          cp "out/${BINARY}.rb" "tap/Formula/${BINARY}.rb"
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${BINARY}.rb"
+          git diff --staged --quiet && exit 0
+          git commit -m "${BINARY} ${version}"
+          git push
+
+  crates-io:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Publish
+        if: env.PUBLISH_CRATES == 'true' && env.CARGO_REGISTRY_TOKEN != ''
+        run: cargo publish --locked
+
+      - name: Skipped
+        if: env.PUBLISH_CRATES != 'true' || env.CARGO_REGISTRY_TOKEN == ''
+        run: echo "::notice::crates.io publishing is off (PUBLISH_CRATES / CARGO_REGISTRY_TOKEN)"
