@@ -2,17 +2,26 @@
 //! decides nothing, it only draws what `App` holds.
 
 use crate::app::{App, FilterField, InputKind, Tab, section_of};
+use crate::columns::{Column, ColumnLayout, PrColumn, RunColumn};
 use crate::filters::Filters;
-use crate::model::{Pr, Run};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Clear, Paragraph, Row, Table};
 
 /// Width (in columns) of the centered overlays.
 const FILTER_PANEL_WIDTH: u16 = 52;
+const COLUMN_PANEL_WIDTH: u16 = 54;
 const HELP_WIDTH: u16 = 60;
+
+/// The column panel's hint, while browsing (the default mode). Named so a
+/// test can build the exact same `Line` the panel renders without needing an
+/// `App` (see the tests module).
+const COLUMN_PANEL_HINT: &str = " ↑↓ choose · ⏎ show/hide · space grab · esc close";
+/// The column panel's hint, once a column has been grabbed (key `space`):
+/// `↑`/`↓` now move it instead of the cursor.
+const COLUMN_PANEL_HINT_GRABBED: &str = " ↑↓ move it · space drop · esc drop";
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = Layout::vertical([
@@ -29,6 +38,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Overlays, drawn on top of the rest.
     if app.filter_panel_open {
         render_filter_panel(frame, app, frame.area());
+    }
+    if app.column_panel_open {
+        render_column_panel(frame, app, frame.area());
     }
     if app.show_help {
         render_help(frame, frame.area());
@@ -104,23 +116,18 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
-    let header = Row::new([
-        "repo", "updated", "#", "title", "author", "review", "+/-", "labels",
-    ])
-    .style(Style::new().bold());
+    // Collected into an owned `Vec` (the columns are `Copy`): nothing keeps
+    // borrowing `app` when `&mut app.table_state` is handed over below.
+    let columns: Vec<PrColumn> = app.columns.prs.visible().collect();
 
-    let rows: Vec<Row> = app.prs.iter().map(pr_to_row).collect();
-
-    let widths = [
-        Constraint::Length(16),
-        Constraint::Length(10),
-        Constraint::Length(7),
-        Constraint::Fill(2), // title: elastic, 2 shares of the rest
-        Constraint::Length(20),
-        Constraint::Length(9),
-        Constraint::Length(11),
-        Constraint::Fill(1), // labels: elastic, 1 share of the rest
-    ];
+    let header =
+        Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    let rows: Vec<Row<'static>> = app
+        .prs
+        .iter()
+        .map(|pr| Row::new(columns.iter().map(|c| c.cell(pr)).collect::<Vec<_>>()))
+        .collect();
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -131,63 +138,19 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
 
-fn pr_to_row(pr: &Pr) -> Row<'_> {
-    let date = pr.updated_at.get(..10).unwrap_or("").to_string();
-    let (review_label, review_style) = review_look(&pr.review_decision);
-
-    // Title: prefixed with "[D]" and grayed out if it's a draft.
-    let title = if pr.is_draft {
-        Cell::from(format!("[D] {}", pr.title)).style(Style::new().fg(Color::DarkGray))
-    } else {
-        Cell::from(pr.title.clone())
-    };
-
-    // Joined labels: "#bug #clm-api" (grayed), truncated to the column width.
-    let labels = pr
-        .labels
-        .iter()
-        .map(|l| format!("#{}", l.name))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let diff = Line::from(vec![
-        Span::styled(format!("+{}", pr.additions), Style::new().fg(Color::Green)),
-        Span::raw("/"),
-        Span::styled(format!("-{}", pr.deletions), Style::new().fg(Color::Red)),
-    ]);
-
-    Row::new(vec![
-        Cell::from(pr.repo.clone()),
-        Cell::from(date),
-        Cell::from(format!("#{}", pr.number)),
-        title,
-        Cell::from(format!("@{}", pr.author.login)),
-        Cell::from(Span::styled(review_label, review_style)),
-        Cell::from(diff),
-        Cell::from(Span::styled(labels, Style::new().fg(Color::DarkGray))),
-    ])
-}
-
 fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
-    let header = Row::new([
-        "repo", "created", "#", "workflow", "branch", "event", "status", "title",
-    ])
-    .style(Style::new().bold());
+    let columns: Vec<RunColumn> = app.columns.runs.visible().collect();
 
-    // `rows` must NOT borrow `app` (see run_to_row -> Row<'static>), otherwise the
+    let header =
+        Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    // `rows` must NOT borrow `app` (the cells own their `String`), otherwise the
     // `&mut app.run_table_state` below would conflict with it.
-    let rows: Vec<Row<'static>> = app.visible_runs().into_iter().map(run_to_row).collect();
-
-    let widths = [
-        Constraint::Length(16),
-        Constraint::Length(10),
-        Constraint::Length(7),
-        Constraint::Length(18),
-        Constraint::Length(22),
-        Constraint::Length(12),
-        Constraint::Length(11),
-        Constraint::Fill(1),
-    ];
+    let rows: Vec<Row<'static>> = app
+        .visible_runs()
+        .into_iter()
+        .map(|run| Row::new(columns.iter().map(|c| c.cell(run)).collect::<Vec<_>>()))
+        .collect();
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -196,46 +159,6 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::bordered());
 
     frame.render_stateful_widget(table, area, &mut app.run_table_state);
-}
-
-/// Builds a run's row. Returns a `Row<'static>`: every cell owns its `String`,
-/// so the row does not keep borrowing the `Run` it was built from.
-fn run_to_row(run: &Run) -> Row<'static> {
-    let date = run.created_at.get(..10).unwrap_or("").to_string();
-    let (status_label, status_style) = run_look(&run.status, &run.conclusion);
-
-    Row::new(vec![
-        Cell::from(run.repo.clone()),
-        Cell::from(date),
-        Cell::from(format!("#{}", run.number)),
-        Cell::from(run.workflow_name.clone()),
-        Cell::from(run.head_branch.clone()),
-        Cell::from(run.event.clone()),
-        Cell::from(Span::styled(status_label, status_style)),
-        Cell::from(run.display_title.clone()),
-    ])
-}
-
-/// Label + color of a run based on (status, conclusion).
-fn run_look(status: &str, conclusion: &str) -> (&'static str, Style) {
-    match (status, conclusion) {
-        ("completed", "success") => ("✓ success", Style::new().fg(Color::Green)),
-        ("completed", "failure") => ("✗ failure", Style::new().fg(Color::Red)),
-        ("completed", "cancelled") => ("cancelled", Style::new().fg(Color::DarkGray)),
-        ("completed", "skipped") => ("skipped", Style::new().fg(Color::DarkGray)),
-        ("in_progress", _) => ("● running", Style::new().fg(Color::Yellow)),
-        ("queued", _) => ("queued", Style::new().fg(Color::Gray)),
-        _ => ("-", Style::new().fg(Color::DarkGray)),
-    }
-}
-
-fn review_look(decision: &str) -> (&'static str, Style) {
-    match decision {
-        "APPROVED" => ("approved", Style::new().fg(Color::Green)),
-        "CHANGES_REQUESTED" => ("changes", Style::new().fg(Color::Red)),
-        "REVIEW_REQUIRED" => ("review", Style::new().fg(Color::Yellow)),
-        _ => ("-", Style::new().fg(Color::DarkGray)),
-    }
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -266,6 +189,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         ("↑↓", "nav"),
         ("tab/1/2", "tab"),
         ("f", "filters"),
+        ("c", "columns"),
         ("r", "refresh"),
         ("a", "auto"),
         ("enter", "open"),
@@ -331,6 +255,75 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// The column panel: the columns of the active tab, in order, with their
+/// checkbox. Top of the list = leftmost column of the table.
+fn render_column_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let (title, mut lines) = match app.active_tab {
+        Tab::Prs => (
+            " Columns — PRs ",
+            column_lines(&app.columns.prs, app.column_cursor, app.column_grabbed),
+        ),
+        Tab::Runs => (
+            " Columns — Actions ",
+            column_lines(&app.columns.runs, app.column_cursor, app.column_grabbed),
+        ),
+    };
+
+    lines.push(Line::from(""));
+    let hint = if app.column_grabbed {
+        COLUMN_PANEL_HINT_GRABBED
+    } else {
+        COLUMN_PANEL_HINT
+    };
+    lines.push(Line::from(Span::styled(
+        hint,
+        Style::new().fg(Color::DarkGray),
+    )));
+
+    let popup = centered_rect(COLUMN_PANEL_WIDTH, lines.len() as u16 + 2, area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        popup,
+    );
+}
+
+/// One line per column: "▸ [x] title". Generic, so both tabs share it.
+/// `grabbed`: whether the focused row is currently grabbed (key `space`) —
+/// it is then indented 2 extra columns, which is the whole visual cue that
+/// tells the user the row is now attached to `↑`/`↓` instead of the cursor.
+fn column_lines<C: Column>(
+    layout: &ColumnLayout<C>,
+    cursor: usize,
+    grabbed: bool,
+) -> Vec<Line<'static>> {
+    layout
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let focused = i == cursor;
+            let marker = if focused { "▸ " } else { "  " };
+            // The extra indent only ever applies to the focused row: the
+            // grabbed column is always the one under the cursor.
+            let indent = if focused && grabbed { "  " } else { "" };
+            let text = format!(
+                "{indent}{marker}{} {}",
+                toggle_box(entry.visible),
+                entry.column.header()
+            );
+            if focused {
+                Line::from(Span::styled(
+                    text,
+                    Style::new().fg(Color::Black).bg(Color::Cyan),
+                ))
+            } else {
+                Line::from(Span::raw(text))
+            }
+        })
+        .collect()
+}
+
 /// The displayed name of a filter field.
 fn field_name(field: FilterField) -> &'static str {
     match field {
@@ -392,6 +385,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("r", "reload now"),
         help_row("a", "toggle auto-refresh (60s)"),
         help_row("f", "open the filter panel"),
+        help_row("c", "open the columns panel"),
         help_row("tab, 1/2", "switch tab (PRs / Actions)"),
         help_row("m", "Actions tab: filter on my PRs"),
         help_row("q", "quit"),
@@ -401,10 +395,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("←/→", "change its value (cycles, boxes)"),
         help_row("enter", "edit author/label · esc to close"),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Filters are remembered between runs.",
-            Style::new().fg(Color::DarkGray),
-        )),
+        Line::from(Span::styled("  In the columns panel", Style::new().bold())),
+        help_row("↑/↓", "choose a column · esc to close"),
+        help_row("enter", "show / hide it"),
+        help_row("space", "grab it, ↑/↓ moves it · esc/space drops"),
         Line::from(Span::styled(
             "  (any key to close)",
             Style::new().fg(Color::DarkGray),
@@ -441,13 +435,117 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::columns::{ColumnLayout, PrColumn};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
+    /// Renders into an 80×24 `TestBackend` (a real terminal, no `App` and no
+    /// filesystem access) and returns the buffer's content as one string, so
+    /// tests can assert on the visible text regardless of styling.
+    fn render_to_text(width: u16, height: u16, draw: impl FnOnce(&mut Frame)) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    /// I2: on an 80×24 terminal (the size named in the finding), the help
+    /// popup must still show its closing hint. Before the fix (24 lines, so a
+    /// 26-row popup) this fails: the popup does not fit and `render_widget`
+    /// silently clips it, so `(any key to close)` never reaches the buffer.
     #[test]
-    fn run_look_colors() {
-        assert_eq!(run_look("completed", "success").0, "✓ success");
-        assert_eq!(run_look("completed", "failure").0, "✗ failure");
-        assert_eq!(run_look("completed", "cancelled").0, "cancelled");
-        assert_eq!(run_look("in_progress", "").0, "● running");
-        assert_eq!(run_look("queued", "").0, "queued");
+    fn help_popup_fits_an_80x24_terminal() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains("(any key to close)"),
+            "the help popup must fit an 80x24 terminal and show its closing hint"
+        );
+    }
+
+    /// I1: neither of the column panel's two hint lines (browsing / grabbed)
+    /// must be truncated. `render_column_panel` itself takes `&App`, and
+    /// building an `App` reads the user's real `~/.config` (forbidden in
+    /// tests), so this reproduces exactly the panel's own line-building (the
+    /// real `column_lines`, `COLUMN_PANEL_HINT[_GRABBED]` and
+    /// `COLUMN_PANEL_WIDTH`) instead of calling `render_column_panel` directly.
+    /// Before the fix (`COLUMN_PANEL_WIDTH = 40`) this failed: `Paragraph`
+    /// truncates instead of wrapping, and "esc close" fell off the line.
+    #[test]
+    fn column_panel_hint_is_not_truncated() {
+        let layout = ColumnLayout::<PrColumn>::default();
+
+        for (grabbed, hint, last_word) in [
+            (false, COLUMN_PANEL_HINT, "esc close"),
+            (true, COLUMN_PANEL_HINT_GRABBED, "esc drop"),
+        ] {
+            let text = render_to_text(80, 24, |frame| {
+                let mut lines = column_lines(&layout, 0, grabbed);
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    hint,
+                    Style::new().fg(Color::DarkGray),
+                )));
+
+                let popup = centered_rect(COLUMN_PANEL_WIDTH, lines.len() as u16 + 2, frame.area());
+                frame.render_widget(Clear, popup);
+                frame.render_widget(
+                    Paragraph::new(lines).block(Block::bordered().title(" Columns — PRs ")),
+                    popup,
+                );
+            });
+
+            assert!(
+                text.contains(last_word),
+                "the column panel's hint (grabbed={grabbed}) must not be truncated"
+            );
+        }
+    }
+
+    /// The grab gesture (I5/new): the grabbed row must render 2 columns
+    /// further right than a neighbour, on the SAME render — that shift is
+    /// the whole visual cue that the row is now attached to ↑/↓. Compared via
+    /// the column of the row's `[` (its toggle box), rather than a raw
+    /// leading-whitespace count, because the unfocused marker ("  ") is
+    /// itself made of spaces: a plain "count leading spaces" would find 2 on
+    /// an ordinary unfocused row too, and miss the extra shift entirely.
+    #[test]
+    fn the_grabbed_row_is_indented_relative_to_a_neighbour() {
+        let layout = ColumnLayout::<PrColumn>::default();
+
+        // Cursor on entry 1: entry 0 is an unfocused neighbour in the very
+        // same call, so it is unaffected by `grabbed` and serves as the
+        // baseline both times.
+        // `.position()` on `chars()`, NOT `str::find` (byte offset): the
+        // marker's `▸` is a multi-byte character, so a byte offset would
+        // overcount the shift as soon as a grabbed row's `▸` is involved.
+        let bracket_col = |line: &Line| -> usize {
+            line.spans
+                .iter()
+                .flat_map(|s| s.content.chars())
+                .position(|c| c == '[')
+                .expect("every column row has a toggle box")
+        };
+
+        let grabbed = column_lines(&layout, 1, true);
+        let plain = column_lines(&layout, 1, false);
+
+        let neighbour_col = bracket_col(&grabbed[0]);
+        assert_eq!(
+            bracket_col(&grabbed[1]),
+            neighbour_col + 2,
+            "the grabbed row's toggle box must sit 2 columns right of its neighbour's"
+        );
+        assert_eq!(
+            bracket_col(&plain[1]),
+            neighbour_col,
+            "the same row, not grabbed, must line up with its neighbour"
+        );
     }
 }

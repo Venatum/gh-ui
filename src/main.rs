@@ -1,4 +1,5 @@
 mod app;
+mod columns;
 mod fetch;
 mod filters;
 mod gh;
@@ -86,13 +87,15 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             match event::read()? {
                 // A key was pressed (we ignore releases).
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Four modes, by priority: input, help, panel, normal.
+                    // Five modes, by priority: input, help, filters, columns, normal.
                     if app.is_input_mode() {
                         handle_input_key(app, key.code);
                     } else if app.show_help {
                         app.toggle_help(); // any key closes the help
                     } else if app.filter_panel_open {
                         handle_filter_panel_key(app, key.code);
+                    } else if app.column_panel_open {
+                        handle_column_panel_key(app, key.code);
                     } else {
                         handle_normal_key(app, key.code);
                     }
@@ -123,6 +126,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('a') => app.toggle_auto_refresh(),
         KeyCode::Enter => open_selected(app),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
+        KeyCode::Char('c') => app.toggle_column_panel(),
         KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Tab => app.next_tab(),
         KeyCode::Char('1') => app.set_tab(Tab::Prs),
@@ -144,6 +148,58 @@ fn handle_filter_panel_key(app: &mut App, code: KeyCode) {
         KeyCode::Left | KeyCode::Char('h') => app.filter_change(false),
         KeyCode::Char(' ') => app.filter_change(true),
         KeyCode::Enter => app.filter_activate(),
+        _ => {}
+    }
+}
+
+/// Shortcuts of the column panel (key `c`). The list is vertical but the table
+/// is horizontal: the top of the list is the leftmost column, so `↑`/`k` moves
+/// (the cursor, or the grabbed column) towards the LEFT, `↓`/`j` towards the
+/// RIGHT.
+///
+/// Two modes, tracked by `App::column_grabbed`: browsing (the default), and
+/// "grabbed" after `space` — a direct-manipulation gesture that replaces the
+/// earlier uppercase `J`/`K` move keys. While grabbed, the same `↑`/`↓` move
+/// the focused column instead of the cursor; `space` drops it again.
+fn handle_column_panel_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Char('q') => app.should_quit = true,
+        // Always closes, grabbed or not: `close_column_panel` clears the
+        // grab flag itself, so leaving the panel never leaves it stale.
+        KeyCode::Char('c') => app.close_column_panel(),
+        // Esc drops first if grabbed (so a second esc is needed to close);
+        // otherwise it closes the panel right away.
+        KeyCode::Esc => {
+            if app.column_grabbed {
+                app.column_drop();
+            } else {
+                app.close_column_panel();
+            }
+        }
+        // Toggling the flag IS grabbing when not grabbed, and dropping when
+        // already grabbed — one call covers both directions.
+        KeyCode::Char(' ') => app.column_grab_toggle(),
+        KeyCode::Enter => {
+            if app.column_grabbed {
+                app.column_drop();
+            } else {
+                app.column_toggle();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.column_grabbed {
+                app.column_move(false);
+            } else {
+                app.column_cursor_next();
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.column_grabbed {
+                app.column_move(true);
+            } else {
+                app.column_cursor_prev();
+            }
+        }
         _ => {}
     }
 }

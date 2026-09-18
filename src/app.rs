@@ -1,5 +1,6 @@
 //! The application state and its logic (independent of rendering).
 
+use crate::columns::Columns;
 use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
 use crate::filters::Filters;
 use crate::model::{Pr, Run};
@@ -102,6 +103,8 @@ pub struct App {
     pub should_quit: bool,
 
     pub filters: Filters,
+    /// Column order and visibility, per tab (key `c`).
+    pub columns: Columns,
     pub repos: Vec<String>,
     /// A refresh asked for while another one was still running (widened with
     /// `Job::merge` if several pile up).
@@ -120,6 +123,16 @@ pub struct App {
     pub filter_panel_open: bool,
     /// Currently focused panel row (index into `FILTER_FIELDS`).
     pub filter_cursor: usize,
+
+    /// Column panel open (key `c`).
+    pub column_panel_open: bool,
+    /// Currently focused panel row (index into the active tab's entries).
+    pub column_cursor: usize,
+    /// Whether the column under the cursor is "grabbed" (key `space`): while
+    /// true, `↑`/`↓` move that column instead of the cursor. There is no
+    /// separate "which column" state — the grabbed column is always the one
+    /// under `column_cursor`.
+    pub column_grabbed: bool,
 
     /// Whether the help screen is shown (key `?`).
     pub show_help: bool,
@@ -149,6 +162,7 @@ impl App {
             spinner_frame: 0,
             should_quit: false,
             filters: Filters::load(),
+            columns: Columns::load(),
             repos: Vec::new(),
             pending_job: None,
             auto_refresh: false,
@@ -157,6 +171,9 @@ impl App {
             input_buffer: String::new(),
             filter_panel_open: false,
             filter_cursor: 0,
+            column_panel_open: false,
+            column_cursor: 0,
+            column_grabbed: false,
             show_help: false,
             active_tab: Tab::Prs,
             runs: Vec::new(),
@@ -378,6 +395,74 @@ impl App {
         }
     }
 
+    // --- column panel ---
+
+    pub fn toggle_column_panel(&mut self) {
+        self.column_panel_open = !self.column_panel_open;
+        // Always reopen at the top: the cursor means nothing while closed.
+        self.column_cursor = 0;
+        // A stale grab would let the next opening move columns when the user
+        // expects to move the cursor.
+        self.column_grabbed = false;
+    }
+    pub fn close_column_panel(&mut self) {
+        self.column_panel_open = false;
+        self.column_grabbed = false;
+    }
+
+    /// Number of rows in the panel = number of columns of the ACTIVE tab.
+    fn column_count(&self) -> usize {
+        match self.active_tab {
+            Tab::Prs => self.columns.prs.entries.len(),
+            Tab::Runs => self.columns.runs.entries.len(),
+        }
+    }
+
+    /// Moves the panel cursor (clamped, without wrapping), like
+    /// `filter_cursor_next` / `filter_cursor_prev` do.
+    pub fn column_cursor_next(&mut self) {
+        self.column_cursor = (self.column_cursor + 1).min(self.column_count() - 1);
+    }
+    pub fn column_cursor_prev(&mut self) {
+        self.column_cursor = self.column_cursor.saturating_sub(1);
+    }
+
+    /// Shows/hides the focused column, then saves.
+    pub fn column_toggle(&mut self) {
+        let i = self.column_cursor;
+        match self.active_tab {
+            Tab::Prs => self.columns.prs.toggle(i),
+            Tab::Runs => self.columns.runs.toggle(i),
+        }
+        self.columns.save();
+    }
+
+    /// Moves the focused column (`up` = towards the left of the table). The
+    /// cursor follows the entry, so moves can be chained.
+    pub fn column_move(&mut self, up: bool) {
+        let i = self.column_cursor;
+        self.column_cursor = match (self.active_tab, up) {
+            (Tab::Prs, true) => self.columns.prs.move_up(i),
+            (Tab::Prs, false) => self.columns.prs.move_down(i),
+            (Tab::Runs, true) => self.columns.runs.move_up(i),
+            (Tab::Runs, false) => self.columns.runs.move_down(i),
+        };
+        self.columns.save();
+    }
+
+    /// Grabs the column under the cursor, or drops it if it is already
+    /// grabbed (key `space`). Grabbing/dropping changes no layout — unlike
+    /// `column_toggle` / `column_move` it must NOT call `self.columns.save()`.
+    pub fn column_grab_toggle(&mut self) {
+        self.column_grabbed = !self.column_grabbed;
+    }
+
+    /// Drops a grabbed column without moving it (`enter` or `esc` while
+    /// grabbed). Same "no save" rule as `column_grab_toggle`.
+    pub fn column_drop(&mut self) {
+        self.column_grabbed = false;
+    }
+
     // --- input mode (author / label) ---
 
     pub fn is_input_mode(&self) -> bool {
@@ -496,6 +581,11 @@ impl App {
         self.active_tab = tab;
         // The panel is shorter on Actions: keep the cursor inside the new slice.
         self.filter_cursor = self.filter_cursor.min(fields_for(tab).len() - 1);
+        // Both column lists hold 8 entries, so a reset is enough here.
+        self.column_cursor = 0;
+        // A stale grab from the previous tab would move the new tab's
+        // columns as soon as the user presses ↑/↓ again.
+        self.column_grabbed = false;
         // First visit to Actions -> load the runs.
         if tab == Tab::Runs && !self.runs_loaded {
             self.refresh();
