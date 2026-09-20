@@ -61,6 +61,15 @@ carries an open PR, so gh-ui fetches a wide window of runs per repo — a busy
 tab empty. With the filter off the tab shows the 20 most recent runs of each
 repo, all branches together.
 
+The same panel offers three more filters on that tab: `status`
+(all/failed/running/success), `event` and `workflow`. Unlike the PR filters
+they never reach `gh` — they narrow the runs already in memory, so they cost
+no request and apply instantly. `event` and `workflow` cycle over the values
+actually present in the loaded runs, so a repo with no cron never offers
+`event:schedule`. They are applied *before* the 20-runs-per-repo cut, which is
+what makes `status:failed` able to surface a failure sitting well past that
+limit. None of the four is saved: the tab reopens on `my PRs` every time.
+
 ## Shortcuts
 
 ### List
@@ -71,6 +80,7 @@ repo, all branches together.
 | `enter`      | open the selected PR in the browser          |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
+| `m`          | Actions tab: toggle the `my PRs` filter      |
 | `r`          | reload now                                    |
 | `a`          | cycle auto-refresh (off, 1mn … 1h)           |
 | `A`          | turn auto-refresh off                        |
@@ -88,8 +98,11 @@ repo, all branches together.
 | `enter`      | edit `author` / `label(s)` (text input)            |
 | `esc`, `f`   | close the panel                                    |
 
-Available filters: `filter` (all/me/review-asked), `since`, `no-draft`,
-`unreviewed`, `not-mine`, `repo`, `author`, `label(s)`.
+Available filters on the **PRs** tab: `filter` (all/me/review-asked), `since`,
+`no-draft`, `unreviewed`, `not-mine`, `repo`, `author`, `label(s)`.
+
+On the **Actions** tab: `repo` (the one filter shared by both tabs), plus
+`only my PRs`, `status`, `event` and `workflow`.
 
 Auto-refresh cycles through `off → 1mn → 5mn → 10mn → 30mn → 1h → off`. It
 starts **off** the first time, and the pace you leave it on is remembered
