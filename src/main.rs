@@ -5,6 +5,7 @@ mod filters;
 mod gh;
 mod model;
 mod refresh;
+mod search;
 mod ui;
 
 use anyhow::Result;
@@ -131,6 +132,9 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('c') => app.toggle_column_panel(),
         KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('/') => app.start_search(),
+        // k9s's reflex: esc drops the search without reopening the prompt.
+        KeyCode::Esc => app.clear_search(),
         KeyCode::Tab => app.next_tab(),
         KeyCode::Char('1') => app.set_tab(Tab::Prs),
         KeyCode::Char('2') => app.set_tab(Tab::Runs),
@@ -207,7 +211,7 @@ fn handle_column_panel_key(app: &mut App, code: KeyCode) {
     }
 }
 
-/// Keys in text input mode (author / label).
+/// Keys in text input mode (author / label / search).
 fn handle_input_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => app.input_cancel(),

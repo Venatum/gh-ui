@@ -6,6 +6,7 @@ use crate::filters::Filters;
 use crate::gh::RUN_DISPLAY_LIMIT;
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
+use crate::search;
 use ratatui::widgets::TableState;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -38,6 +39,9 @@ impl Login {
 pub enum InputKind {
     Author,
     Label,
+    /// The `/` search. Unlike the two above it applies live, on every
+    /// keystroke, and is never sent to `gh`.
+    Search,
 }
 
 /// The rows of the filter panel, in display order.
@@ -140,6 +144,9 @@ pub struct App {
     /// Input in progress (author/label): `None` = not in input mode.
     pub input_kind: Option<InputKind>,
     pub input_buffer: String,
+    /// Free-text search (key `/`), applied client-side to the fetched rows.
+    /// Empty = no search. Transient on purpose: never saved, never restored.
+    pub search: String,
 
     /// Filter panel open (key `f`).
     pub filter_panel_open: bool,
@@ -192,6 +199,7 @@ impl App {
             last_refresh: Instant::now(),
             input_kind: None,
             input_buffer: String::new(),
+            search: String::new(),
             filter_panel_open: false,
             filter_cursor: 0,
             column_panel_open: false,
@@ -312,8 +320,9 @@ impl App {
     fn apply_prs(&mut self, result: FetchResult) -> String {
         self.prs = result.prs;
         self.repos = result.all_repos;
-        self.table_state
-            .select(if self.prs.is_empty() { None } else { Some(0) });
+        // The search survives a reload: the new rows go through it before the
+        // selection is placed, so a refresh can never select a hidden row.
+        self.reset_selection();
         format!(
             "{} PR(s) — {} repo(s){}",
             self.prs.len(),
@@ -328,8 +337,7 @@ impl App {
         self.repos = result.all_repos;
         self.runs_loaded = true;
         let n = self.visible_runs().len();
-        self.run_table_state
-            .select(if n == 0 { None } else { Some(0) });
+        self.reset_selection();
         format!(
             "{n} run(s) — {} repo(s){}",
             result.scanned,
@@ -526,7 +534,54 @@ impl App {
         self.column_grabbed = false;
     }
 
-    // --- input mode (author / label) ---
+    // --- search ---
+
+    /// The PRs the table shows: the fetched list, narrowed by the search.
+    /// The PRs tab's counterpart of `visible_runs`.
+    pub fn visible_prs(&self) -> Vec<&Pr> {
+        search::keep_prs(&self.prs, &self.search)
+    }
+
+    /// Opens the search prompt, pre-filled with the active query so it can be
+    /// refined rather than retyped.
+    pub fn start_search(&mut self) {
+        self.start_input(InputKind::Search);
+    }
+
+    /// Drops the search (esc). A no-op when there is nothing to drop, so esc
+    /// in normal mode costs nothing when no search is active.
+    pub fn clear_search(&mut self) {
+        if self.search.is_empty() {
+            return;
+        }
+        self.search.clear();
+        self.reset_selection();
+    }
+
+    /// Mirrors the prompt into the live query — k9s-style, the list narrows at
+    /// every keystroke and there is nothing to confirm.
+    fn sync_search(&mut self) {
+        if self.input_kind != Some(InputKind::Search) {
+            return;
+        }
+        self.search = self.input_buffer.trim().to_string();
+        self.reset_selection();
+    }
+
+    /// Puts both selections back on the first VISIBLE row (or on nothing when
+    /// the view is empty). Every path that changes what is visible goes
+    /// through here — a load, a search edit, the Actions toggle — so the
+    /// selection can never point at a row the filter just hid.
+    fn reset_selection(&mut self) {
+        let prs = self.visible_prs().len();
+        self.table_state
+            .select(if prs == 0 { None } else { Some(0) });
+        let runs = self.visible_runs().len();
+        self.run_table_state
+            .select(if runs == 0 { None } else { Some(0) });
+    }
+
+    // --- input mode (author / label / search) ---
 
     pub fn is_input_mode(&self) -> bool {
         self.input_kind.is_some()
@@ -537,17 +592,29 @@ impl App {
         self.input_buffer = match kind {
             InputKind::Author => self.filters.author.clone().unwrap_or_default(),
             InputKind::Label => self.filters.labels.join(" "),
+            InputKind::Search => self.search.clone(),
         };
         self.input_kind = Some(kind);
     }
 
     pub fn input_push(&mut self, c: char) {
         self.input_buffer.push(c);
+        self.sync_search();
     }
     pub fn input_backspace(&mut self) {
         self.input_buffer.pop();
+        self.sync_search();
     }
     pub fn input_cancel(&mut self) {
+        // Esc on the search prompt clears the search itself (k9s semantics): a
+        // live filter that survived "cancel" would be a trap.
+        if self.input_kind == Some(InputKind::Search) {
+            self.search.clear();
+            self.input_kind = None;
+            self.input_buffer.clear();
+            self.reset_selection();
+            return;
+        }
         self.input_kind = None;
         self.input_buffer.clear();
     }
@@ -555,6 +622,13 @@ impl App {
     /// Commits the input: applies it to the matching filter, then reloads.
     pub fn input_commit(&mut self) {
         let field = match self.input_kind {
+            // The search is applied keystroke by keystroke: enter only hands
+            // the keyboard back to the list — no save, no refetch.
+            Some(InputKind::Search) => {
+                self.input_kind = None;
+                self.input_buffer.clear();
+                return;
+            }
             Some(InputKind::Author) => {
                 self.filters.set_author(&self.input_buffer);
                 FilterField::Author
@@ -610,7 +684,7 @@ impl App {
     /// Number of rows displayed in the active tab.
     fn active_len(&self) -> usize {
         match self.active_tab {
-            Tab::Prs => self.prs.len(),
+            Tab::Prs => self.visible_prs().len(),
             Tab::Runs => self.visible_runs().len(),
         }
     }
@@ -629,8 +703,7 @@ impl App {
             Tab::Prs => self
                 .table_state
                 .selected()
-                .and_then(|i| self.prs.get(i))
-                .map(|pr| pr.url.clone()),
+                .and_then(|i| self.visible_prs().get(i).map(|pr| pr.url.clone())),
             Tab::Runs => self
                 .run_table_state
                 .selected()
@@ -670,10 +743,8 @@ impl App {
     /// Toggles the "my PRs" filter (no re-fetch: local filtering).
     pub fn toggle_only_pr_runs(&mut self) {
         self.only_pr_runs = !self.only_pr_runs;
-        // The selection may fall outside the view -> reset it to the start if needed.
-        let n = self.visible_runs().len();
-        self.run_table_state
-            .select(if n == 0 { None } else { Some(0) });
+        // The selection may fall outside the view -> put it back at the start.
+        self.reset_selection();
     }
 }
 

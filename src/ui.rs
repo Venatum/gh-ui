@@ -137,8 +137,8 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
     let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
     let rows: Vec<Row<'static>> = app
-        .prs
-        .iter()
+        .visible_prs()
+        .into_iter()
         .map(|pr| Row::new(columns.iter().map(|c| c.cell(pr)).collect::<Vec<_>>()))
         .collect();
 
@@ -229,6 +229,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         let prompt = match kind {
             InputKind::Author => "author",
             InputKind::Label => "label(s)",
+            InputKind::Search => "search",
         };
         let line = Line::from(vec![
             Span::styled(
@@ -237,10 +238,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(format!(" {}", app.input_buffer)),
             Span::styled("▏", Style::new().fg(Color::Yellow)), // cursor
-            Span::styled(
-                "   (enter: confirm · esc: cancel)",
-                Style::new().fg(Color::DarkGray),
-            ),
+            Span::styled(input_hint(kind), Style::new().fg(Color::DarkGray)),
         ]);
         frame.render_widget(Paragraph::new(line), area);
         return;
@@ -265,6 +263,15 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     ));
     spans.push(Span::raw(format!(" {}", HELP_HINT.1)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The tail of the prompt line. The search needs its own: it is applied live,
+/// and esc CLEARS it rather than merely abandoning an edit.
+fn input_hint(kind: InputKind) -> &'static str {
+    match kind {
+        InputKind::Search => "   (live · enter: keep · esc: clear)",
+        InputKind::Author | InputKind::Label => "   (enter: confirm · esc: cancel)",
+    }
 }
 
 /// The navigable filter panel, centered over the interface.
@@ -601,6 +608,18 @@ mod tests {
             text.contains("auto-refresh: off/1mn/5mn/10mn/30mn/1h \u{b7} A: off"),
             "the auto-refresh help row must fit HELP_WIDTH without being cut"
         );
+    }
+
+    /// The search prompt must not promise "confirm/cancel": it is live, and
+    /// its esc clears the query instead of restoring the previous one.
+    #[test]
+    fn the_search_prompt_announces_its_own_esc() {
+        assert_eq!(
+            input_hint(InputKind::Search),
+            "   (live · enter: keep · esc: clear)"
+        );
+        assert_eq!(input_hint(InputKind::Author), input_hint(InputKind::Label));
+        assert!(input_hint(InputKind::Author).contains("cancel"));
     }
 
     /// I1: neither of the column panel's two hint lines (browsing / grabbed)
