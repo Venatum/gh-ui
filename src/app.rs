@@ -299,10 +299,15 @@ impl App {
             self.refresh_job(job);
         }
 
-        // Auto-refresh: if a pace is set, no load is in progress and the
-        // interval has elapsed, we relaunch.
+        // Auto-refresh: if a pace is set, no load is in progress, no prompt is
+        // open and the interval has elapsed, we relaunch. Holding it while the
+        // user types keeps a reload from resetting the selection under their
+        // fingers — and `last_refresh` is deliberately NOT touched here, so the
+        // reload fires on the first tick after the prompt closes rather than
+        // skipping a beat.
         if let Some(interval) = self.auto_refresh.interval()
             && !self.loading
+            && !self.is_input_mode()
             && self.last_refresh.elapsed() >= interval
         {
             self.refresh();
