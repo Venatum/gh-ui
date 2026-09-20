@@ -6,9 +6,10 @@ use crate::filters::Filters;
 use crate::gh::RUN_DISPLAY_LIMIT;
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
+use crate::runfilters::{self, RunFilters};
 use crate::search;
 use ratatui::widgets::TableState;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
@@ -57,6 +58,12 @@ pub enum FilterField {
     Label,
     /// Actions tab only: show the runs of my PRs' branches only.
     OnlyPrRuns,
+    /// Actions tab only: keep the runs that failed / are running / succeeded.
+    RunStatus,
+    /// Actions tab only: keep the runs triggered by one event.
+    RunEvent,
+    /// Actions tab only: keep the runs of one workflow.
+    RunWorkflow,
 }
 
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
@@ -71,8 +78,14 @@ const PR_FIELDS: [FilterField; 8] = [
     FilterField::Label,
 ];
 
-/// Panel rows on the Actions tab: the shared filter, plus its own toggle.
-const RUN_FIELDS: [FilterField; 2] = [FilterField::Repo, FilterField::OnlyPrRuns];
+/// Panel rows on the Actions tab: the shared filter, plus its own four.
+const RUN_FIELDS: [FilterField; 5] = [
+    FilterField::Repo,
+    FilterField::OnlyPrRuns,
+    FilterField::RunStatus,
+    FilterField::RunEvent,
+    FilterField::RunWorkflow,
+];
 
 /// The panel rows for `tab`. The cursor is an index into THIS slice, so its
 /// length changes with the tab (hence the clamping in `set_tab`).
@@ -95,7 +108,10 @@ pub fn section_of(field: FilterField) -> &'static str {
         return "Common";
     }
     match field {
-        FilterField::OnlyPrRuns => "Actions",
+        FilterField::OnlyPrRuns
+        | FilterField::RunStatus
+        | FilterField::RunEvent
+        | FilterField::RunWorkflow => "Actions",
         _ => "PRs",
     }
 }
@@ -170,8 +186,9 @@ pub struct App {
     pub active_tab: Tab,
     pub runs: Vec<Run>,
     pub run_table_state: TableState,
-    /// Filter "only the runs of my PRs' branches". Checked by default.
-    pub only_pr_runs: bool,
+    /// The Actions tab's own filters (branch toggle, status, event, workflow).
+    /// Local to the view: never sent to `gh`, never saved to disk.
+    pub run_filters: RunFilters,
     /// Have we already loaded the runs at least once?
     runs_loaded: bool,
 
@@ -209,7 +226,7 @@ impl App {
             active_tab: Tab::Prs,
             runs: Vec::new(),
             run_table_state: TableState::default(),
-            only_pr_runs: true,
+            run_filters: RunFilters::default(),
             runs_loaded: false,
             tx,
             rx,
@@ -432,9 +449,27 @@ impl App {
                     self.filters.cycle_repo_prev(&self.repos);
                 }
             }
-            // A view filter: local, so no re-fetch and nothing saved to disk.
+            // View filters: local, so no re-fetch and nothing saved to disk.
             FilterField::OnlyPrRuns => {
-                self.toggle_only_pr_runs();
+                self.run_filters.toggle_only_pr_runs();
+                self.reset_selection();
+                return;
+            }
+            FilterField::RunStatus => {
+                self.run_filters.cycle_status(forward);
+                self.reset_selection();
+                return;
+            }
+            FilterField::RunEvent => {
+                let values = runfilters::events_of(&self.runs);
+                self.run_filters.cycle_event(&values, forward);
+                self.reset_selection();
+                return;
+            }
+            FilterField::RunWorkflow => {
+                let values = runfilters::workflows_of(&self.runs);
+                self.run_filters.cycle_workflow(&values, forward);
+                self.reset_selection();
                 return;
             }
             // text fields are edited with Enter, not with ←/→
@@ -743,7 +778,7 @@ impl App {
     /// narrowed by the "only my PRs' branches" toggle.
     pub fn branch_runs(&self) -> Vec<&Run> {
         let branches: HashSet<&str> = self.prs.iter().map(|p| p.head_ref_name.as_str()).collect();
-        filter_runs(&self.runs, &branches, self.only_pr_runs)
+        runfilters::keep(&self.runs, &branches, &self.run_filters, RUN_DISPLAY_LIMIT)
     }
 
     /// What the Actions table shows: `branch_runs`, narrowed by the search.
@@ -752,9 +787,10 @@ impl App {
         search::keep_runs(self.branch_runs(), &self.search)
     }
 
-    /// Toggles the "my PRs" filter (no re-fetch: local filtering).
+    /// Toggles the "my PRs" filter (no re-fetch: local filtering). Bound to
+    /// `m`, which is why it lives here as well as in the panel.
     pub fn toggle_only_pr_runs(&mut self) {
-        self.only_pr_runs = !self.only_pr_runs;
+        self.run_filters.toggle_only_pr_runs();
         // The selection may fall outside the view -> put it back at the start.
         self.reset_selection();
     }
@@ -769,57 +805,9 @@ fn errors_suffix(errors: usize) -> String {
     }
 }
 
-/// Keeps the runs whose branch is in `pr_branches`. When `!only`, keeps the
-/// most recent `RUN_DISPLAY_LIMIT` runs of each repo instead, whatever their
-/// branch: `fetch_runs` pulls a much wider window than that so the `only` pass
-/// has something to cross-reference, but the unfiltered view stays the short
-/// "what just ran here" list it has always been.
-fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> Vec<&'a Run> {
-    if !only {
-        return most_recent_per_repo(runs, RUN_DISPLAY_LIMIT);
-    }
-    runs.iter()
-        .filter(|r| pr_branches.contains(r.head_branch.as_str()))
-        .collect()
-}
-
-/// The first `cap` runs of each repo. `runs` arrives grouped by repo and
-/// ordered most recent first inside a repo (see `fetch::load_runs`), so taking
-/// the first ones is taking the most recent ones.
-fn most_recent_per_repo(runs: &[Run], cap: usize) -> Vec<&Run> {
-    let mut kept: HashMap<&str, usize> = HashMap::new();
-    runs.iter()
-        .filter(|r| {
-            let n = kept.entry(r.repo.as_str()).or_insert(0);
-            *n += 1;
-            *n <= cap
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Run;
-
-    fn run(branch: &str) -> Run {
-        run_in("r", branch)
-    }
-
-    fn run_in(repo: &str, branch: &str) -> Run {
-        Run {
-            workflow_name: "CI".into(),
-            display_title: "t".into(),
-            head_branch: branch.into(),
-            status: "completed".into(),
-            conclusion: "success".into(),
-            event: "push".into(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            number: 1,
-            url: "u".into(),
-            repo: repo.into(),
-        }
-    }
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -841,8 +829,17 @@ mod tests {
         assert_eq!(prs[0], FilterField::Repo);
         assert_eq!(runs[0], FilterField::Repo);
 
-        // The Actions tab only exposes Repo + its own toggle.
-        assert_eq!(runs, [FilterField::Repo, FilterField::OnlyPrRuns]);
+        // The Actions tab exposes Repo + its own four view filters.
+        assert_eq!(
+            runs,
+            [
+                FilterField::Repo,
+                FilterField::OnlyPrRuns,
+                FilterField::RunStatus,
+                FilterField::RunEvent,
+                FilterField::RunWorkflow,
+            ]
+        );
 
         // The PR-only filters never show up on the Actions tab.
         assert!(prs.contains(&FilterField::Mode));
@@ -854,6 +851,8 @@ mod tests {
         assert_eq!(section_of(FilterField::Repo), "Common");
         assert_eq!(section_of(FilterField::Mode), "PRs");
         assert_eq!(section_of(FilterField::OnlyPrRuns), "Actions");
+        assert_eq!(section_of(FilterField::RunStatus), "Actions");
+        assert_eq!(section_of(FilterField::RunWorkflow), "Actions");
     }
 
     #[test]
@@ -872,6 +871,7 @@ mod tests {
         assert!(is_common(FilterField::Repo));
         assert!(!is_common(FilterField::Mode));
         assert!(!is_common(FilterField::OnlyPrRuns));
+        assert!(!is_common(FilterField::RunStatus));
     }
 
     #[test]
@@ -913,60 +913,5 @@ mod tests {
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
         assert_eq!(Tab::Runs.next(), Tab::Prs);
-    }
-
-    #[test]
-    fn filter_runs_by_pr_branches() {
-        let runs = vec![run("feature/x"), run("main"), run("feature/y")];
-        let mut branches = std::collections::HashSet::new();
-        branches.insert("feature/x");
-        branches.insert("feature/y");
-
-        // only = true: keep only the runs on a PR branch.
-        let kept = filter_runs(&runs, &branches, true);
-        assert_eq!(kept.len(), 2);
-        assert!(kept.iter().all(|r| r.head_branch != "main"));
-
-        // only = false: keep everything.
-        assert_eq!(filter_runs(&runs, &branches, false).len(), 3);
-    }
-
-    #[test]
-    fn the_unfiltered_view_keeps_the_most_recent_runs_of_each_repo() {
-        // `fetch_runs` pulls a wide window so the "my PRs" cross-reference has
-        // something to work with. With the filter off the user still wants the
-        // short list he has always had: the most recent runs of each repo.
-        let mut runs: Vec<Run> = (0..30).map(|i| run_in("alpha", &format!("b{i}"))).collect();
-        runs.extend((0..5).map(|i| run_in("beta", &format!("c{i}"))));
-
-        let branches: HashSet<&str> = HashSet::new();
-        let kept = filter_runs(&runs, &branches, false);
-
-        assert_eq!(
-            kept.iter().filter(|r| r.repo == "alpha").count(),
-            RUN_DISPLAY_LIMIT
-        );
-        // A repo with fewer runs than the limit keeps all of them.
-        assert_eq!(kept.iter().filter(|r| r.repo == "beta").count(), 5);
-        // And the ones kept are the most recent, i.e. the first `gh` returned.
-        assert_eq!(kept[0].head_branch, "b0");
-        assert_eq!(kept[RUN_DISPLAY_LIMIT - 1].head_branch, "b19");
-    }
-
-    #[test]
-    fn pr_runs_survive_a_base_branch_that_floods_the_window() {
-        // The bug: a busy `develop` used to fill the whole fetch window, so the
-        // cross-reference found nothing and the tab looked empty. The wider
-        // window must reach the PR runs sitting behind that flood — and the
-        // display limit must not cut them off again.
-        let mut runs: Vec<Run> = (0..40).map(|_| run_in("alpha", "develop")).collect();
-        runs.push(run_in("alpha", "feature/x"));
-
-        let mut branches: HashSet<&str> = HashSet::new();
-        branches.insert("feature/x");
-
-        let kept = filter_runs(&runs, &branches, true);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].head_branch, "feature/x");
     }
 }

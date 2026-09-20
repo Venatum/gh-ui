@@ -4,6 +4,7 @@
 use crate::app::{App, FilterField, InputKind, Tab, section_of};
 use crate::columns::{Column, ColumnLayout, PrColumn, RunColumn};
 use crate::filters::Filters;
+use crate::runfilters::RunFilters;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -109,9 +110,9 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Tab::Runs => Span::styled(
             format!(
-                "{} · my PRs: {}   (m to toggle)",
+                "{} · {}   (m to toggle)",
                 app.filters.summary_common(),
-                if app.only_pr_runs { "[x]" } else { "[ ]" }
+                app.run_filters.summary()
             ),
             Style::new().fg(Color::DarkGray),
         ),
@@ -311,7 +312,7 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         let text = format!(
             "{marker}{:<11} {}",
             field_name(field),
-            field_value(field, f, app.only_pr_runs)
+            field_value(field, f, &app.run_filters)
         );
         lines.push(if focused {
             Line::from(Span::styled(
@@ -418,14 +419,20 @@ fn field_name(field: FilterField) -> &'static str {
         FilterField::Author => "Author",
         FilterField::Label => "Label",
         FilterField::OnlyPrRuns => "Only my PRs",
+        FilterField::RunStatus => "Status",
+        FilterField::RunEvent => "Event",
+        FilterField::RunWorkflow => "Workflow",
     }
 }
 
 /// The displayed value of a field: cycle "◂ x ▸", box "[x]", or text.
-fn field_value(field: FilterField, f: &Filters, only_pr_runs: bool) -> String {
+fn field_value(field: FilterField, f: &Filters, rf: &RunFilters) -> String {
     let empty = "(empty)  ⏎ edit";
     match field {
-        FilterField::OnlyPrRuns => toggle_box(only_pr_runs),
+        FilterField::OnlyPrRuns => toggle_box(rf.only_pr_runs),
+        FilterField::RunStatus => format!("◂ {} ▸", rf.status.label()),
+        FilterField::RunEvent => format!("◂ {} ▸", rf.event.as_deref().unwrap_or("all")),
+        FilterField::RunWorkflow => format!("◂ {} ▸", rf.workflow.as_deref().unwrap_or("all")),
         FilterField::Mode => format!("◂ {} ▸", f.filter.label()),
         FilterField::Since => format!("◂ {} ▸", f.since.label()),
         FilterField::NoDraft => toggle_box(f.no_draft),
@@ -469,7 +476,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab, 1/2", "switch tab (PRs / Actions)"),
-        help_row("m", "Actions tab: filter on my PRs"),
+        help_row("m", "Actions tab: my PRs (f: status/event/workflow)"),
         help_row("q", "quit"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
@@ -631,6 +638,39 @@ mod tests {
         assert!(
             text.contains("auto-refresh: off/1mn/5mn/10mn/30mn/1h \u{b7} A: off"),
             "the auto-refresh help row must fit HELP_WIDTH without being cut"
+        );
+    }
+
+    /// An unset `event`/`workflow` reads `all`, not `(empty)`: they are
+    /// cycles like `repo`, not text fields like `author`, and "all" is a real
+    /// value of the cycle rather than a prompt to go and type something.
+    #[test]
+    fn an_unset_run_cycle_shows_all() {
+        let f = Filters::default();
+        let rf = RunFilters::default();
+
+        assert_eq!(field_value(FilterField::RunEvent, &f, &rf), "◂ all ▸");
+        assert_eq!(field_value(FilterField::RunWorkflow, &f, &rf), "◂ all ▸");
+        assert_eq!(field_value(FilterField::RunStatus, &f, &rf), "◂ all ▸");
+
+        let rf = RunFilters {
+            event: Some("push".into()),
+            ..rf
+        };
+        assert_eq!(field_value(FilterField::RunEvent, &f, &rf), "◂ push ▸");
+    }
+
+    /// The Actions row names the three filters that only live in the panel:
+    /// nothing else in the UI tells you `status`, `event` and `workflow` are
+    /// behind `f`. Rendered for real, since `Paragraph` would clip the tail —
+    /// the part that carries the information — without a word.
+    #[test]
+    fn the_actions_help_row_names_the_panel_filters() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains("Actions tab: my PRs (f: status/event/workflow)"),
+            "the Actions help row must fit HELP_WIDTH without being cut"
         );
     }
 
