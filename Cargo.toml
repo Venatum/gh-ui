@@ -10,7 +10,8 @@ repository = "https://github.com/Venatum/gh-ui"
 homepage = "https://github.com/Venatum/gh-ui"
 keywords = ["github", "pull-request", "tui", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["/.github", "/packaging", "/.claude", "/.idea", "/TUTO.md"]
+# Distributed as a `gh` extension only, never as a crate.
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"
