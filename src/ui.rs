@@ -96,8 +96,9 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("Actions", app.active_tab == Tab::Runs),
     ]);
 
-    // Line 3: depending on the tab, PRs filters summary OR the runs toggle state.
-    let subtitle = match app.active_tab {
+    // Line 3: depending on the tab, PRs filters summary OR the runs toggle
+    // state — plus the search chip, which belongs to both.
+    let mut subtitle = vec![match app.active_tab {
         Tab::Prs => Span::styled(
             format!(
                 "{} · {}",
@@ -114,7 +115,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Style::new().fg(Color::DarkGray),
         ),
+    }];
+
+    // Counted against the tab's own list: the PRs tab compares with everything
+    // fetched, the Actions tab with what its branch toggle already kept.
+    let (shown, total) = match app.active_tab {
+        Tab::Prs => (app.visible_prs().len(), app.prs.len()),
+        Tab::Runs => (app.visible_runs().len(), app.branch_runs().len()),
     };
+    if let Some(chip) = search_summary(&app.search, shown, total) {
+        subtitle.push(Span::raw("  "));
+        subtitle.push(Span::styled(chip, Style::new().fg(Color::Yellow)));
+    }
 
     let header =
         Paragraph::new(vec![Line::from(top), tabs, Line::from(subtitle)]).block(Block::bordered());
@@ -488,6 +500,15 @@ fn help_row(key: &'static str, desc: &'static str) -> Line<'static> {
     ])
 }
 
+/// The "search:…" chip of the header, or `None` when no search is active.
+/// `shown`/`total` are deliberate: the search narrows the rows ALREADY
+/// fetched (at most `PR_LIMIT` per repo), so the size of the corpus has to
+/// stay on screen.
+fn search_summary(query: &str, shown: usize, total: usize) -> Option<String> {
+    let query = query.trim();
+    (!query.is_empty()).then(|| format!("search:\"{query}\" {shown}/{total}"))
+}
+
 /// Spaces needed to push a `trailing`-wide span against the right edge of a
 /// bordered header `width` columns wide, whose content already occupies
 /// `used`. `None` when the two would not fit with at least one space between
@@ -608,6 +629,20 @@ mod tests {
             text.contains("auto-refresh: off/1mn/5mn/10mn/30mn/1h \u{b7} A: off"),
             "the auto-refresh help row must fit HELP_WIDTH without being cut"
         );
+    }
+
+    /// The chip must state BOTH the query and how much of the fetched list it
+    /// is hiding: the search is client-side, so `3/57` is what tells the user
+    /// the corpus is the 50-per-repo window rather than all of GitHub.
+    #[test]
+    fn the_search_chip_reports_the_query_and_the_counts() {
+        assert_eq!(
+            search_summary("api", 3, 57).as_deref(),
+            Some("search:\"api\" 3/57")
+        );
+        // No search -> no chip at all, so the header line stays clean.
+        assert_eq!(search_summary("", 57, 57), None);
+        assert_eq!(search_summary("   ", 57, 57), None);
     }
 
     /// The search prompt must not promise "confirm/cancel": it is live, and
