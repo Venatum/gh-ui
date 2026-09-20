@@ -734,10 +734,17 @@ impl App {
 
     // --- runs view ---
 
-    /// The displayed runs view: filtered on the PR branches if checked.
-    pub fn visible_runs(&self) -> Vec<&Run> {
+    /// The runs the Actions tab holds before the search: the fetched runs,
+    /// narrowed by the "only my PRs' branches" toggle.
+    pub fn branch_runs(&self) -> Vec<&Run> {
         let branches: HashSet<&str> = self.prs.iter().map(|p| p.head_ref_name.as_str()).collect();
         filter_runs(&self.runs, &branches, self.only_pr_runs)
+    }
+
+    /// What the Actions table shows: `branch_runs`, narrowed by the search.
+    /// The two filters compose — branch first, then text.
+    pub fn visible_runs(&self) -> Vec<&Run> {
+        search::keep_runs(self.branch_runs(), &self.search)
     }
 
     /// Toggles the "my PRs" filter (no re-fetch: local filtering).

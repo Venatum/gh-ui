@@ -1,7 +1,7 @@
 //! Free-text search over the rows already fetched. Purely client-side: it
 //! narrows what is on screen, it never re-runs `gh`.
 
-use crate::model::Pr;
+use crate::model::{Pr, Run};
 
 /// Does `haystack` contain `query`, ignoring case? A blank query matches
 /// everything: emptying the prompt must show the whole list again, not none
@@ -39,10 +39,28 @@ pub fn keep_prs<'a>(prs: &'a [Pr], query: &str) -> Vec<&'a Pr> {
         .collect()
 }
 
+/// The text a run is searched on. Same rule as `pr_haystack`: a fixed set of
+/// fields, whatever the columns panel currently shows.
+pub fn run_haystack(run: &Run) -> String {
+    format!(
+        "{} #{} {} {} {} {}",
+        run.repo, run.number, run.workflow_name, run.head_branch, run.display_title, run.event
+    )
+}
+
+/// The runs matching `query`. Takes the view the Actions tab has already built
+/// (its "only my PRs' branches" toggle runs first), so the two filters
+/// compose instead of competing.
+pub fn keep_runs<'a>(runs: Vec<&'a Run>, query: &str) -> Vec<&'a Run> {
+    runs.into_iter()
+        .filter(|run| matches(query, &run_haystack(run)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Author, Label, Pr};
+    use crate::model::{Author, Label, Pr, Run};
 
     /// A PR with the fields the search looks at, and plausible filler for the
     /// rest. Written out rather than parsed from JSON so each test can name
@@ -64,6 +82,21 @@ mod tests {
                 name: "bug".to_string(),
             }],
             head_ref_name: branch.to_string(),
+            repo: repo.to_string(),
+        }
+    }
+
+    fn run(number: u64, workflow: &str, branch: &str, title: &str, repo: &str) -> Run {
+        Run {
+            workflow_name: workflow.to_string(),
+            display_title: title.to_string(),
+            head_branch: branch.to_string(),
+            status: "completed".to_string(),
+            conclusion: "success".to_string(),
+            event: "push".to_string(),
+            created_at: "2026-09-19T10:00:00Z".to_string(),
+            number,
+            url: format!("https://example.test/run/{number}"),
             repo: repo.to_string(),
         }
     }
@@ -125,5 +158,38 @@ mod tests {
         assert_eq!(keep_prs(&prs, "").len(), 3);
         // No match is an empty view, not a panic.
         assert!(keep_prs(&prs, "zzz").is_empty());
+    }
+
+    #[test]
+    fn the_run_haystack_covers_workflow_branch_title_and_event() {
+        let hay = run_haystack(&run(
+            7,
+            "CI",
+            "feature/ISSUE-1",
+            "guard the payload",
+            "hello-world",
+        ));
+
+        assert!(matches("ci", &hay), "got {hay}");
+        assert!(matches("feature/api-1", &hay), "got {hay}");
+        assert!(matches("guard", &hay), "got {hay}");
+        assert!(matches("push", &hay), "got {hay}");
+        assert!(matches("hello-world", &hay), "got {hay}");
+        assert!(matches("#7", &hay), "got {hay}");
+    }
+
+    #[test]
+    fn keep_runs_narrows_the_already_filtered_view() {
+        let runs = [
+            run(1, "CI", "feature/a", "first", "api"),
+            run(2, "release", "main", "second", "api"),
+        ];
+        // It takes the branch-filtered view the Actions tab already built,
+        // hence a Vec of references rather than a slice of values.
+        let view: Vec<&Run> = runs.iter().collect();
+
+        assert_eq!(keep_runs(view.clone(), "release").len(), 1);
+        assert_eq!(keep_runs(view.clone(), "").len(), 2);
+        assert!(keep_runs(view, "zzz").is_empty());
     }
 }
