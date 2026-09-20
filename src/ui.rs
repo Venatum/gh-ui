@@ -174,6 +174,55 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.run_table_state);
 }
 
+/// The footer shortcuts, in the order they matter. `?` is not in the list: it
+/// is appended separately and never dropped, because it is how the user
+/// reaches everything the footer had to cut.
+const HINTS: [(&str, &str); 8] = [
+    ("↑↓", "nav"),
+    ("enter", "open"),
+    ("tab/1/2", "tab"),
+    ("f", "filters"),
+    ("c", "columns"),
+    ("r", "refresh"),
+    ("a", "auto"),
+    ("q", "quit"),
+];
+
+/// Always rendered, always last.
+const HELP_HINT: (&str, &str) = ("?", "help");
+
+/// Columns one hint occupies: a `" key "` chip plus `" label  "`.
+fn hint_width((key, label): (&str, &str)) -> usize {
+    key.chars().count() + label.chars().count() + 5
+}
+
+/// The hints that fit in `width` columns, plus whether any were dropped.
+///
+/// The full row is 117 columns wide, so on an 80-column terminal it used to be
+/// silently clipped mid-word — and what fell off the end was `enter`, `?` and
+/// `q`, the three a lost user needs most. Now we drop whole hints from the
+/// tail, mark the cut with `…`, and always keep `?`.
+fn fitting_hints(width: usize) -> (Vec<(&'static str, &'static str)>, bool) {
+    let help = hint_width(HELP_HINT);
+    if HINTS.iter().copied().map(hint_width).sum::<usize>() + help <= width {
+        return (HINTS.to_vec(), false);
+    }
+
+    // "… " sits between the kept hints and `?`, so it is part of the budget.
+    let budget = width.saturating_sub(help + 2);
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for hint in HINTS {
+        let w = hint_width(hint);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        kept.push(hint);
+    }
+    (kept, true)
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     // In input mode, the footer becomes a text prompt.
     if let Some(kind) = app.input_kind {
@@ -198,25 +247,23 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Otherwise, a compact footer; the full detail is in the help (?).
-    let hints = [
-        ("↑↓", "nav"),
-        ("tab/1/2", "tab"),
-        ("f", "filters"),
-        ("c", "columns"),
-        ("r", "refresh"),
-        ("a", "auto"),
-        ("enter", "open"),
-        ("?", "help"),
-        ("q", "quit"),
-    ];
+    let (hints, cut) = fitting_hints(area.width as usize);
     let mut spans = Vec::new();
     for (key, label) in hints {
         spans.push(Span::styled(
             format!(" {key} "),
             Style::new().fg(Color::Black).bg(Color::Cyan),
         ));
-        spans.push(Span::raw(format!(" {label}   ")));
+        spans.push(Span::raw(format!(" {label}  ")));
     }
+    if cut {
+        spans.push(Span::styled("… ", Style::new().fg(Color::DarkGray)));
+    }
+    spans.push(Span::styled(
+        format!(" {} ", HELP_HINT.0),
+        Style::new().fg(Color::Black).bg(Color::Cyan),
+    ));
+    spans.push(Span::raw(format!(" {}", HELP_HINT.1)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -511,6 +558,36 @@ mod tests {
         assert_eq!(right_align_padding(22, 12, 8), None);
         // A header narrower than its own borders must not panic.
         assert_eq!(right_align_padding(1, 0, 8), None);
+    }
+
+    #[test]
+    fn a_wide_terminal_keeps_every_footer_hint() {
+        let (hints, cut) = fitting_hints(200);
+        assert_eq!(hints.len(), HINTS.len());
+        assert!(!cut);
+    }
+
+    #[test]
+    fn an_80_column_footer_drops_hints_instead_of_clipping_them() {
+        let (hints, cut) = fitting_hints(80);
+
+        assert!(cut, "the full row is 117 columns, it cannot fit 80");
+        // Whole hints are dropped, and what is kept is the head of the list.
+        assert_eq!(hints, HINTS[..hints.len()].to_vec());
+
+        // Everything rendered fits: the kept hints, "… ", and `?` itself.
+        let rendered: usize =
+            hints.iter().copied().map(hint_width).sum::<usize>() + 2 + hint_width(HELP_HINT);
+        assert!(rendered <= 80, "rendered {rendered} columns in 80");
+    }
+
+    #[test]
+    fn help_survives_a_terminal_too_narrow_for_anything_else() {
+        // `?` is appended unconditionally, so a tiny width keeps no hint at
+        // all rather than panicking on the budget subtraction.
+        let (hints, cut) = fitting_hints(4);
+        assert!(hints.is_empty());
+        assert!(cut);
     }
 
     /// The auto-refresh row is the widest one in the help, and it grew when
