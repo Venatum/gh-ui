@@ -4,14 +4,12 @@ use crate::columns::Columns;
 use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
 use crate::filters::Filters;
 use crate::model::{Pr, Run};
+use crate::refresh::{AutoRefresh, RefreshSettings};
 use ratatui::widgets::TableState;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
-
-/// Interval of the auto-refresh when it is enabled.
-const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+use std::time::Instant;
 
 /// Which text field we are currently entering (prompt mode).
 #[derive(Clone, Copy, PartialEq)]
@@ -110,8 +108,8 @@ pub struct App {
     /// `Job::merge` if several pile up).
     pending_job: Option<Job>,
 
-    /// Auto-refresh: disabled by default (key `a`).
-    pub auto_refresh: bool,
+    /// Auto-refresh pace, cycled with key `a`. `Off` = disabled.
+    pub auto_refresh: AutoRefresh,
     /// Time of the last load start (to pace the auto-refresh).
     last_refresh: Instant,
 
@@ -165,7 +163,7 @@ impl App {
             columns: Columns::load(),
             repos: Vec::new(),
             pending_job: None,
-            auto_refresh: false,
+            auto_refresh: RefreshSettings::load().auto_refresh,
             last_refresh: Instant::now(),
             input_kind: None,
             input_buffer: String::new(),
@@ -250,11 +248,11 @@ impl App {
             self.refresh_job(job);
         }
 
-        // Auto-refresh: if enabled, no load is in progress and the interval has
-        // elapsed, we relaunch.
-        if self.auto_refresh
+        // Auto-refresh: if a pace is set, no load is in progress and the
+        // interval has elapsed, we relaunch.
+        if let Some(interval) = self.auto_refresh.interval()
             && !self.loading
-            && self.last_refresh.elapsed() >= AUTO_REFRESH_INTERVAL
+            && self.last_refresh.elapsed() >= interval
         {
             self.refresh();
         }
@@ -298,12 +296,34 @@ impl App {
 
     // --- auto-refresh ---
 
-    pub fn toggle_auto_refresh(&mut self) {
-        self.auto_refresh = !self.auto_refresh;
-        // On enabling, we refresh right away to start clean.
-        if self.auto_refresh {
+    /// Advances to the next pace (`off → 1mn → … → 1h → off`) and remembers it.
+    pub fn cycle_auto_refresh(&mut self) {
+        let was_off = self.auto_refresh == AutoRefresh::Off;
+        self.auto_refresh = self.auto_refresh.next();
+        RefreshSettings {
+            auto_refresh: self.auto_refresh,
+        }
+        .save();
+        // Leaving `Off` refreshes right away, to start clean. Moving from one
+        // pace to another only changes the tempo: `last_refresh` is untouched,
+        // so shortening the interval can make the next tick fire immediately.
+        if was_off && self.auto_refresh != AutoRefresh::Off {
             self.refresh();
         }
+    }
+
+    /// Turns the auto-refresh off in one keystroke (key `A`), whatever the
+    /// current pace — cycling all the way round with `a` would take up to five
+    /// presses. A no-op when it is already off, so we skip the pointless save.
+    pub fn disable_auto_refresh(&mut self) {
+        if self.auto_refresh == AutoRefresh::Off {
+            return;
+        }
+        self.auto_refresh = AutoRefresh::Off;
+        RefreshSettings {
+            auto_refresh: self.auto_refresh,
+        }
+        .save();
     }
 
     // --- filter panel ---

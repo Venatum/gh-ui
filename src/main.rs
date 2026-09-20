@@ -4,6 +4,7 @@ mod fetch;
 mod filters;
 mod gh;
 mod model;
+mod refresh;
 mod ui;
 
 use anyhow::Result;
@@ -123,7 +124,8 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('j') | KeyCode::Down => app.next(),
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
         KeyCode::Char('r') => app.refresh(),
-        KeyCode::Char('a') => app.toggle_auto_refresh(),
+        KeyCode::Char('a') => app.cycle_auto_refresh(),
+        KeyCode::Char('A') => app.disable_auto_refresh(),
         KeyCode::Enter => open_selected(app),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('c') => app.toggle_column_panel(),

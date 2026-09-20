@@ -57,7 +57,8 @@ PRs.
 | `↑/↓`, `j/k` | navigate the list                            |
 | `enter`      | open the selected PR in the browser          |
 | `r`          | reload now                                    |
-| `a`          | enable / disable auto-refresh (60 s)         |
+| `a`          | cycle auto-refresh (off, 1mn … 1h)           |
+| `A`          | turn auto-refresh off                        |
 | `f`          | open the filters panel                       |
 | `c`          | open the columns panel                       |
 | `?`          | help screen                                  |
@@ -75,7 +76,10 @@ PRs.
 Available filters: `filter` (all/me/review-asked), `since`, `no-draft`,
 `unreviewed`, `not-mine`, `repo`, `author`, `label(s)`.
 
-Auto-refresh is **disabled by default**.
+Auto-refresh cycles through `off → 1mn → 5mn → 10mn → 30mn → 1h → off`. It
+starts **off** the first time, and the pace you leave it on is remembered
+between runs (in `~/.config/gh-ui/refresh.json`). `A` turns it off in one
+keystroke, whatever the current pace.
 
 ### Columns panel (`c`)
 

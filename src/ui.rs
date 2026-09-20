@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Row, Table};
 /// Width (in columns) of the centered overlays.
 const FILTER_PANEL_WIDTH: u16 = 52;
 const COLUMN_PANEL_WIDTH: u16 = 54;
-const HELP_WIDTH: u16 = 60;
+const HELP_WIDTH: u16 = 64;
 
 /// The column panel's hint, while browsing (the default mode). Named so a
 /// test can build the exact same `Line` the panel renders without needing an
@@ -62,8 +62,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     top.push(Span::raw(app.status.clone()));
-    if app.auto_refresh {
-        top.push(Span::styled("   ⟳ auto 60s", Style::new().fg(Color::Green)));
+    if app.auto_refresh.interval().is_some() {
+        top.push(Span::styled(
+            format!("   ⟳ auto {}", app.auto_refresh.label()),
+            Style::new().fg(Color::Green),
+        ));
     }
 
     // Line 2: the tabs, [ PRs ] [ Actions ], the active one highlighted.
@@ -383,7 +386,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("↑/↓, j/k", "navigate the list"),
         help_row("enter", "open the PR in the browser"),
         help_row("r", "reload now"),
-        help_row("a", "toggle auto-refresh (60s)"),
+        help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f", "open the filter panel"),
         help_row("c", "open the columns panel"),
         help_row("tab, 1/2", "switch tab (PRs / Actions)"),
@@ -466,6 +469,19 @@ mod tests {
         assert!(
             text.contains("(any key to close)"),
             "the help popup must fit an 80x24 terminal and show its closing hint"
+        );
+    }
+
+    /// The auto-refresh row is the widest one in the help, and it grew when
+    /// the pace became cyclable. Renders it for real so a longer label (or a
+    /// narrower `HELP_WIDTH`) can never silently clip it.
+    #[test]
+    fn the_auto_refresh_help_row_is_not_truncated() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains("auto-refresh: off/1mn/5mn/10mn/30mn/1h \u{b7} A: off"),
+            "the auto-refresh help row must fit HELP_WIDTH without being cut"
         );
     }
 
