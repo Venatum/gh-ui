@@ -1,6 +1,6 @@
 [package]
 name = "gh-ui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A terminal UI to explore GitHub pull requests across every repo in a folder, htop-style"
