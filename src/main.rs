@@ -37,6 +37,7 @@ fn main() -> Result<()> {
 
     let mut app = App::new(root);
     app.refresh(); // first load, BEFORE entering the TUI
+    app.load_login(); // resolves the account shown in the header
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app); // capture the result...

@@ -31,6 +31,9 @@ pub enum Loaded {
     Prs(FetchResult),
     Runs(RunsResult),
     Both(FetchResult, RunsResult),
+    /// The authenticated account, or `None` if `gh` could not tell us.
+    /// Not a load: it rides the same channel, but carries no status line.
+    User(Option<String>),
 }
 
 /// What we ask the thread to load.
@@ -49,6 +52,17 @@ impl Job {
     pub fn merge(self, other: Job) -> Job {
         if self == other { self } else { Job::Both }
     }
+}
+
+/// Resolves the authenticated user in its own one-shot thread. It rides the
+/// loads' channel so the app keeps a single place to poll, and it is never
+/// re-run: the account cannot change while gh-ui is open.
+pub fn spawn_login(tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        // A failure here is not worth an error banner — the header shows `@?`
+        // and the status line already reports whatever broke the PR load.
+        let _ = tx.send(Loaded::User(gh::fetch_login().ok()));
+    });
 }
 
 /// Starts loading `job` in a background thread.

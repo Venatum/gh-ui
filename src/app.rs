@@ -11,6 +11,27 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
+/// The GitHub account shown in the header. Three states rather than an
+/// `Option`: while the call is in flight the corner must stay empty, not flash
+/// `@?` at every launch before settling on the real login.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Login {
+    Loading,
+    Known(String),
+    Unknown,
+}
+
+impl Login {
+    /// What the header should print, or `None` while we are still asking.
+    pub fn label(&self) -> Option<String> {
+        match self {
+            Login::Loading => None,
+            Login::Known(name) => Some(format!("@{name}")),
+            Login::Unknown => Some("@?".to_string()),
+        }
+    }
+}
+
 /// Which text field we are currently entering (prompt mode).
 #[derive(Clone, Copy, PartialEq)]
 pub enum InputKind {
@@ -108,6 +129,8 @@ pub struct App {
     /// `Job::merge` if several pile up).
     pending_job: Option<Job>,
 
+    /// The authenticated GitHub account, resolved once at startup.
+    pub login: Login,
     /// Auto-refresh pace, cycled with key `a`. `Off` = disabled.
     pub auto_refresh: AutoRefresh,
     /// Time of the last load start (to pace the auto-refresh).
@@ -163,6 +186,7 @@ impl App {
             columns: Columns::load(),
             repos: Vec::new(),
             pending_job: None,
+            login: Login::Loading,
             auto_refresh: RefreshSettings::load().auto_refresh,
             last_refresh: Instant::now(),
             input_kind: None,
@@ -219,6 +243,11 @@ impl App {
         );
     }
 
+    /// Asks for the authenticated account. Called once, at startup.
+    pub fn load_login(&mut self) {
+        fetch::spawn_login(self.tx.clone());
+    }
+
     /// Keeps the state alive on every loop iteration. Returns `true` if the
     /// display must be refreshed (a result arrived, or a load is animating the
     /// spinner) — to avoid redrawing a frozen screen 10×/s for nothing.
@@ -226,19 +255,32 @@ impl App {
         let mut changed = false;
 
         while let Ok(msg) = self.rx.try_recv() {
+            // `None` = the message carries no status line, so it must leave
+            // `status` and `loading` alone. Only the login does that: it shares
+            // the channel without being a load, and clearing `loading` here
+            // would cut short a fetch still in flight.
             let status = match msg {
-                Loaded::Prs(result) => self.apply_prs(result),
-                Loaded::Runs(result) => self.apply_runs(result),
+                Loaded::Prs(result) => Some(self.apply_prs(result)),
+                Loaded::Runs(result) => Some(self.apply_runs(result)),
                 // PRs FIRST: `apply_runs` counts the visible runs, which are
                 // cross-referenced against `self.prs`.
                 Loaded::Both(prs, runs) => {
                     let left = self.apply_prs(prs);
                     let right = self.apply_runs(runs);
-                    format!("{left} · {right}")
+                    Some(format!("{left} · {right}"))
+                }
+                Loaded::User(login) => {
+                    self.login = match login {
+                        Some(name) => Login::Known(name),
+                        None => Login::Unknown,
+                    };
+                    None
                 }
             };
-            self.status = status;
-            self.loading = false;
+            if let Some(status) = status {
+                self.status = status;
+                self.loading = false;
+            }
             changed = true;
         }
 
@@ -671,6 +713,17 @@ mod tests {
             url: "u".into(),
             repo: "r".into(),
         }
+    }
+
+    #[test]
+    fn the_header_stays_empty_until_the_login_answers() {
+        // The whole point of the third state: no `@?` flash at startup.
+        assert_eq!(Login::Loading.label(), None);
+        assert_eq!(
+            Login::Known("vincent".to_string()).label(),
+            Some("@vincent".to_string())
+        );
+        assert_eq!(Login::Unknown.label(), Some("@?".to_string()));
     }
 
     #[test]

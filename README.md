@@ -46,7 +46,9 @@ gh-ui --version             # version
 ```
 
 The app discovers the subfolders that are git repos and aggregates their open
-PRs.
+PRs. The header shows the authenticated account in its top-right
+corner (`@?` if `gh` could not resolve it), and hides it when the terminal is
+too narrow to fit both it and the status line.
 
 ## Shortcuts
 

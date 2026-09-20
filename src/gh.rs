@@ -107,3 +107,40 @@ pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
         .context("parsing the JSON returned by `gh run list`")?;
     Ok(runs)
 }
+
+/// The login of the authenticated user, shown in the header. Asked of `gh`
+/// itself rather than of the REST endpoint (`gh api user`): the whole app
+/// talks to `gh`, not to the API. `--active` picks the account currently in
+/// use — a user can be logged into several on the same host — and the `.login`
+/// under `hosts` is the one it resolves to.
+pub fn fetch_login() -> Result<String> {
+    let output = Command::new("gh")
+        .args([
+            "auth",
+            "status",
+            "--active",
+            "--json",
+            "hosts",
+            "--jq",
+            ".hosts[][] | select(.active) | .login",
+        ])
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh auth status` failed: {}", stderr.trim());
+    }
+
+    // Several accounts can be active across hosts; the first line is ours.
+    let login = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if login.is_empty() {
+        anyhow::bail!("`gh auth status` returned no active account");
+    }
+    Ok(login)
+}

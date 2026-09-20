@@ -69,6 +69,16 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
+    // The account, flush against the right edge of the header.
+    if let Some(label) = app.login.label() {
+        let account = Span::styled(label, Style::new().fg(Color::DarkGray));
+        let used: usize = top.iter().map(Span::width).sum();
+        if let Some(pad) = right_align_padding(area.width, used, account.width()) {
+            top.push(Span::raw(" ".repeat(pad)));
+            top.push(account);
+        }
+    }
+
     // Line 2: the tabs, [ PRs ] [ Actions ], the active one highlighted.
     let tab_span = |label: &str, active: bool| {
         if active {
@@ -424,6 +434,15 @@ fn help_row(key: &'static str, desc: &'static str) -> Line<'static> {
     ])
 }
 
+/// Spaces needed to push a `trailing`-wide span against the right edge of a
+/// bordered header `width` columns wide, whose content already occupies
+/// `used`. `None` when the two would not fit with at least one space between
+/// them: the caller then drops the trailing span rather than wrap the line.
+fn right_align_padding(width: u16, used: usize, trailing: usize) -> Option<usize> {
+    let inner = (width as usize).checked_sub(2)?; // the block's two borders
+    (inner > used + trailing).then(|| inner - used - trailing)
+}
+
 /// Computes a centered rectangle of `width` columns and `height` rows.
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let [area] = Layout::horizontal([Constraint::Length(width)])
@@ -470,6 +489,28 @@ mod tests {
             text.contains("(any key to close)"),
             "the help popup must fit an 80x24 terminal and show its closing hint"
         );
+    }
+
+    /// Building an `App` reads the user's real `~/.config` (forbidden in
+    /// tests), so the header cannot be rendered here. These cover the part
+    /// that actually decides the layout instead.
+    #[test]
+    fn the_account_sits_flush_against_the_right_edge() {
+        // 80 columns, 2 borders → 78 usable. 20 used, "@vincent" is 8 wide:
+        // 50 spaces leave the last character on column 78.
+        let pad = right_align_padding(80, 20, 8).expect("it fits by a mile");
+        assert_eq!(pad, 50);
+        assert_eq!(20 + pad + 8, 78);
+    }
+
+    #[test]
+    fn the_account_is_dropped_rather_than_wrapping_the_header() {
+        // Exactly one space left between the two: still fine.
+        assert_eq!(right_align_padding(22, 11, 8), Some(1));
+        // One column tighter and they would touch → we drop the account.
+        assert_eq!(right_align_padding(22, 12, 8), None);
+        // A header narrower than its own borders must not panic.
+        assert_eq!(right_align_padding(1, 0, 8), None);
     }
 
     /// The auto-refresh row is the widest one in the help, and it grew when
