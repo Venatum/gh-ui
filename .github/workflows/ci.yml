@@ -1,0 +1,58 @@
+# Runs the project's three gates on every push to `main` and every pull
+# request: formatting, lints, tests.
+#
+# `release.yml` also runs the tests, but only once a `v*` tag is pushed — by
+# then the tag is public, so a failure there means deleting and re-cutting a
+# release. This workflow is what catches the problem at the commit instead.
+#
+# The commands are deliberately the exact ones run by hand before committing:
+# if CI and the local gates ever disagree, one of them is lying.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Pushing again to the same branch makes the run in flight pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The runner already ships a stable toolchain carrying rustfmt and
+      # clippy, so nothing needs installing — only the compiled dependencies
+      # are worth carrying from one run to the next. The key follows
+      # Cargo.lock; `restore-keys` still reuses the previous cache when a
+      # dependency moves, so only what changed is rebuilt.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # First, because it is the cheapest and needs no build at all.
+      - name: Formatting
+        run: cargo fmt --check
+
+      # `--all-targets` reaches the test code too: a good half of this
+      # project's logic lives in `#[cfg(test)]` modules.
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      # `--locked` fails rather than silently updating Cargo.lock, so a run
+      # tests the dependency versions the repo actually pins.
+      - name: Tests
+        run: cargo test --locked
