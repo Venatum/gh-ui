@@ -132,7 +132,7 @@ mod tests {
         assert!(matches("guard", &hay), "got {hay}");
         assert!(matches("vincent", &hay), "got {hay}");
         // The branch is not even a visible column on the PRs tab.
-        assert!(matches("feature/api-1", &hay), "got {hay}");
+        assert!(matches("feature/issue-1", &hay), "got {hay}");
         // Both spellings of the number.
         assert!(matches("#412", &hay), "got {hay}");
         assert!(matches("412", &hay), "got {hay}");
@@ -171,7 +171,7 @@ mod tests {
         ));
 
         assert!(matches("ci", &hay), "got {hay}");
-        assert!(matches("feature/api-1", &hay), "got {hay}");
+        assert!(matches("feature/issue-1", &hay), "got {hay}");
         assert!(matches("guard", &hay), "got {hay}");
         assert!(matches("push", &hay), "got {hay}");
         assert!(matches("hello-world", &hay), "got {hay}");
