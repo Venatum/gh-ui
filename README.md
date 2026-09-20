@@ -50,6 +50,13 @@ PRs. The header shows the authenticated account in its top-right
 corner (`@?` if `gh` could not resolve it), and hides it when the terminal is
 too narrow to fit both it and the status line.
 
+The **Actions** tab lists the workflow runs of the same repos. Its `my PRs`
+filter (`m`, on by default) keeps only the runs sitting on a branch that
+carries an open PR, so gh-ui fetches a wide window of runs per repo — a busy
+`main` or `develop` would otherwise fill a narrow one on its own and leave the
+tab empty. With the filter off the tab shows the 20 most recent runs of each
+repo, all branches together.
+
 ## Shortcuts
 
 ### List

@@ -3,10 +3,11 @@
 use crate::columns::Columns;
 use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
 use crate::filters::Filters;
+use crate::gh::RUN_DISPLAY_LIMIT;
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
 use ratatui::widgets::TableState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
@@ -685,13 +686,31 @@ fn errors_suffix(errors: usize) -> String {
     }
 }
 
-/// Keeps the runs whose branch is in `pr_branches`, or all if `!only`.
+/// Keeps the runs whose branch is in `pr_branches`. When `!only`, keeps the
+/// most recent `RUN_DISPLAY_LIMIT` runs of each repo instead, whatever their
+/// branch: `fetch_runs` pulls a much wider window than that so the `only` pass
+/// has something to cross-reference, but the unfiltered view stays the short
+/// "what just ran here" list it has always been.
 fn filter_runs<'a>(runs: &'a [Run], pr_branches: &HashSet<&str>, only: bool) -> Vec<&'a Run> {
     if !only {
-        return runs.iter().collect();
+        return most_recent_per_repo(runs, RUN_DISPLAY_LIMIT);
     }
     runs.iter()
         .filter(|r| pr_branches.contains(r.head_branch.as_str()))
+        .collect()
+}
+
+/// The first `cap` runs of each repo. `runs` arrives grouped by repo and
+/// ordered most recent first inside a repo (see `fetch::load_runs`), so taking
+/// the first ones is taking the most recent ones.
+fn most_recent_per_repo(runs: &[Run], cap: usize) -> Vec<&Run> {
+    let mut kept: HashMap<&str, usize> = HashMap::new();
+    runs.iter()
+        .filter(|r| {
+            let n = kept.entry(r.repo.as_str()).or_insert(0);
+            *n += 1;
+            *n <= cap
+        })
         .collect()
 }
 
@@ -701,6 +720,10 @@ mod tests {
     use crate::model::Run;
 
     fn run(branch: &str) -> Run {
+        run_in("r", branch)
+    }
+
+    fn run_in(repo: &str, branch: &str) -> Run {
         Run {
             workflow_name: "CI".into(),
             display_title: "t".into(),
@@ -711,7 +734,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             number: 1,
             url: "u".into(),
-            repo: "r".into(),
+            repo: repo.into(),
         }
     }
 
@@ -823,5 +846,44 @@ mod tests {
 
         // only = false: keep everything.
         assert_eq!(filter_runs(&runs, &branches, false).len(), 3);
+    }
+
+    #[test]
+    fn the_unfiltered_view_keeps_the_most_recent_runs_of_each_repo() {
+        // `fetch_runs` pulls a wide window so the "my PRs" cross-reference has
+        // something to work with. With the filter off the user still wants the
+        // short list he has always had: the most recent runs of each repo.
+        let mut runs: Vec<Run> = (0..30).map(|i| run_in("alpha", &format!("b{i}"))).collect();
+        runs.extend((0..5).map(|i| run_in("beta", &format!("c{i}"))));
+
+        let branches: HashSet<&str> = HashSet::new();
+        let kept = filter_runs(&runs, &branches, false);
+
+        assert_eq!(
+            kept.iter().filter(|r| r.repo == "alpha").count(),
+            RUN_DISPLAY_LIMIT
+        );
+        // A repo with fewer runs than the limit keeps all of them.
+        assert_eq!(kept.iter().filter(|r| r.repo == "beta").count(), 5);
+        // And the ones kept are the most recent, i.e. the first `gh` returned.
+        assert_eq!(kept[0].head_branch, "b0");
+        assert_eq!(kept[RUN_DISPLAY_LIMIT - 1].head_branch, "b19");
+    }
+
+    #[test]
+    fn pr_runs_survive_a_base_branch_that_floods_the_window() {
+        // The bug: a busy `develop` used to fill the whole fetch window, so the
+        // cross-reference found nothing and the tab looked empty. The wider
+        // window must reach the PR runs sitting behind that flood — and the
+        // display limit must not cut them off again.
+        let mut runs: Vec<Run> = (0..40).map(|_| run_in("alpha", "develop")).collect();
+        runs.push(run_in("alpha", "feature/x"));
+
+        let mut branches: HashSet<&str> = HashSet::new();
+        branches.insert("feature/x");
+
+        let kept = filter_runs(&runs, &branches, true);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].head_branch, "feature/x");
     }
 }

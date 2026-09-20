@@ -14,7 +14,13 @@ const PR_LIMIT: &str = "50";
 const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
 
 /// Number of runs fetched per repo (most recent runs, all branches).
-const RUN_LIMIT: &str = "20";
+/// 100 is the largest page GitHub serves, so it costs exactly the same single
+/// HTTP request as a smaller number would.
+const RUN_LIMIT: &str = "100";
+
+/// How many of those runs the Actions tab shows per repo when the "my PRs"
+/// filter is off. Deliberately smaller than `RUN_LIMIT`: see `fetch_runs`.
+pub const RUN_DISPLAY_LIMIT: usize = 20;
 
 /// JSON fields requested from `gh` for each run.
 const RUN_JSON_FIELDS: &str =
@@ -84,6 +90,16 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
 /// Runs `gh run list` in `repo_dir` and parses the JSON into `Vec<Run>`.
 /// No filters here: we fetch the N most recent raw runs; the cross-referencing
 /// with the PRs is done on the App side (see `App::visible_runs`).
+///
+/// N is deliberately much larger than what the tab displays. That
+/// cross-reference keeps only the runs sitting on a branch that carries a PR,
+/// and a base branch such as `main` or `develop` can easily produce the whole
+/// window on its own — one merge fires every workflow at once — leaving the
+/// tab empty for no visible reason. Widening the window is free: 100 is the
+/// largest page the API serves, so it is the same single HTTP request as 20,
+/// only with a bigger body. The alternative, one `gh run list --branch X` per
+/// open PR, would be exact but would cost one request per PR per repo on every
+/// auto-refresh.
 pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
     let output = Command::new("gh")
         .args([
@@ -143,4 +159,33 @@ pub fn fetch_login() -> Result<String> {
         anyhow::bail!("`gh auth status` returned no active account");
     }
     Ok(login)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fetch window and the displayed slice are two different numbers, and
+    /// the gap between them is the whole point: `App::visible_runs` drops the
+    /// runs whose branch carries no PR, so a window as narrow as the slice can
+    /// be swallowed whole by a busy base branch and leave the tab empty.
+    #[test]
+    fn the_run_fetch_window_is_wider_than_the_displayed_slice() {
+        let limit: usize = RUN_LIMIT.parse().expect("RUN_LIMIT must be a number");
+        assert!(
+            limit > RUN_DISPLAY_LIMIT,
+            "RUN_LIMIT={limit} leaves no room for the PR cross-reference"
+        );
+    }
+
+    /// GitHub serves at most 100 items per page: asking for more makes `gh`
+    /// paginate, which doubles the HTTP cost of every repo on every refresh.
+    #[test]
+    fn the_run_fetch_stays_within_one_api_page() {
+        let limit: usize = RUN_LIMIT.parse().expect("RUN_LIMIT must be a number");
+        assert!(
+            limit <= 100,
+            "RUN_LIMIT={limit} would force `gh` to paginate"
+        );
+    }
 }
