@@ -50,6 +50,10 @@ PRs. The header shows the authenticated account in its top-right
 corner (`@?` if `gh` could not resolve it), and hides it when the terminal is
 too narrow to fit both it and the status line.
 
+`/` narrows what is on screen as you type, without re-querying anything (see
+the **Search** section below). The filters panel (`f`) does the opposite: it
+changes what gh-ui asks GitHub for, and every change costs a reload.
+
 The **Actions** tab lists the workflow runs of the same repos. Its `my PRs`
 filter (`m`, on by default) keeps only the runs sitting on a branch that
 carries an open PR, so gh-ui fetches a wide window of runs per repo — a busy
@@ -65,6 +69,8 @@ repo, all branches together.
 |--------------|----------------------------------------------|
 | `↑/↓`, `j/k` | navigate the list                            |
 | `enter`      | open the selected PR in the browser          |
+| `/`          | search the visible list (live, client-side)  |
+| `esc`        | clear the search                             |
 | `r`          | reload now                                    |
 | `a`          | cycle auto-refresh (off, 1mn … 1h)           |
 | `A`          | turn auto-refresh off                        |
@@ -109,6 +115,25 @@ The panel edits the columns of the **active tab**: PRs and Actions keep their
 own order and their own hidden columns. At least one column always stays
 visible.
 
+### Search (`/`)
+
+`/` opens a prompt in the footer and narrows the table **as you type**, k9s
+style. `enter` keeps the search and hands the keyboard back to the list, `esc`
+clears it — from the prompt or from the list. The active search is shown in the
+header, with the counts it hides: `search:"api" 3/57`.
+
+It is a **client-side** filter: it matches the rows already fetched and never
+calls GitHub, which is what makes it instantaneous. The flip side is that it
+searches the fetched window — at most 50 open PRs per repo — so to look wider,
+narrow the fetch itself from the filters panel (`since`, `author`, `label`,
+`repo`).
+
+The match is a case-insensitive substring over, for a PR, its repo, number,
+title, author, branch and labels; and for a run, its repo, number, workflow,
+branch, title and event — whether or not the matching column is currently
+visible. It applies to the active tab, and it is deliberately **not** saved
+between runs: a search is a lookup, not a setting.
+
 ## Memory
 
 Filters are saved on every change to `~/.config/gh-ui/filters.json` and
@@ -135,6 +160,7 @@ cargo build --release
 | `app.rs`       | application state and its logic                             |
 | `model.rs`     | data structures (`Pr`, deserialization of `gh` JSON)        |
 | `filters.rs`   | filter state, `gh` args, persistence                        |
+| `search.rs`    | the `/` search: what a row matches on                       |
 | `columns.rs`   | table columns: registry, order/visibility, persistence      |
 | `gh.rs`        | repo discovery + launching `gh pr list`                     |
 | `fetch.rs`     | background loading (thread + `mpsc` channel)                |
