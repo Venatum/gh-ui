@@ -189,8 +189,11 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
 /// The footer shortcuts, in the order they matter. `?` is not in the list: it
 /// is appended separately and never dropped, because it is how the user
 /// reaches everything the footer had to cut.
-const HINTS: [(&str, &str); 8] = [
+const HINTS: [(&str, &str); 9] = [
     ("↑↓", "nav"),
+    // Near the front on purpose: hints are dropped from the tail, and `/` is
+    // the one key on this row that is not reachable from a panel.
+    ("/", "search"),
     ("enter", "open"),
     ("tab/1/2", "tab"),
     ("f", "filters"),
@@ -461,10 +464,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         help_row("↑/↓, j/k", "navigate the list"),
         help_row("enter", "open the PR in the browser"),
+        help_row("/", "search the visible list · esc clears it"),
         help_row("r", "reload now"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
-        help_row("f", "open the filter panel"),
-        help_row("c", "open the columns panel"),
+        help_row("f / c", "open the filters / columns panel"),
         help_row("tab, 1/2", "switch tab (PRs / Actions)"),
         help_row("m", "Actions tab: filter on my PRs"),
         help_row("q", "quit"),
@@ -628,6 +631,24 @@ mod tests {
         assert!(
             text.contains("auto-refresh: off/1mn/5mn/10mn/30mn/1h \u{b7} A: off"),
             "the auto-refresh help row must fit HELP_WIDTH without being cut"
+        );
+    }
+
+    /// The `/` row must be in the help AND fit `HELP_WIDTH` — `Paragraph`
+    /// truncates instead of wrapping, so an over-long row loses its tail in
+    /// silence. Same guard as `the_auto_refresh_help_row_is_not_truncated`.
+    #[test]
+    fn the_search_help_row_is_not_truncated() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains("search the visible list \u{b7} esc clears it"),
+            "the search help row must fit HELP_WIDTH without being cut"
+        );
+        // Its cost: the two panel rows merged into one.
+        assert!(
+            text.contains("open the filters / columns panel"),
+            "the merged f/c row must fit too"
         );
     }
 
