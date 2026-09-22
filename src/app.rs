@@ -12,7 +12,7 @@ use ratatui::widgets::TableState;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The GitHub account shown in the header. Three states rather than an
 /// `Option`: while the call is in flight the corner must stay empty, not flash
@@ -156,6 +156,9 @@ pub struct App {
     pub auto_refresh: AutoRefresh,
     /// Time of the last load start (to pace the auto-refresh).
     last_refresh: Instant,
+    /// Seconds the countdown showed on the previous tick, so we redraw once a
+    /// second instead of at every one of the loop's ten ticks.
+    last_countdown: Option<u64>,
     /// A one-shot note appended to the next status line — today, the repo
     /// filter we had to drop. Kept out of `status` so the message survives the
     /// "Loading…" that the reload writes over it.
@@ -218,6 +221,7 @@ impl App {
             login: Login::Loading,
             auto_refresh: RefreshSettings::load().auto_refresh,
             last_refresh: Instant::now(),
+            last_countdown: None,
             notice: None,
             input_kind: None,
             input_buffer: String::new(),
@@ -273,6 +277,15 @@ impl App {
             self.filters.clone(),
             self.tx.clone(),
         );
+    }
+
+    /// How long before the next automatic reload, or `None` when the
+    /// auto-refresh is off. Saturating: a reload that is overdue — held back
+    /// because a prompt is open, or still in flight — reads zero rather than
+    /// wrapping around.
+    pub fn time_to_refresh(&self) -> Option<Duration> {
+        let interval = self.auto_refresh.interval()?;
+        Some(interval.saturating_sub(self.last_refresh.elapsed()))
     }
 
     /// Re-reads which repos this root holds, and drops a repo filter that is
@@ -352,6 +365,15 @@ impl App {
             && self.last_refresh.elapsed() >= interval
         {
             self.refresh();
+        }
+
+        // The countdown runs down in the header: ask for a redraw when the
+        // second it shows changes, and only then. Off means `None` on both
+        // sides, so a disabled auto-refresh never wakes the screen up.
+        let countdown = self.time_to_refresh().map(|left| left.as_secs());
+        if countdown != self.last_countdown {
+            self.last_countdown = countdown;
+            changed = true;
         }
 
         if self.loading {
@@ -937,6 +959,37 @@ mod tests {
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
         assert_eq!(Tab::Runs.next(), Tab::Prs);
+    }
+
+    #[test]
+    fn there_is_no_countdown_without_a_pace() {
+        let mut app = App::new(PathBuf::from("."));
+        app.auto_refresh = AutoRefresh::Off;
+        assert_eq!(app.time_to_refresh(), None);
+    }
+
+    #[test]
+    fn the_countdown_starts_at_a_full_interval() {
+        let mut app = App::new(PathBuf::from("."));
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now();
+
+        let left = app.time_to_refresh().expect("a pace is set");
+        assert!(
+            left > Duration::from_secs(59) && left <= Duration::from_secs(60),
+            "expected about a minute left, got {left:?}"
+        );
+    }
+
+    /// A reload held back (input mode) or still in flight leaves the interval
+    /// behind: the countdown must sit at zero, not wrap around.
+    #[test]
+    fn an_overdue_countdown_saturates_at_zero() {
+        let mut app = App::new(PathBuf::from("."));
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now() - Duration::from_secs(90);
+
+        assert_eq!(app.time_to_refresh(), Some(Duration::ZERO));
     }
 
     /// The plumbing, on a real folder: a selection saved somewhere else must

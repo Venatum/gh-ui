@@ -58,6 +58,14 @@ impl AutoRefresh {
     }
 }
 
+/// Renders a countdown as `m:ss`, so the header can say how long is left
+/// before the next automatic reload. Minutes are never wrapped into hours: the
+/// longest pace is one hour, which reads `60:00`.
+pub fn format_countdown(left: Duration) -> String {
+    let secs = left.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
 /// What we persist about the auto-refresh. A struct rather than the bare enum
 /// so the file stays a JSON object, and so a later setting can join it without
 /// breaking the configs already written.
@@ -165,5 +173,20 @@ mod tests {
         assert_eq!(empty.auto_refresh, AutoRefresh::Off);
         // And a malformed file is what `load` feeds to `unwrap_or_default`.
         assert!(serde_json::from_str::<RefreshSettings>("nonsense").is_err());
+    }
+
+    #[test]
+    fn the_countdown_reads_as_minutes_and_seconds() {
+        assert_eq!(format_countdown(Duration::from_secs(300)), "5:00");
+        assert_eq!(format_countdown(Duration::from_secs(72)), "1:12");
+        assert_eq!(format_countdown(Duration::from_secs(7)), "0:07");
+        assert_eq!(format_countdown(Duration::ZERO), "0:00");
+        assert_eq!(format_countdown(Duration::from_secs(3599)), "59:59");
+    }
+
+    /// The longest pace is a full hour: it must read `60:00`, not roll over.
+    #[test]
+    fn a_full_hour_keeps_counting_in_minutes() {
+        assert_eq!(format_countdown(Duration::from_secs(3600)), "60:00");
     }
 }

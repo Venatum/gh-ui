@@ -4,12 +4,14 @@
 use crate::app::{App, FilterField, InputKind, Tab, section_of};
 use crate::columns::{Column, ColumnLayout, PrColumn, RunColumn};
 use crate::filters::Filters;
+use crate::refresh::{self, AutoRefresh};
 use crate::runfilters::RunFilters;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Row, Table};
+use std::time::Duration;
 
 /// Width (in columns) of the centered overlays.
 const FILTER_PANEL_WIDTH: u16 = 52;
@@ -48,6 +50,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// The header's auto-refresh chip: the pace, then how long before the next
+/// reload. Split out of `render_header` so a test can assert on it without
+/// building an `App` (which would read the user's real config).
+fn auto_refresh_chip(pace: AutoRefresh, left: Duration) -> String {
+    format!(
+        "   ⟳ auto {} · {}",
+        pace.label(),
+        refresh::format_countdown(left)
+    )
+}
+
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     // Line 1: name + spinner (if loading) + status + auto-refresh state.
     let mut top = vec![
@@ -63,9 +76,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     top.push(Span::raw(app.status.clone()));
-    if app.auto_refresh.interval().is_some() {
+    // `time_to_refresh` is `None` exactly when the auto-refresh is off, so
+    // the chip and the countdown appear and disappear together.
+    if let Some(left) = app.time_to_refresh() {
         top.push(Span::styled(
-            format!("   ⟳ auto {}", app.auto_refresh.label()),
+            auto_refresh_chip(app.auto_refresh, left),
             Style::new().fg(Color::Green),
         ));
     }
@@ -795,6 +810,23 @@ mod tests {
             bracket_col(&plain[1]),
             neighbour_col,
             "the same row, not grabbed, must line up with its neighbour"
+        );
+    }
+
+    /// The header cannot be rendered here (building an `App` reads the user's
+    /// real `~/.config`), so the chip is asserted on its own. It must show
+    /// BOTH the pace and the time left: the pace alone never moves, and a
+    /// frozen `auto 5mn` says nothing about when the next reload lands.
+    #[test]
+    fn the_auto_refresh_chip_shows_the_pace_and_the_countdown() {
+        assert_eq!(
+            auto_refresh_chip(AutoRefresh::M5, Duration::from_secs(252)),
+            "   ⟳ auto 5mn · 4:12"
+        );
+        // Overdue (a prompt is open, or a load is in flight): it sits at zero.
+        assert_eq!(
+            auto_refresh_chip(AutoRefresh::M1, Duration::ZERO),
+            "   ⟳ auto 1mn · 0:00"
         );
     }
 }

@@ -109,6 +109,10 @@ starts **off** the first time, and the pace you leave it on is remembered
 between runs (in `~/.config/gh-ui/refresh.json`). `A` turns it off in one
 keystroke, whatever the current pace.
 
+While it is on, the header carries the pace **and the time left** before the
+next reload: `⟳ auto 5mn · 4:12`. It sits at `0:00` while a reload is running,
+or while a prompt holds one back.
+
 ### Columns panel (`c`)
 
 | Key          | Action                                             |
