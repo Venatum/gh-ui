@@ -2,7 +2,7 @@
 name = "gh-ui"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A terminal UI to explore GitHub pull requests across every repo in a folder, htop-style"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
