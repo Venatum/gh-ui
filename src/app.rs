@@ -3,7 +3,7 @@
 use crate::columns::Columns;
 use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
 use crate::filters::Filters;
-use crate::gh::RUN_DISPLAY_LIMIT;
+use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
 use crate::runfilters::{self, RunFilters};
@@ -156,6 +156,10 @@ pub struct App {
     pub auto_refresh: AutoRefresh,
     /// Time of the last load start (to pace the auto-refresh).
     last_refresh: Instant,
+    /// A one-shot note appended to the next status line — today, the repo
+    /// filter we had to drop. Kept out of `status` so the message survives the
+    /// "Loading…" that the reload writes over it.
+    notice: Option<String>,
 
     /// Input in progress (author/label): `None` = not in input mode.
     pub input_kind: Option<InputKind>,
@@ -214,6 +218,7 @@ impl App {
             login: Login::Loading,
             auto_refresh: RefreshSettings::load().auto_refresh,
             last_refresh: Instant::now(),
+            notice: None,
             input_kind: None,
             input_buffer: String::new(),
             search: String::new(),
@@ -260,6 +265,7 @@ impl App {
         self.loading = true;
         self.pending_job = None;
         self.last_refresh = Instant::now();
+        self.reconcile_with_the_folder();
         self.status = String::from("Loading…");
         fetch::spawn(
             job,
@@ -267,6 +273,21 @@ impl App {
             self.filters.clone(),
             self.tx.clone(),
         );
+    }
+
+    /// Re-reads which repos this root holds, and drops a repo filter that is
+    /// not among them. Runs at the start of every load, BEFORE `gh` does: the
+    /// filter names a FOLDER while the config is global, so a selection made
+    /// in `~/dev/perso` would send every query to a repo that is not in
+    /// `~/dev/client` and bring back an empty screen explaining nothing.
+    ///
+    /// `read_dir` is cheap enough to run on this thread, and the fetch redoes
+    /// it anyway to build the list it returns.
+    fn reconcile_with_the_folder(&mut self) {
+        self.repos = gh::discover_repos(&self.root).unwrap_or_default();
+        if let Some(dropped) = self.filters.reconcile_repo(&self.repos) {
+            self.notice = Some(format!("repo \"{dropped}\" is not here, showing all"));
+        }
     }
 
     /// Asks for the authenticated account. Called once, at startup.
@@ -304,7 +325,10 @@ impl App {
                 }
             };
             if let Some(status) = status {
-                self.status = status;
+                self.status = match self.notice.take() {
+                    Some(notice) => format!("{status} · {notice}"),
+                    None => status,
+                };
                 self.loading = false;
             }
             changed = true;
@@ -913,5 +937,48 @@ mod tests {
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
         assert_eq!(Tab::Runs.next(), Tab::Prs);
+    }
+
+    /// The plumbing, on a real folder: a selection saved somewhere else must
+    /// not survive the start of a load. The folder holds `web` and nothing
+    /// named `ghost`, so the filter has to go — and say so.
+    #[test]
+    fn reconciling_drops_a_repo_the_folder_does_not_hold() {
+        let root = std::env::temp_dir().join("gh-ui-reconcile-drops");
+        std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
+
+        let mut app = App::new(root.clone());
+        app.filters.repo = Some("ghost".to_string());
+
+        app.reconcile_with_the_folder();
+
+        assert_eq!(app.repos, vec!["web".to_string()]);
+        assert_eq!(
+            app.filters.repo, None,
+            "the stale selection must be dropped"
+        );
+        assert!(
+            app.notice.as_deref().is_some_and(|n| n.contains("ghost")),
+            "the status line must name the filter it dropped, got {:?}",
+            app.notice
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reconciling_keeps_a_repo_the_folder_holds() {
+        let root = std::env::temp_dir().join("gh-ui-reconcile-keeps");
+        std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
+
+        let mut app = App::new(root.clone());
+        app.filters.repo = Some("web".to_string());
+
+        app.reconcile_with_the_folder();
+
+        assert_eq!(app.filters.repo, Some("web".to_string()));
+        assert_eq!(app.notice, None, "nothing was dropped, nothing to report");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

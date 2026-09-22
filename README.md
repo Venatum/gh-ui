@@ -156,6 +156,13 @@ The column layout is saved the same way, to `~/.config/gh-ui/columns.json`.
 A column added by a future version is appended to your saved layout instead of
 resetting it.
 
+That memory is **global**, while the `repo` filter names a folder inside the
+one you are scanning. So gh-ui checks it against what is actually there before
+every load: a selection that this folder does not hold is dropped, and the
+status line says which one (`repo "api" is not here, showing all`) instead of
+leaving you with an empty table. The saved file is left untouched, so the
+selection still applies in the folder you made it for.
+
 ## Development
 
 ```bash

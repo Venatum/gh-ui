@@ -166,6 +166,24 @@ impl Filters {
         };
     }
 
+    /// Drops a repo selection that this folder does not hold, and returns the
+    /// name we let go. The config is global while `repo` names a folder, so a
+    /// selection made in `~/dev/perso` would filter EVERYTHING out once gh-ui
+    /// is pointed at `~/dev/client` — with nothing on screen saying why.
+    ///
+    /// An empty `repos` is left alone on purpose: it means either an empty
+    /// folder or a `read_dir` that failed, and there is nothing to show in
+    /// either case. Nor do we save afterwards: the selection stays valid in
+    /// the folder it was made for, and each run repairs itself in memory.
+    pub fn reconcile_repo(&mut self, repos: &[String]) -> Option<String> {
+        if repos.is_empty() {
+            return None;
+        }
+        // `take_if` hands us the value only when the closure says so, leaving
+        // `self.repo` as `None` in that case — exactly the fallback we want.
+        self.repo.take_if(|sel| !repos.contains(sel))
+    }
+
     /// The part of the summary that ALSO applies to the Actions tab.
     /// Today only the repo filter restricts both flows.
     pub fn summary_common(&self) -> String {
@@ -457,5 +475,53 @@ mod tests {
             .map(|(_, v)| v)
             .collect();
         assert_eq!(labels, vec!["bug", "api"]);
+    }
+
+    /// A repo filter is a FOLDER NAME, but the config is global: pointing
+    /// gh-ui at another folder would keep filtering on a repo that is not
+    /// there, silently emptying both tabs. This is the guard against that.
+    #[test]
+    fn a_repo_missing_from_the_folder_is_dropped() {
+        let mut filters = Filters {
+            repo: Some("api".to_string()),
+            ..Filters::default()
+        };
+        let here = vec!["docs".to_string(), "web".to_string()];
+
+        assert_eq!(filters.reconcile_repo(&here), Some("api".to_string()));
+        assert_eq!(filters.repo, None, "it must fall back to all repos");
+    }
+
+    #[test]
+    fn a_repo_still_present_is_kept() {
+        let mut filters = Filters {
+            repo: Some("web".to_string()),
+            ..Filters::default()
+        };
+        let here = vec!["docs".to_string(), "web".to_string()];
+
+        assert_eq!(filters.reconcile_repo(&here), None);
+        assert_eq!(filters.repo, Some("web".to_string()));
+    }
+
+    /// No repo discovered means either an empty folder or a `read_dir` that
+    /// failed. Dropping the selection on a transient error would lose it for
+    /// nothing, and there is no PR to show either way.
+    #[test]
+    fn an_empty_repo_list_leaves_the_selection_alone() {
+        let mut filters = Filters {
+            repo: Some("api".to_string()),
+            ..Filters::default()
+        };
+
+        assert_eq!(filters.reconcile_repo(&[]), None);
+        assert_eq!(filters.repo, Some("api".to_string()));
+    }
+
+    #[test]
+    fn no_selection_is_nothing_to_reconcile() {
+        let mut filters = Filters::default();
+        assert_eq!(filters.reconcile_repo(&["web".to_string()]), None);
+        assert_eq!(filters.repo, None);
     }
 }
