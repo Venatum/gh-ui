@@ -190,26 +190,6 @@ cargo build --release
 | `fetch.rs`     | background loading (thread + `mpsc` channel)                |
 | `ui.rs`        | ratatui rendering                                           |
 
-## Releasing
-
-A release is one tag push. Everything else is
-[`.github/workflows/release.yml`](.github/workflows/release.yml).
-
-```bash
-# 1. bump the version in Cargo.toml, then refresh the lockfile
-cargo build
-git commit -am "chore(release): 0.2.0"
-
-# 2. tag and push — the tag must match Cargo.toml, the workflow checks it
-git tag v0.2.0
-git push && git push origin v0.2.0
-```
-
-The workflow runs the tests, builds four binaries (`darwin-arm64`,
-`darwin-amd64`, `linux-amd64`, `linux-arm64`), and attaches them to the GitHub
-release named `gh-ui_<version>_<os>-<arch>` — `gh` picks the asset whose name
-ends with your platform, which is what `gh extension install` relies on.
-
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
