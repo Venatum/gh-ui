@@ -139,8 +139,8 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Tab => app.next_tab(),
         KeyCode::Char('1') => app.set_tab(Tab::Prs),
         KeyCode::Char('2') => app.set_tab(Tab::Runs),
-        // Only visible on the Actions tab; harmless on the PRs tab.
-        KeyCode::Char('m') => app.toggle_only_pr_runs(),
+        // "Mine" on either tab: my PRs, or the runs of my PRs.
+        KeyCode::Char('m') => app.toggle_mine(),
         _ => {}
     }
 }

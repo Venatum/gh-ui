@@ -833,12 +833,22 @@ impl App {
         search::keep_runs(self.branch_runs(), &self.search)
     }
 
-    /// Toggles the "my PRs" filter (no re-fetch: local filtering). Bound to
-    /// `m`, which is why it lives here as well as in the panel.
-    pub fn toggle_only_pr_runs(&mut self) {
-        self.run_filters.toggle_only_pr_runs();
-        // The selection may fall outside the view -> put it back at the start.
-        self.reset_selection();
+    /// The `m` shortcut, "mine" on either tab, which is why it lives here as
+    /// well as in the panel. On Actions: the runs of my PRs' branches (no
+    /// re-fetch, local filtering). On PRs: the `me` mode, which does go
+    /// through `gh` again, exactly like changing it from the panel.
+    pub fn toggle_mine(&mut self) {
+        match self.active_tab {
+            Tab::Runs => {
+                self.run_filters.toggle_only_pr_runs();
+                // The selection may fall outside the view -> put it back at the start.
+                self.reset_selection();
+            }
+            Tab::Prs => {
+                self.filters.toggle_mine();
+                self.apply_filter_change(FilterField::Mode);
+            }
+        }
     }
 }
 
@@ -953,6 +963,21 @@ mod tests {
         // the first visit will load the runs with the current filters.
         app.runs_loaded = false;
         assert_eq!(app.job_after_change(FilterField::Repo), Job::Prs);
+    }
+
+    /// Only the Actions side is exercised here: the PRs side saves the
+    /// filters to disk and starts `gh`, so its logic is tested in `filters`.
+    #[test]
+    fn m_on_the_actions_tab_toggles_the_run_filter() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Runs;
+        let mode = app.filters.filter;
+        let before = app.run_filters.only_pr_runs;
+
+        app.toggle_mine();
+
+        assert_eq!(app.run_filters.only_pr_runs, !before);
+        assert_eq!(app.filters.filter, mode, "the PR filters must not move");
     }
 
     #[test]

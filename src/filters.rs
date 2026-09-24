@@ -127,6 +127,19 @@ impl Filters {
     pub fn toggle_not_mine(&mut self) {
         self.not_mine = !self.not_mine;
     }
+    /// The `m` shortcut: "my PRs" on, or back to all. Turning it on also drops
+    /// what would defeat it — an explicit author wins over `me` in
+    /// `to_gh_args`, and `not-mine` would leave an always-empty list. Turning
+    /// it off only touches the mode.
+    pub fn toggle_mine(&mut self) {
+        if self.filter == FilterMode::Me {
+            self.filter = FilterMode::All;
+        } else {
+            self.filter = FilterMode::Me;
+            self.author = None;
+            self.not_mine = false;
+        }
+    }
     pub fn cycle_since(&mut self) {
         self.since = self.since.next();
     }
@@ -386,6 +399,62 @@ mod tests {
             .map(|(_, v)| v)
             .collect();
         assert_eq!(authors, vec!["octocat"]);
+    }
+
+    #[test]
+    fn toggle_mine_goes_to_me_and_back_to_all() {
+        let mut f = Filters::default();
+        f.toggle_mine();
+        assert_eq!(f.filter, FilterMode::Me);
+        f.toggle_mine();
+        assert_eq!(f.filter, FilterMode::All);
+    }
+
+    #[test]
+    fn toggle_mine_from_review_asked_goes_to_me() {
+        let mut f = Filters {
+            filter: FilterMode::ReviewAsked,
+            ..Default::default()
+        };
+        f.toggle_mine();
+        assert_eq!(f.filter, FilterMode::Me);
+    }
+
+    /// An explicit author would override `me`, and `not-mine` would cancel it
+    /// out: left alone, either one makes the key look broken.
+    #[test]
+    fn toggle_mine_on_clears_what_contradicts_it() {
+        let mut f = Filters {
+            author: Some("octocat".to_string()),
+            not_mine: true,
+            ..Default::default()
+        };
+        f.toggle_mine();
+        assert_eq!(f.author, None);
+        assert!(!f.not_mine);
+        assert_eq!(f.to_gh_args(), vec!["--author", "@me"]);
+    }
+
+    #[test]
+    fn toggle_mine_off_only_touches_the_mode() {
+        let mut f = Filters {
+            filter: FilterMode::Me,
+            no_draft: true,
+            since: Since::W1,
+            labels: vec!["bug".to_string()],
+            ..Default::default()
+        };
+        f.toggle_mine();
+        assert_eq!(
+            f,
+            Filters {
+                filter: FilterMode::All,
+                no_draft: true,
+                since: Since::W1,
+                labels: vec!["bug".to_string()],
+                ..Default::default()
+            }
+        );
     }
 
     #[test]

@@ -205,7 +205,7 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
 /// The footer shortcuts, in the order they matter. `?` is not in the list: it
 /// is appended separately and never dropped, because it is how the user
 /// reaches everything the footer had to cut.
-const HINTS: [(&str, &str); 9] = [
+const HINTS: [(&str, &str); 10] = [
     ("↑↓", "nav"),
     // Near the front on purpose: hints are dropped from the tail, and `/` is
     // the one key on this row that is not reachable from a panel.
@@ -213,6 +213,7 @@ const HINTS: [(&str, &str); 9] = [
     ("enter", "open"),
     ("tab/1/2", "tab"),
     ("f", "filters"),
+    ("m", "mine"),
     ("c", "columns"),
     ("r", "refresh"),
     ("a", "auto"),
@@ -491,7 +492,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab, 1/2", "switch tab (PRs / Actions)"),
-        help_row("m", "Actions tab: my PRs (f: status/event/workflow)"),
+        help_row("m", "my PRs / their runs (f: status/event/workflow)"),
         help_row("q", "quit"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
@@ -624,7 +625,7 @@ mod tests {
     fn an_80_column_footer_drops_hints_instead_of_clipping_them() {
         let (hints, cut) = fitting_hints(80);
 
-        assert!(cut, "the full row is 117 columns, it cannot fit 80");
+        assert!(cut, "the full row is 127 columns, it cannot fit 80");
         // Whole hints are dropped, and what is kept is the head of the list.
         assert_eq!(hints, HINTS[..hints.len()].to_vec());
 
@@ -675,17 +676,18 @@ mod tests {
         assert_eq!(field_value(FilterField::RunEvent, &f, &rf), "◂ push ▸");
     }
 
-    /// The Actions row names the three filters that only live in the panel:
-    /// nothing else in the UI tells you `status`, `event` and `workflow` are
-    /// behind `f`. Rendered for real, since `Paragraph` would clip the tail —
+    /// The `m` row names both of its meanings (my PRs on the PRs tab, their
+    /// runs on Actions) and the three Actions filters that only live in the
+    /// panel: nothing else in the UI tells you `status`, `event` and
+    /// `workflow` are behind `f`. Rendered for real, since `Paragraph` would clip the tail —
     /// the part that carries the information — without a word.
     #[test]
-    fn the_actions_help_row_names_the_panel_filters() {
+    fn the_m_help_row_names_both_tabs_and_the_panel_filters() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
 
         assert!(
-            text.contains("Actions tab: my PRs (f: status/event/workflow)"),
-            "the Actions help row must fit HELP_WIDTH without being cut"
+            text.contains("my PRs / their runs (f: status/event/workflow)"),
+            "the `m` help row must fit HELP_WIDTH without being cut"
         );
     }
 

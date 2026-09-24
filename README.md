@@ -80,7 +80,7 @@ limit. None of the four is saved: the tab reopens on `my PRs` every time.
 | `enter`      | open the selected PR in the browser          |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
-| `m`          | Actions tab: toggle the `my PRs` filter      |
+| `m`          | my PRs on/off (Actions tab: their runs)      |
 | `r`          | reload now                                    |
 | `a`          | cycle auto-refresh (off, 1mn … 1h)           |
 | `A`          | turn auto-refresh off                        |
@@ -99,7 +99,9 @@ limit. None of the four is saved: the tab reopens on `my PRs` every time.
 | `esc`, `f`   | close the panel                                    |
 
 Available filters on the **PRs** tab: `filter` (all/me/review-asked), `since`,
-`no-draft`, `unreviewed`, `not-mine`, `repo`, `author`, `label(s)`.
+`no-draft`, `unreviewed`, `not-mine`, `repo`, `author`, `label(s)`. From the
+list, `m` flips `filter` between `me` and `all`; turning it on also clears
+`author` and `not-mine`, which would otherwise defeat it.
 
 On the **Actions** tab: `repo` (the one filter shared by both tabs), plus
 `only my PRs`, `status`, `event` and `workflow`.
