@@ -93,6 +93,78 @@ impl Since {
     }
 }
 
+/// `gh`'s keyword for the logged-in user. An ordinary login value here, exactly
+/// as `gh` treats it: it goes into the query as is.
+#[allow(dead_code)]
+pub const ME: &str = "@me";
+
+/// The `author:` qualifier, sign included. One field for "me", "not me" and
+/// any other login, so two of them can never be set at once.
+// Wired into `Filters` by the next commit; until then only the tests use it.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AuthorFilter {
+    /// No author qualifier.
+    #[default]
+    Any,
+    /// `--author <login>`.
+    Is(String),
+    /// `-author:<login>`, which `gh pr list` only accepts inside `--search`.
+    IsNot(String),
+}
+
+#[allow(dead_code)]
+impl AuthorFilter {
+    pub fn me() -> Self {
+        AuthorFilter::Is(ME.to_string())
+    }
+    pub fn not_me() -> Self {
+        AuthorFilter::IsNot(ME.to_string())
+    }
+
+    /// Reads the author prompt: `octocat`, `-octocat` to exclude, blank for
+    /// any. The GitHub search syntax, so there is nothing new to learn.
+    pub fn parse(text: &str) -> Self {
+        let text = text.trim();
+        let (negated, login) = match text.strip_prefix('-') {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, text),
+        };
+        // The author column prints `@octocat`, so users type it, but `gh`
+        // wants the bare login. `@me` is `gh`'s own keyword: it keeps its `@`.
+        let login = if login == ME {
+            login
+        } else {
+            login.strip_prefix('@').unwrap_or(login)
+        };
+        if login.is_empty() {
+            return AuthorFilter::Any;
+        }
+        if negated {
+            AuthorFilter::IsNot(login.to_string())
+        } else {
+            AuthorFilter::Is(login.to_string())
+        }
+    }
+
+    /// What the prompt opens with. `parse(to_input())` gives the value back.
+    pub fn to_input(&self) -> String {
+        match self {
+            AuthorFilter::Any => String::new(),
+            AuthorFilter::Is(login) => login.clone(),
+            AuthorFilter::IsNot(login) => format!("-{login}"),
+        }
+    }
+
+    /// The value in the summary line: `any`, `@me`, `-@me`, `octocat`.
+    pub fn summary(&self) -> String {
+        match self {
+            AuthorFilter::Any => "any".to_string(),
+            _ => self.to_input(),
+        }
+    }
+}
+
 /// The set of active filters. `Default` gives the "everything, nothing checked" state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Filters {
@@ -587,5 +659,76 @@ mod tests {
         let mut filters = Filters::default();
         assert_eq!(filters.reconcile_repo(&["web".to_string()]), None);
         assert_eq!(filters.repo, None);
+    }
+
+    #[test]
+    fn parse_blank_or_lone_signs_is_any() {
+        for text in ["", "  ", "-", " - ", "@", "-@"] {
+            assert_eq!(AuthorFilter::parse(text), AuthorFilter::Any, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn parse_reads_the_sign() {
+        assert_eq!(
+            AuthorFilter::parse("octocat"),
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(
+            AuthorFilter::parse("-octocat"),
+            AuthorFilter::IsNot("octocat".to_string())
+        );
+        assert_eq!(
+            AuthorFilter::parse("  octocat  "),
+            AuthorFilter::Is("octocat".to_string())
+        );
+    }
+
+    /// The author column prints `@octocat`, so that is what gets typed — but
+    /// `--author @octocat` silently matches nothing. `@me` is `gh`'s own
+    /// keyword and must keep its `@`.
+    #[test]
+    fn parse_strips_the_at_of_a_login_but_not_of_me() {
+        assert_eq!(
+            AuthorFilter::parse("@octocat"),
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(
+            AuthorFilter::parse("-@octocat"),
+            AuthorFilter::IsNot("octocat".to_string())
+        );
+        assert_eq!(AuthorFilter::parse("@me"), AuthorFilter::me());
+        assert_eq!(AuthorFilter::parse("-@me"), AuthorFilter::not_me());
+    }
+
+    #[test]
+    fn parse_tolerates_a_space_after_the_dash() {
+        assert_eq!(
+            AuthorFilter::parse("- octocat"),
+            AuthorFilter::IsNot("octocat".to_string())
+        );
+    }
+
+    /// Opening the prompt and confirming it untouched must never change the
+    /// filter.
+    #[test]
+    fn to_input_round_trips_through_parse() {
+        for author in [
+            AuthorFilter::Any,
+            AuthorFilter::me(),
+            AuthorFilter::not_me(),
+            AuthorFilter::Is("octocat".to_string()),
+            AuthorFilter::IsNot("octocat".to_string()),
+        ] {
+            assert_eq!(AuthorFilter::parse(&author.to_input()), author);
+        }
+    }
+
+    #[test]
+    fn summary_reads_like_the_query() {
+        assert_eq!(AuthorFilter::Any.summary(), "any");
+        assert_eq!(AuthorFilter::me().summary(), "@me");
+        assert_eq!(AuthorFilter::not_me().summary(), "-@me");
+        assert_eq!(AuthorFilter::Is("octocat".to_string()).summary(), "octocat");
     }
 }
