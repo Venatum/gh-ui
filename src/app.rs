@@ -864,6 +864,7 @@ fn errors_suffix(errors: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filters::FilterMode;
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -965,8 +966,19 @@ mod tests {
         assert_eq!(app.job_after_change(FilterField::Repo), Job::Prs);
     }
 
-    /// Only the Actions side is exercised here: the PRs side saves the
-    /// filters to disk and starts `gh`, so its logic is tested in `filters`.
+    #[test]
+    fn m_on_the_prs_tab_toggles_my_prs_and_reloads_them() {
+        let mut app = App::new(PathBuf::from("."));
+        // A load "in flight" makes `refresh_job` queue the job instead of
+        // spawning `gh`: we can see what would be reloaded without running it.
+        app.loading = true;
+
+        app.toggle_mine();
+
+        assert_eq!(app.filters.filter, FilterMode::Me);
+        assert_eq!(app.pending_job, Some(Job::Prs));
+    }
+
     #[test]
     fn m_on_the_actions_tab_toggles_the_run_filter() {
         let mut app = App::new(PathBuf::from("."));

@@ -1,8 +1,8 @@
 //! The filters: their state, how we evolve them from the keyboard, how we
 //! translate them into `gh` arguments, and how we save/reload them.
 
+use crate::config;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// The main mode, equivalent to the script's `--filter`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
@@ -302,16 +302,11 @@ impl Filters {
 
     // --- persistence ---
 
-    /// Path of the config file: ~/.config/gh-ui/filters.json (Linux/macOS).
-    fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("gh-ui").join("filters.json"))
-    }
-
     /// Reloads the filters, or returns the default values if missing/unreadable.
     pub fn load() -> Self {
         // `let ... else`: if the config can't be found, we bail out returning
         // the defaults. Otherwise we continue with `path`.
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("filters.json") else {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
@@ -322,7 +317,7 @@ impl Filters {
 
     /// Saves the filters as JSON (silent on failure).
     pub fn save(&self) {
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("filters.json") else {
             return;
         };
         if let Some(parent) = path.parent() {

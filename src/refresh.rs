@@ -1,8 +1,8 @@
 //! The auto-refresh pace: which intervals we offer, how the keyboard cycles
 //! through them, and how the chosen one is saved between runs.
 
+use crate::config;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// How often the app reloads on its own. `Off` — the default — means never:
@@ -76,15 +76,10 @@ pub struct RefreshSettings {
 }
 
 impl RefreshSettings {
-    /// Path of the config file: ~/.config/gh-ui/refresh.json (Linux/macOS).
-    fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("gh-ui").join("refresh.json"))
-    }
-
     /// Reloads the settings, falling back to the defaults if the file is
     /// missing or unreadable — the same lenient behaviour as `Filters::load`.
     pub fn load() -> Self {
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("refresh.json") else {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
@@ -95,7 +90,7 @@ impl RefreshSettings {
 
     /// Saves the settings as JSON (silent on failure).
     pub fn save(&self) {
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("refresh.json") else {
             return;
         };
         if let Some(parent) = path.parent() {

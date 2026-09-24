@@ -1,5 +1,6 @@
 mod app;
 mod columns;
+mod config;
 mod fetch;
 mod filters;
 mod gh;

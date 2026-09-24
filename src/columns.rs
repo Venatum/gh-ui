@@ -1,13 +1,13 @@
 //! The table columns: what each one displays, in which order, and which ones
 //! are shown. One enum per tab; the order/visibility logic is shared.
 
+use crate::config;
 use crate::model::{Pr, Run};
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Cell;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// What `ColumnLayout` needs to know about a column, whichever tab it belongs
 /// to: the full list, a header label, a width.
@@ -336,11 +336,6 @@ pub struct Columns {
 }
 
 impl Columns {
-    /// Path of the config file: ~/.config/gh-ui/columns.json (Linux/macOS).
-    fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("gh-ui").join("columns.json"))
-    }
-
     /// Parses the config's contents. Split out of `load` so the behaviour that
     /// matters — parse, then normalize BOTH layouts — is testable without
     /// touching the filesystem. An unreadable or malformed file yields the
@@ -362,7 +357,7 @@ impl Columns {
     /// Always normalized, so a partial or outdated file still yields a
     /// complete layout.
     pub fn load() -> Self {
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("columns.json") else {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
@@ -373,7 +368,7 @@ impl Columns {
 
     /// Saves the layout as JSON (silent on failure).
     pub fn save(&self) {
-        let Some(path) = Self::config_path() else {
+        let Some(path) = config::path("columns.json") else {
             return;
         };
         if let Some(parent) = path.parent() {
