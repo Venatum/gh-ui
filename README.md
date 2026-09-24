@@ -94,14 +94,15 @@ limit. None of the four is saved: the tab reopens on `my PRs` every time.
 | Key          | Action                                             |
 |--------------|----------------------------------------------------|
 | `↑/↓`, `j/k` | choose a filter                                    |
-| `←/→`, `h/l` | change its value (cycles: mode/since/repo ; checkboxes: draft/unreviewed/not-mine) |
+| `←/→`, `h/l` | change its value (cycles: repo/author/since ; checkboxes: review asked/draft/unreviewed) |
 | `enter`      | edit `author` / `label(s)` (text input)            |
 | `esc`, `f`   | close the panel                                    |
 
-Available filters on the **PRs** tab: `filter` (all/me/review-asked), `since`,
-`no-draft`, `unreviewed`, `not-mine`, `repo`, `author`, `label(s)`. From the
-list, `m` flips `filter` between `me` and `all`; turning it on also clears
-`author` and `not-mine`, which would otherwise defeat it.
+Available filters on the **PRs** tab: `repo`, `author`, `review asked`,
+`since`, `no-draft`, `unreviewed`, `label(s)`. `author` cycles through `any`,
+`@me` and `not @me` with `←/→`; `enter` types any other login, `-login` to
+exclude it. From the list, `m` shows my PRs (`author:@me`, `review asked`
+unticked), and pressing it again puts `author` back to `any`.
 
 On the **Actions** tab: `repo` (the one filter shared by both tabs), plus
 `only my PRs`, `status`, `event` and `workflow`.
