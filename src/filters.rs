@@ -126,6 +126,26 @@ impl AuthorFilter {
             _ => self.to_input(),
         }
     }
+
+    /// ←/→ in the panel: any → @me → not @me → any. A typed login sits at the
+    /// end of the cycle, so leaving it forgets it (it can be typed again).
+    pub fn next(&self) -> Self {
+        match self {
+            AuthorFilter::Any => AuthorFilter::me(),
+            AuthorFilter::Is(login) if login == ME => AuthorFilter::not_me(),
+            // not @me, or a typed login: back to the start.
+            _ => AuthorFilter::Any,
+        }
+    }
+    pub fn prev(&self) -> Self {
+        match self {
+            AuthorFilter::Any => AuthorFilter::not_me(),
+            AuthorFilter::IsNot(login) if login == ME => AuthorFilter::me(),
+            AuthorFilter::Is(login) if login == ME => AuthorFilter::Any,
+            // A typed login is the last value: the one before it is not @me.
+            _ => AuthorFilter::not_me(),
+        }
+    }
 }
 
 /// The set of active filters. `Default` gives the "everything, nothing checked" state.
@@ -159,6 +179,12 @@ impl Filters {
     }
     pub fn toggle_review_requested(&mut self) {
         self.review_requested = !self.review_requested;
+    }
+    pub fn cycle_author(&mut self) {
+        self.author = self.author.next();
+    }
+    pub fn cycle_author_back(&mut self) {
+        self.author = self.author.prev();
     }
     /// The `m` shortcut: the `Mine` preset on, or the author back to `any`.
     /// Neither direction touches the other filters.
@@ -960,5 +986,28 @@ mod tests {
     fn a_malformed_file_gives_the_defaults() {
         let f: Filters = serde_json::from_str(r#"{"no_draft":"yes"}"#).unwrap_or_default();
         assert_eq!(f, Filters::default());
+    }
+
+    #[test]
+    fn the_author_cycle_goes_any_me_not_me_and_back() {
+        assert_eq!(AuthorFilter::Any.next(), AuthorFilter::me());
+        assert_eq!(AuthorFilter::me().next(), AuthorFilter::not_me());
+        assert_eq!(AuthorFilter::not_me().next(), AuthorFilter::Any);
+
+        assert_eq!(AuthorFilter::Any.prev(), AuthorFilter::not_me());
+        assert_eq!(AuthorFilter::not_me().prev(), AuthorFilter::me());
+        assert_eq!(AuthorFilter::me().prev(), AuthorFilter::Any);
+    }
+
+    /// A typed login sits at the end of the cycle; leaving it forgets it.
+    #[test]
+    fn a_typed_login_sits_at_the_end_of_the_cycle() {
+        for typed in [
+            AuthorFilter::Is("octocat".to_string()),
+            AuthorFilter::IsNot("octocat".to_string()),
+        ] {
+            assert_eq!(typed.next(), AuthorFilter::Any, "{typed:?}");
+            assert_eq!(typed.prev(), AuthorFilter::not_me(), "{typed:?}");
+        }
     }
 }

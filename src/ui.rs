@@ -453,10 +453,7 @@ fn field_value(field: FilterField, f: &Filters, rf: &RunFilters) -> String {
         FilterField::Unreviewed => toggle_box(f.unreviewed),
         FilterField::ReviewAsked => toggle_box(f.review_requested),
         FilterField::Repo => format!("◂ {} ▸", f.repo.as_deref().unwrap_or("all")),
-        FilterField::Author => match &f.author {
-            AuthorFilter::Any => empty.to_string(),
-            author => author.to_input(),
-        },
+        FilterField::Author => format!("◂ {} ▸", author_label(&f.author)),
         FilterField::Label => {
             if f.labels.is_empty() {
                 empty.to_string()
@@ -472,6 +469,16 @@ fn toggle_box(on: bool) -> String {
         "[x]".to_string()
     } else {
         "[ ]".to_string()
+    }
+}
+
+/// The `Author` row's value: `any`, `@me`, `not @me`, `octocat`, `not octocat`.
+/// Words rather than the query's `-`, which is easy to miss inside `◂ ▸`.
+fn author_label(author: &AuthorFilter) -> String {
+    match author {
+        AuthorFilter::Any => "any".to_string(),
+        AuthorFilter::Is(login) => login.clone(),
+        AuthorFilter::IsNot(login) => format!("not {login}"),
     }
 }
 
@@ -854,6 +861,26 @@ mod tests {
         assert!(
             text.contains("Review asked [ ]"),
             "the Review asked row must fit the name column"
+        );
+    }
+
+    #[test]
+    fn the_author_row_names_its_value() {
+        let rf = RunFilters::default();
+        let row = |author| {
+            let f = Filters {
+                author,
+                ..Default::default()
+            };
+            field_value(FilterField::Author, &f, &rf)
+        };
+        assert_eq!(row(AuthorFilter::Any), "◂ any ▸");
+        assert_eq!(row(AuthorFilter::me()), "◂ @me ▸");
+        assert_eq!(row(AuthorFilter::not_me()), "◂ not @me ▸");
+        assert_eq!(row(AuthorFilter::Is("octocat".to_string())), "◂ octocat ▸");
+        assert_eq!(
+            row(AuthorFilter::IsNot("octocat".to_string())),
+            "◂ not octocat ▸"
         );
     }
 }

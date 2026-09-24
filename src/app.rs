@@ -510,8 +510,15 @@ impl App {
                 self.reset_selection();
                 return;
             }
-            // text fields are edited with Enter, not with ←/→
-            FilterField::Author | FilterField::Label => return,
+            FilterField::Author => {
+                if forward {
+                    self.filters.cycle_author();
+                } else {
+                    self.filters.cycle_author_back();
+                }
+            }
+            // text field: edited with Enter, not with ←/→
+            FilterField::Label => return,
         }
         self.apply_filter_change(field);
     }
@@ -1115,5 +1122,17 @@ mod tests {
             AuthorFilter::IsNot("octocat".to_string())
         );
         assert_eq!(app.pending_job, Some(Job::Prs));
+    }
+
+    #[test]
+    fn arrows_on_author_cycle_it_and_reload_the_prs() {
+        let mut app = app_on(FilterField::Author);
+
+        app.filter_change(true);
+        assert_eq!(app.filters.author, AuthorFilter::me());
+        assert_eq!(app.pending_job, Some(Job::Prs));
+
+        app.filter_change(false);
+        assert_eq!(app.filters.author, AuthorFilter::Any);
     }
 }
