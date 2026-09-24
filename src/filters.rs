@@ -4,39 +4,6 @@
 use crate::config;
 use serde::{Deserialize, Serialize};
 
-/// The main mode, equivalent to the script's `--filter`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
-pub enum FilterMode {
-    #[default]
-    All,
-    Me,
-    ReviewAsked,
-}
-
-impl FilterMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            FilterMode::All => "all",
-            FilterMode::Me => "me",
-            FilterMode::ReviewAsked => "review-asked",
-        }
-    }
-    fn next(self) -> Self {
-        match self {
-            FilterMode::All => FilterMode::Me,
-            FilterMode::Me => FilterMode::ReviewAsked,
-            FilterMode::ReviewAsked => FilterMode::All,
-        }
-    }
-    fn prev(self) -> Self {
-        match self {
-            FilterMode::All => FilterMode::ReviewAsked,
-            FilterMode::Me => FilterMode::All,
-            FilterMode::ReviewAsked => FilterMode::Me,
-        }
-    }
-}
-
 /// Time window, equivalent to `--since`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum Since {
@@ -95,13 +62,10 @@ impl Since {
 
 /// `gh`'s keyword for the logged-in user. An ordinary login value here, exactly
 /// as `gh` treats it: it goes into the query as is.
-#[allow(dead_code)]
 pub const ME: &str = "@me";
 
 /// The `author:` qualifier, sign included. One field for "me", "not me" and
 /// any other login, so two of them can never be set at once.
-// Wired into `Filters` by the next commit; until then only the tests use it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AuthorFilter {
     /// No author qualifier.
@@ -113,7 +77,6 @@ pub enum AuthorFilter {
     IsNot(String),
 }
 
-#[allow(dead_code)]
 impl AuthorFilter {
     pub fn me() -> Self {
         AuthorFilter::Is(ME.to_string())
@@ -166,50 +129,44 @@ impl AuthorFilter {
 }
 
 /// The set of active filters. `Default` gives the "everything, nothing checked" state.
+///
+/// One field per `gh` search qualifier, so two fields can never fight over the
+/// same one. Read through `StoredFilters`, which also understands the files
+/// written before `author` took over `filter: Me` and `not_mine`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(from = "StoredFilters")]
 pub struct Filters {
-    pub filter: FilterMode,
+    /// The `author:` qualifier, sign included.
+    pub author: AuthorFilter,
+    /// `review-requested:@me`.
+    pub review_requested: bool,
     pub no_draft: bool,
     pub unreviewed: bool,
-    pub not_mine: bool,
     pub since: Since,
     /// `None` = all repos; `Some(name)` = a single one.
     pub repo: Option<String>,
-    /// Author filter (typed on the keyboard). `None` = no filter.
-    pub author: Option<String>,
     /// Filter by labels (logical AND). Empty = no filter.
-    #[serde(default)]
     pub labels: Vec<String>,
 }
 
 impl Filters {
     // --- keyboard-driven mutations ---
-    pub fn cycle_filter(&mut self) {
-        self.filter = self.filter.next();
-    }
-    pub fn cycle_filter_back(&mut self) {
-        self.filter = self.filter.prev();
-    }
     pub fn toggle_no_draft(&mut self) {
         self.no_draft = !self.no_draft;
     }
     pub fn toggle_unreviewed(&mut self) {
         self.unreviewed = !self.unreviewed;
     }
-    pub fn toggle_not_mine(&mut self) {
-        self.not_mine = !self.not_mine;
+    pub fn toggle_review_requested(&mut self) {
+        self.review_requested = !self.review_requested;
     }
-    /// The `m` shortcut: "my PRs" on, or back to all. Turning it on also drops
-    /// what would defeat it — an explicit author wins over `me` in
-    /// `to_gh_args`, and `not-mine` would leave an always-empty list. Turning
-    /// it off only touches the mode.
+    /// The `m` shortcut: the `Mine` preset on, or the author back to `any`.
+    /// Neither direction touches the other filters.
     pub fn toggle_mine(&mut self) {
-        if self.filter == FilterMode::Me {
-            self.filter = FilterMode::All;
+        if Preset::Mine.is_active(self) {
+            self.author = AuthorFilter::Any;
         } else {
-            self.filter = FilterMode::Me;
-            self.author = None;
-            self.not_mine = false;
+            Preset::Mine.apply(self);
         }
     }
     pub fn cycle_since(&mut self) {
@@ -278,9 +235,14 @@ impl Filters {
         }
     }
 
-    /// The part that only goes to `gh pr list`: "filter:me · since:1w · no-draft".
+    /// The part that only goes to `gh pr list`, read like a GitHub query:
+    /// "author:@me · since:1w · no-draft". `author:` always comes first, so the
+    /// line is never empty and says at once whose PRs are shown.
     pub fn summary_prs(&self) -> String {
-        let mut parts = vec![format!("filter:{}", self.filter.label())];
+        let mut parts = vec![format!("author:{}", self.author.summary())];
+        if self.review_requested {
+            parts.push("review-asked".to_string());
+        }
         if self.since != Since::Off {
             parts.push(format!("since:{}", self.since.label()));
         }
@@ -290,26 +252,15 @@ impl Filters {
         if self.unreviewed {
             parts.push("unreviewed".to_string());
         }
-        if self.not_mine {
-            parts.push("not-mine".to_string());
-        }
-        if let Some(a) = &self.author {
-            parts.push(format!("author:{a}"));
-        }
         if !self.labels.is_empty() {
             parts.push(format!("labels:{}", self.labels.join(",")));
         }
         parts.join(" · ")
     }
 
-    /// Stores the author filter (empty string → no filter).
-    pub fn set_author(&mut self, value: &str) {
-        let value = value.trim();
-        self.author = if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        };
+    /// Stores the author typed in the prompt (see `AuthorFilter::parse`).
+    pub fn set_author(&mut self, text: &str) {
+        self.author = AuthorFilter::parse(text);
     }
 
     /// Stores the labels from an input (separated by spaces).
@@ -325,20 +276,16 @@ impl Filters {
         // `search`: the qualifiers joined into a single `--search "a b c"`.
         let mut search: Vec<String> = Vec::new();
 
-        // Author: an explicit `--author` wins over the `me` mode (like the
-        // script). `or_else` computes the second case only if the first is None.
-        let author = self.author.clone().or_else(|| {
-            if self.filter == FilterMode::Me {
-                Some("@me".to_string())
-            } else {
-                None
+        match &self.author {
+            AuthorFilter::Any => {}
+            AuthorFilter::Is(login) => {
+                args.push("--author".to_string());
+                args.push(login.clone());
             }
-        });
-        if let Some(a) = author {
-            args.push("--author".to_string());
-            args.push(a);
+            // `gh pr list` has no flag for an exclusion: only the search has it.
+            AuthorFilter::IsNot(login) => search.push(format!("-author:{login}")),
         }
-        if self.filter == FilterMode::ReviewAsked {
+        if self.review_requested {
             search.push("review-requested:@me".to_string());
         }
 
@@ -360,9 +307,6 @@ impl Filters {
         }
         if self.unreviewed {
             search.push("-reviewed-by:@me".to_string());
-        }
-        if self.not_mine {
-            search.push("-author:@me".to_string());
         }
 
         if !search.is_empty() {
@@ -402,6 +346,103 @@ impl Filters {
 }
 
 // `#[cfg(test)]`: this module is compiled ONLY for `cargo test`.
+
+/// A named set of filter values, applied on top of the filters — what
+/// `gh pr status` does with its fixed "mine" / "review requested" queries. A
+/// preset may set several filters at once; that is its point over a plain
+/// filter value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Preset {
+    /// My own PRs: `author:@me`, without "review requested", which would
+    /// empty the list (nobody requests their own review).
+    Mine,
+}
+
+impl Preset {
+    pub fn apply(self, f: &mut Filters) {
+        match self {
+            Preset::Mine => {
+                f.author = AuthorFilter::me();
+                f.review_requested = false;
+            }
+        }
+    }
+
+    pub fn is_active(self, f: &Filters) -> bool {
+        match self {
+            Preset::Mine => f.author == AuthorFilter::me() && !f.review_requested,
+        }
+    }
+}
+
+/// What a filters file may hold: the current fields, or the legacy ones
+/// written before `author` became an `AuthorFilter`. `Filters` deserializes
+/// through it, so an old file keeps working and is converted on the next save.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct StoredFilters {
+    /// Legacy only, and written by every older version: its presence is how
+    /// we tell the two formats apart.
+    filter: Option<LegacyMode>,
+    /// Legacy only.
+    not_mine: bool,
+    /// A login string or `null` in a legacy file, an `AuthorFilter` in a new
+    /// one. `AuthorFilter::Any` is the string `"Any"`, so the shape alone is
+    /// ambiguous: `filter` decides how to read it.
+    author: serde_json::Value,
+    review_requested: bool,
+    no_draft: bool,
+    unreviewed: bool,
+    since: Since,
+    repo: Option<String>,
+    labels: Vec<String>,
+}
+
+/// The old `filter` field.
+#[derive(Deserialize, Clone, Copy, PartialEq)]
+enum LegacyMode {
+    All,
+    Me,
+    ReviewAsked,
+}
+
+impl From<StoredFilters> for Filters {
+    fn from(s: StoredFilters) -> Self {
+        let (author, review_requested) = match s.filter {
+            Some(mode) => (
+                legacy_author(&s.author, mode, s.not_mine),
+                mode == LegacyMode::ReviewAsked,
+            ),
+            // A malformed author loses only itself, not the whole file.
+            None => (
+                serde_json::from_value(s.author).unwrap_or_default(),
+                s.review_requested,
+            ),
+        };
+        Filters {
+            author,
+            review_requested,
+            no_draft: s.no_draft,
+            unreviewed: s.unreviewed,
+            since: s.since,
+            repo: s.repo,
+            labels: s.labels,
+        }
+    }
+}
+
+/// The legacy author, with the precedence the old `to_gh_args` applied: a
+/// typed author won over `me`, and `me` + `not_mine` was an empty list anyway.
+/// The typed login goes through the prompt rules, so `@octocat` is fixed too.
+fn legacy_author(author: &serde_json::Value, mode: LegacyMode, not_mine: bool) -> AuthorFilter {
+    match author.as_str().map(AuthorFilter::parse) {
+        Some(typed) if typed != AuthorFilter::Any => typed,
+        _ if mode == LegacyMode::Me => AuthorFilter::me(),
+        _ if not_mine => AuthorFilter::not_me(),
+        _ => AuthorFilter::Any,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,7 +452,7 @@ mod tests {
         let f = Filters {
             repo: Some("api".to_string()),
             no_draft: true,
-            author: Some("moi".to_string()),
+            author: AuthorFilter::Is("moi".to_string()),
             ..Default::default()
         };
 
@@ -437,7 +478,7 @@ mod tests {
             since: Since::W1,
             no_draft: true,
             unreviewed: true,
-            not_mine: true,
+            author: AuthorFilter::not_me(),
             ..Default::default()
         };
         let args = f.to_gh_args();
@@ -448,80 +489,6 @@ mod tests {
         assert!(search.contains("draft:false"));
         assert!(search.contains("-reviewed-by:@me"));
         assert!(search.contains("-author:@me"));
-    }
-
-    #[test]
-    fn explicit_author_wins_over_the_me_mode() {
-        let f = Filters {
-            filter: FilterMode::Me,
-            author: Some("octocat".to_string()),
-            ..Default::default()
-        };
-        let args = f.to_gh_args();
-        // --author only once, with the explicit author (not @me)
-        let authors: Vec<&String> = args
-            .iter()
-            .zip(args.iter().skip(1))
-            .filter(|(k, _)| *k == "--author")
-            .map(|(_, v)| v)
-            .collect();
-        assert_eq!(authors, vec!["octocat"]);
-    }
-
-    #[test]
-    fn toggle_mine_goes_to_me_and_back_to_all() {
-        let mut f = Filters::default();
-        f.toggle_mine();
-        assert_eq!(f.filter, FilterMode::Me);
-        f.toggle_mine();
-        assert_eq!(f.filter, FilterMode::All);
-    }
-
-    #[test]
-    fn toggle_mine_from_review_asked_goes_to_me() {
-        let mut f = Filters {
-            filter: FilterMode::ReviewAsked,
-            ..Default::default()
-        };
-        f.toggle_mine();
-        assert_eq!(f.filter, FilterMode::Me);
-    }
-
-    /// An explicit author would override `me`, and `not-mine` would cancel it
-    /// out: left alone, either one makes the key look broken.
-    #[test]
-    fn toggle_mine_on_clears_what_contradicts_it() {
-        let mut f = Filters {
-            author: Some("octocat".to_string()),
-            not_mine: true,
-            ..Default::default()
-        };
-        f.toggle_mine();
-        assert_eq!(f.author, None);
-        assert!(!f.not_mine);
-        assert_eq!(f.to_gh_args(), vec!["--author", "@me"]);
-    }
-
-    #[test]
-    fn toggle_mine_off_only_touches_the_mode() {
-        let mut f = Filters {
-            filter: FilterMode::Me,
-            no_draft: true,
-            since: Since::W1,
-            labels: vec!["bug".to_string()],
-            ..Default::default()
-        };
-        f.toggle_mine();
-        assert_eq!(
-            f,
-            Filters {
-                filter: FilterMode::All,
-                no_draft: true,
-                since: Since::W1,
-                labels: vec!["bug".to_string()],
-                ..Default::default()
-            }
-        );
     }
 
     #[test]
@@ -562,12 +529,12 @@ mod tests {
     }
 
     #[test]
-    fn set_author_trims_and_empty_gives_none() {
+    fn set_author_parses_the_prompt() {
         let mut f = Filters::default();
-        f.set_author("  octocat  ");
-        assert_eq!(f.author.as_deref(), Some("octocat")); // spaces stripped
+        f.set_author("  -octocat  ");
+        assert_eq!(f.author, AuthorFilter::IsNot("octocat".to_string()));
         f.set_author("   ");
-        assert_eq!(f.author, None); // empty input → no filter
+        assert_eq!(f.author, AuthorFilter::Any); // empty input → no filter
     }
 
     #[test]
@@ -582,11 +549,11 @@ mod tests {
     #[test]
     fn serde_round_trip_preserves_the_filters() {
         let original = Filters {
-            filter: FilterMode::ReviewAsked,
+            review_requested: true,
             no_draft: true,
             since: Since::W1,
             repo: Some("hello-world".to_string()),
-            author: Some("octocat".to_string()),
+            author: AuthorFilter::Is("octocat".to_string()),
             labels: vec!["bug".to_string()],
             ..Default::default()
         };
@@ -730,5 +697,268 @@ mod tests {
         assert_eq!(AuthorFilter::me().summary(), "@me");
         assert_eq!(AuthorFilter::not_me().summary(), "-@me");
         assert_eq!(AuthorFilter::Is("octocat".to_string()).summary(), "octocat");
+    }
+
+    // --- gh arguments ---
+
+    #[test]
+    fn author_is_goes_to_the_author_flag() {
+        let f = Filters {
+            author: AuthorFilter::Is("octocat".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(f.to_gh_args(), vec!["--author", "octocat"]);
+    }
+
+    #[test]
+    fn author_is_not_goes_to_the_search() {
+        let f = Filters {
+            author: AuthorFilter::not_me(),
+            ..Default::default()
+        };
+        assert_eq!(f.to_gh_args(), vec!["--search", "-author:@me"]);
+    }
+
+    #[test]
+    fn review_requested_goes_to_the_search() {
+        let f = Filters {
+            review_requested: true,
+            ..Default::default()
+        };
+        assert_eq!(f.to_gh_args(), vec!["--search", "review-requested:@me"]);
+    }
+
+    /// The one combination the model still allows that returns nothing:
+    /// nobody requests their own review. Accepted on purpose (over-narrow, not
+    /// contradictory, and both show in the summary): no cross-field rule.
+    #[test]
+    fn me_and_review_requested_are_both_sent() {
+        let f = Filters {
+            author: AuthorFilter::me(),
+            review_requested: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            f.to_gh_args(),
+            vec!["--author", "@me", "--search", "review-requested:@me"]
+        );
+    }
+
+    // --- summary ---
+
+    #[test]
+    fn the_summary_starts_with_the_author() {
+        let with = |author| Filters {
+            author,
+            ..Default::default()
+        };
+        assert_eq!(Filters::default().summary_prs(), "author:any");
+        assert_eq!(with(AuthorFilter::me()).summary_prs(), "author:@me");
+        assert_eq!(with(AuthorFilter::not_me()).summary_prs(), "author:-@me");
+        let f = Filters {
+            review_requested: true,
+            ..Default::default()
+        };
+        assert_eq!(f.summary_prs(), "author:any · review-asked");
+    }
+
+    // --- presets ---
+
+    /// Every filter a preset must leave alone, set to a non-default value.
+    fn the_rest() -> Filters {
+        Filters {
+            no_draft: true,
+            unreviewed: true,
+            since: Since::W1,
+            repo: Some("api".to_string()),
+            labels: vec!["bug".to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mine_sets_me_and_unticks_review_requested() {
+        let mut f = Filters {
+            author: AuthorFilter::Is("octocat".to_string()),
+            review_requested: true,
+            ..the_rest()
+        };
+        Preset::Mine.apply(&mut f);
+        assert_eq!(
+            f,
+            Filters {
+                author: AuthorFilter::me(),
+                ..the_rest()
+            }
+        );
+        assert!(Preset::Mine.is_active(&f));
+    }
+
+    #[test]
+    fn mine_is_not_active_with_review_requested() {
+        let f = Filters {
+            author: AuthorFilter::me(),
+            review_requested: true,
+            ..Default::default()
+        };
+        assert!(!Preset::Mine.is_active(&f));
+    }
+
+    #[test]
+    fn toggle_mine_twice_returns_to_any_and_keeps_the_rest() {
+        let mut f = the_rest();
+        f.toggle_mine();
+        assert_eq!(
+            f,
+            Filters {
+                author: AuthorFilter::me(),
+                ..the_rest()
+            }
+        );
+        f.toggle_mine();
+        assert_eq!(f, the_rest());
+    }
+
+    #[test]
+    fn toggle_mine_from_not_me_turns_it_on() {
+        let mut f = Filters {
+            author: AuthorFilter::not_me(),
+            ..Default::default()
+        };
+        f.toggle_mine();
+        assert_eq!(f.author, AuthorFilter::me());
+    }
+
+    // --- saved file ---
+
+    /// Reads a saved file the way `Filters::load` does.
+    fn from_file(json: &str) -> Filters {
+        serde_json::from_str(json).expect("a readable filters file")
+    }
+
+    /// The user's real file at the time of the change, verbatim.
+    #[test]
+    fn the_current_file_keeps_every_other_filter() {
+        let f = from_file(
+            r#"{"filter":"All","no_draft":true,"unreviewed":true,"not_mine":false,
+                "since":"W1","repo":"service-clm","author":null,"labels":[]}"#,
+        );
+        assert_eq!(
+            f,
+            Filters {
+                no_draft: true,
+                unreviewed: true,
+                since: Since::W1,
+                repo: Some("service-clm".to_string()),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn each_legacy_author_field_alone() {
+        let author = |json| from_file(json).author;
+        assert_eq!(
+            author(r#"{"filter":"All","author":"octocat"}"#),
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(author(r#"{"filter":"Me"}"#), AuthorFilter::me());
+        assert_eq!(
+            author(r#"{"filter":"All","not_mine":true}"#),
+            AuthorFilter::not_me()
+        );
+        assert_eq!(author(r#"{"filter":"All"}"#), AuthorFilter::Any);
+    }
+
+    #[test]
+    fn legacy_review_asked_becomes_the_checkbox() {
+        let f = from_file(r#"{"filter":"ReviewAsked"}"#);
+        assert!(f.review_requested);
+        assert_eq!(f.author, AuthorFilter::Any);
+    }
+
+    /// Same precedence as the old `to_gh_args`: a typed author already won
+    /// over `me`, and `me` + `not_mine` was an empty list anyway.
+    #[test]
+    fn legacy_precedence_is_typed_author_then_me_then_not_mine() {
+        assert_eq!(
+            from_file(r#"{"filter":"Me","not_mine":true,"author":"octocat"}"#).author,
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(
+            from_file(r#"{"filter":"Me","not_mine":true}"#).author,
+            AuthorFilter::me()
+        );
+    }
+
+    #[test]
+    fn legacy_review_asked_combines_with_a_typed_author() {
+        let f = from_file(r#"{"filter":"ReviewAsked","author":"octocat"}"#);
+        assert_eq!(f.author, AuthorFilter::Is("octocat".to_string()));
+        assert!(f.review_requested);
+    }
+
+    #[test]
+    fn a_legacy_author_goes_through_the_prompt_rules() {
+        assert_eq!(
+            from_file(r#"{"filter":"All","author":"@octocat"}"#).author,
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(
+            from_file(r#"{"filter":"All","author":"-octocat"}"#).author,
+            AuthorFilter::IsNot("octocat".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_legacy_author_falls_back_to_the_mode() {
+        assert_eq!(
+            from_file(r#"{"filter":"Me","author":""}"#).author,
+            AuthorFilter::me()
+        );
+    }
+
+    /// `filter` is the format discriminant: when it is there, the new keys
+    /// are ignored, even if a hand edit left one behind.
+    #[test]
+    fn the_legacy_filter_key_decides_the_format() {
+        let f =
+            from_file(r#"{"filter":"ReviewAsked","review_requested":false,"author":"octocat"}"#);
+        assert!(f.review_requested);
+        assert_eq!(f.author, AuthorFilter::Is("octocat".to_string()));
+    }
+
+    /// `Any` is written as the string `"Any"`: it must come back as `Any`,
+    /// not as a legacy login named "Any".
+    #[test]
+    fn the_new_format_round_trips_even_any() {
+        for author in [
+            AuthorFilter::Any,
+            AuthorFilter::me(),
+            AuthorFilter::not_me(),
+            AuthorFilter::Is("octocat".to_string()),
+        ] {
+            let original = Filters {
+                author,
+                review_requested: true,
+                ..the_rest()
+            };
+            let json = serde_json::to_string(&original).unwrap();
+            assert_eq!(from_file(&json), original, "{json}");
+        }
+    }
+
+    #[test]
+    fn the_written_file_has_no_legacy_key() {
+        let json = serde_json::to_string(&Filters::default()).unwrap();
+        assert!(!json.contains("\"filter\""), "{json}");
+        assert!(!json.contains("not_mine"), "{json}");
+    }
+
+    /// `load` falls back to the defaults when the file does not parse.
+    #[test]
+    fn a_malformed_file_gives_the_defaults() {
+        let f: Filters = serde_json::from_str(r#"{"no_draft":"yes"}"#).unwrap_or_default();
+        assert_eq!(f, Filters::default());
     }
 }

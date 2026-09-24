@@ -48,13 +48,13 @@ pub enum InputKind {
 /// The rows of the filter panel, in display order.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FilterField {
-    Mode,
     Since,
     NoDraft,
     Unreviewed,
-    NotMine,
     Repo,
     Author,
+    /// PRs tab: `review-requested:@me`.
+    ReviewAsked,
     Label,
     /// Actions tab only: show the runs of my PRs' branches only.
     OnlyPrRuns,
@@ -67,14 +67,13 @@ pub enum FilterField {
 }
 
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
-const PR_FIELDS: [FilterField; 8] = [
+const PR_FIELDS: [FilterField; 7] = [
     FilterField::Repo,
-    FilterField::Mode,
+    FilterField::Author,
+    FilterField::ReviewAsked,
     FilterField::Since,
     FilterField::NoDraft,
     FilterField::Unreviewed,
-    FilterField::NotMine,
-    FilterField::Author,
     FilterField::Label,
 ];
 
@@ -471,13 +470,6 @@ impl App {
     pub fn filter_change(&mut self, forward: bool) {
         let field = self.active_fields()[self.filter_cursor];
         match field {
-            FilterField::Mode => {
-                if forward {
-                    self.filters.cycle_filter();
-                } else {
-                    self.filters.cycle_filter_back();
-                }
-            }
             FilterField::Since => {
                 if forward {
                     self.filters.cycle_since();
@@ -487,7 +479,7 @@ impl App {
             }
             FilterField::NoDraft => self.filters.toggle_no_draft(),
             FilterField::Unreviewed => self.filters.toggle_unreviewed(),
-            FilterField::NotMine => self.filters.toggle_not_mine(),
+            FilterField::ReviewAsked => self.filters.toggle_review_requested(),
             FilterField::Repo => {
                 if forward {
                     self.filters.cycle_repo(&self.repos);
@@ -676,7 +668,7 @@ impl App {
     /// Opens the prompt, pre-filled with the filter's current value.
     pub fn start_input(&mut self, kind: InputKind) {
         self.input_buffer = match kind {
-            InputKind::Author => self.filters.author.clone().unwrap_or_default(),
+            InputKind::Author => self.filters.author.to_input(),
             InputKind::Label => self.filters.labels.join(" "),
             InputKind::Search => self.search.clone(),
         };
@@ -846,7 +838,7 @@ impl App {
             }
             Tab::Prs => {
                 self.filters.toggle_mine();
-                self.apply_filter_change(FilterField::Mode);
+                self.apply_filter_change(FilterField::Author);
             }
         }
     }
@@ -864,7 +856,7 @@ fn errors_suffix(errors: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filters::FilterMode;
+    use crate::filters::AuthorFilter;
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -899,14 +891,14 @@ mod tests {
         );
 
         // The PR-only filters never show up on the Actions tab.
-        assert!(prs.contains(&FilterField::Mode));
+        assert!(prs.contains(&FilterField::Author));
         assert!(!prs.contains(&FilterField::OnlyPrRuns));
     }
 
     #[test]
     fn section_groups_the_fields() {
         assert_eq!(section_of(FilterField::Repo), "Common");
-        assert_eq!(section_of(FilterField::Mode), "PRs");
+        assert_eq!(section_of(FilterField::Author), "PRs");
         assert_eq!(section_of(FilterField::OnlyPrRuns), "Actions");
         assert_eq!(section_of(FilterField::RunStatus), "Actions");
         assert_eq!(section_of(FilterField::RunWorkflow), "Actions");
@@ -915,7 +907,7 @@ mod tests {
     #[test]
     fn switching_tab_clamps_the_filter_cursor() {
         let mut app = App::new(PathBuf::from("."));
-        // Last row of the PRs panel (8 fields) …
+        // Last row of the PRs panel (7 fields) …
         app.filter_cursor = fields_for(Tab::Prs).len() - 1;
         // … then switch to Actions, which only has 2. Without clamping the next
         // indexing of the fields array would panic.
@@ -926,7 +918,7 @@ mod tests {
     #[test]
     fn repo_is_the_only_common_filter() {
         assert!(is_common(FilterField::Repo));
-        assert!(!is_common(FilterField::Mode));
+        assert!(!is_common(FilterField::Author));
         assert!(!is_common(FilterField::OnlyPrRuns));
         assert!(!is_common(FilterField::RunStatus));
     }
@@ -946,7 +938,7 @@ mod tests {
         app.runs_loaded = true;
 
         // A PR-only filter never touches the runs.
-        assert_eq!(app.job_after_change(FilterField::Mode), Job::Prs);
+        assert_eq!(app.job_after_change(FilterField::Author), Job::Prs);
         // The shared filter narrows BOTH flows: reload both, or the tab we are
         // not looking at keeps data from the previous scope.
         assert_eq!(app.job_after_change(FilterField::Repo), Job::Both);
@@ -975,7 +967,7 @@ mod tests {
 
         app.toggle_mine();
 
-        assert_eq!(app.filters.filter, FilterMode::Me);
+        assert_eq!(app.filters.author, AuthorFilter::me());
         assert_eq!(app.pending_job, Some(Job::Prs));
     }
 
@@ -983,13 +975,13 @@ mod tests {
     fn m_on_the_actions_tab_toggles_the_run_filter() {
         let mut app = App::new(PathBuf::from("."));
         app.active_tab = Tab::Runs;
-        let mode = app.filters.filter;
+        let prs_filters = app.filters.clone();
         let before = app.run_filters.only_pr_runs;
 
         app.toggle_mine();
 
         assert_eq!(app.run_filters.only_pr_runs, !before);
-        assert_eq!(app.filters.filter, mode, "the PR filters must not move");
+        assert_eq!(app.filters, prs_filters, "the PR filters must not move");
     }
 
     #[test]
@@ -1070,5 +1062,58 @@ mod tests {
         assert_eq!(app.notice, None, "nothing was dropped, nothing to report");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An `App` with the PRs panel cursor on `field`, and a load "in flight"
+    /// so a filter change queues its reload instead of spawning `gh`.
+    fn app_on(field: FilterField) -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.loading = true;
+        app.filter_cursor = fields_for(Tab::Prs)
+            .iter()
+            .position(|f| *f == field)
+            .expect("a PRs panel row");
+        app
+    }
+
+    #[test]
+    fn the_prs_panel_rows_in_order() {
+        assert_eq!(
+            fields_for(Tab::Prs),
+            [
+                FilterField::Repo,
+                FilterField::Author,
+                FilterField::ReviewAsked,
+                FilterField::Since,
+                FilterField::NoDraft,
+                FilterField::Unreviewed,
+                FilterField::Label,
+            ]
+        );
+    }
+
+    #[test]
+    fn review_asked_toggles_and_reloads_the_prs() {
+        let mut app = app_on(FilterField::ReviewAsked);
+        app.filter_change(true);
+        assert!(app.filters.review_requested);
+        assert_eq!(app.pending_job, Some(Job::Prs));
+    }
+
+    #[test]
+    fn enter_on_author_prefills_then_parses_the_prompt() {
+        let mut app = app_on(FilterField::Author);
+        app.filters.author = AuthorFilter::not_me();
+
+        app.filter_activate();
+        assert_eq!(app.input_buffer, "-@me");
+
+        app.input_buffer = "-octocat".to_string();
+        app.input_commit();
+        assert_eq!(
+            app.filters.author,
+            AuthorFilter::IsNot("octocat".to_string())
+        );
+        assert_eq!(app.pending_job, Some(Job::Prs));
     }
 }

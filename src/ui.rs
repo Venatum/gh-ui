@@ -3,7 +3,7 @@
 
 use crate::app::{App, FilterField, InputKind, Tab, section_of};
 use crate::columns::{Column, ColumnLayout, PrColumn, RunColumn};
-use crate::filters::Filters;
+use crate::filters::{AuthorFilter, Filters};
 use crate::refresh::{self, AutoRefresh};
 use crate::runfilters::RunFilters;
 use ratatui::Frame;
@@ -326,7 +326,7 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         let focused = i == app.filter_cursor;
         let marker = if focused { "▸ " } else { "  " };
         let text = format!(
-            "{marker}{:<11} {}",
+            "{marker}{:<12} {}",
             field_name(field),
             field_value(field, f, &app.run_filters)
         );
@@ -426,13 +426,12 @@ fn column_lines<C: Column>(
 /// The displayed name of a filter field.
 fn field_name(field: FilterField) -> &'static str {
     match field {
-        FilterField::Mode => "Mode",
         FilterField::Since => "Since",
         FilterField::NoDraft => "No draft",
         FilterField::Unreviewed => "Unreviewed",
-        FilterField::NotMine => "Not mine",
         FilterField::Repo => "Repo",
         FilterField::Author => "Author",
+        FilterField::ReviewAsked => "Review asked",
         FilterField::Label => "Label",
         FilterField::OnlyPrRuns => "Only my PRs",
         FilterField::RunStatus => "Status",
@@ -449,15 +448,14 @@ fn field_value(field: FilterField, f: &Filters, rf: &RunFilters) -> String {
         FilterField::RunStatus => format!("◂ {} ▸", rf.status.label()),
         FilterField::RunEvent => format!("◂ {} ▸", rf.event.as_deref().unwrap_or("all")),
         FilterField::RunWorkflow => format!("◂ {} ▸", rf.workflow.as_deref().unwrap_or("all")),
-        FilterField::Mode => format!("◂ {} ▸", f.filter.label()),
         FilterField::Since => format!("◂ {} ▸", f.since.label()),
         FilterField::NoDraft => toggle_box(f.no_draft),
         FilterField::Unreviewed => toggle_box(f.unreviewed),
-        FilterField::NotMine => toggle_box(f.not_mine),
+        FilterField::ReviewAsked => toggle_box(f.review_requested),
         FilterField::Repo => format!("◂ {} ▸", f.repo.as_deref().unwrap_or("all")),
-        FilterField::Author => match f.author.as_deref() {
-            Some(a) if !a.is_empty() => a.to_string(),
-            _ => empty.to_string(),
+        FilterField::Author => match &f.author {
+            AuthorFilter::Any => empty.to_string(),
+            author => author.to_input(),
         },
         FilterField::Label => {
             if f.labels.is_empty() {
@@ -561,6 +559,7 @@ mod tests {
     use crate::columns::{ColumnLayout, PrColumn};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
 
     /// Renders into an 80×24 `TestBackend` (a real terminal, no `App` and no
     /// filesystem access) and returns the buffer's content as one string, so
@@ -829,6 +828,32 @@ mod tests {
         assert_eq!(
             auto_refresh_chip(AutoRefresh::M1, Duration::ZERO),
             "   ⟳ auto 1mn · 0:00"
+        );
+    }
+
+    #[test]
+    fn review_asked_is_a_checkbox() {
+        let rf = RunFilters::default();
+        let off = Filters::default();
+        let on = Filters {
+            review_requested: true,
+            ..Default::default()
+        };
+        assert_eq!(field_value(FilterField::ReviewAsked, &off, &rf), "[ ]");
+        assert_eq!(field_value(FilterField::ReviewAsked, &on, &rf), "[x]");
+    }
+
+    /// "Review asked" is 12 characters, one more than the name column held.
+    /// Rendered for real, so a narrower column or panel cannot clip it.
+    #[test]
+    fn the_review_asked_row_is_not_truncated() {
+        let app = App::new(PathBuf::from("."));
+        let text = render_to_text(80, 24, |frame| {
+            render_filter_panel(frame, &app, frame.area())
+        });
+        assert!(
+            text.contains("Review asked [ ]"),
+            "the Review asked row must fit the name column"
         );
     }
 }
