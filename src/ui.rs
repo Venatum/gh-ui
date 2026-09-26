@@ -163,6 +163,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    // What `PgUp`/`PgDn` jump by: the rows inside the border, header aside.
+    app.page_rows = usize::from(area.height.saturating_sub(3)).max(1);
     match app.active_tab {
         Tab::Prs => render_pr_table(frame, app, area),
         Tab::Runs => render_run_table(frame, app, area),
@@ -597,7 +599,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             Style::new().bold().fg(Color::Cyan),
         )),
         Line::from(""),
-        help_row("↑/↓, j/k", "navigate the list"),
+        help_row("↑/↓, j/k", "navigate · PgUp/PgDn: a page · Home/End: ends"),
         help_row("enter", "open in the browser · on the clone button: clone"),
         help_row("space", "Repos: tick a repo · ↓ to the clone button"),
         help_row("/", "search the visible list · esc clears it"),

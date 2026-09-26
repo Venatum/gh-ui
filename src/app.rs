@@ -250,6 +250,9 @@ pub struct App {
     /// The Repos tab: its list, filters, ticks and clone batch.
     pub repo_tab: ReposTab,
     pub repo_table_state: TableState,
+    /// How many rows the table showed at the last draw: the jump of
+    /// `PgUp`/`PgDn`. Written by `ui::render`, which alone knows the height.
+    pub page_rows: usize,
     /// A repo-list load is in flight. Separate from `loading`: the list is
     /// not a `Job`, it never merges with the PR and run flows.
     repos_loading: bool,
@@ -309,6 +312,7 @@ impl App {
             prs_loaded: false,
             repo_tab,
             repo_table_state: TableState::default(),
+            page_rows: 1,
             repos_loading: false,
             repos_pending: false,
             hidden_status: None,
@@ -1042,8 +1046,10 @@ impl App {
 
     // --- navigation ---
 
-    /// Moves the selection down, in the ACTIVE tab's list.
-    pub fn next(&mut self) {
+    /// Moves the selection of the ACTIVE tab's list to the row `target`
+    /// picks from the current one (`None` while nothing is selected), kept
+    /// on the list: past the last row means the last row.
+    fn move_selection(&mut self, target: impl FnOnce(Option<usize>) -> usize) {
         // Two steps on purpose: `visible_runs()` borrows the whole `self`, so we
         // must be done with it BEFORE taking `&mut self.run_table_state`.
         let len = self.active_len();
@@ -1051,25 +1057,41 @@ impl App {
             return;
         }
         let state = self.active_table_state();
-        let i = match state.selected() {
-            Some(i) => (i + 1).min(len - 1),
-            None => 0,
-        };
+        let i = target(state.selected()).min(len - 1);
         state.select(Some(i));
+    }
+
+    /// Moves the selection down, in the ACTIVE tab's list.
+    pub fn next(&mut self) {
+        self.move_selection(|i| i.map_or(0, |i| i + 1));
     }
 
     /// Moves the selection up, in the ACTIVE tab's list.
     pub fn previous(&mut self) {
-        let len = self.active_len();
-        if len == 0 {
-            return;
-        }
-        let state = self.active_table_state();
-        let i = match state.selected() {
-            Some(i) => i.saturating_sub(1),
-            None => 0,
-        };
-        state.select(Some(i));
+        self.move_selection(|i| i.map_or(0, |i| i.saturating_sub(1)));
+    }
+
+    /// Moves the selection down by a screenful (`PgDn`).
+    pub fn page_down(&mut self) {
+        let page = self.page_rows;
+        self.move_selection(|i| i.map_or(0, |i| i + page));
+    }
+
+    /// Moves the selection up by a screenful (`PgUp`).
+    pub fn page_up(&mut self) {
+        let page = self.page_rows;
+        self.move_selection(|i| i.map_or(0, |i| i.saturating_sub(page)));
+    }
+
+    /// Selects the first row (`Home`).
+    pub fn first(&mut self) {
+        self.move_selection(|_| 0);
+    }
+
+    /// Selects the last row (`End`): `move_selection` brings any index past
+    /// the end back onto the list.
+    pub fn last(&mut self) {
+        self.move_selection(|_| usize::MAX);
     }
 
     /// Number of rows displayed in the active tab.
@@ -1782,6 +1804,54 @@ mod tests {
         );
         app.reset_selection();
         app
+    }
+
+    /// A Repos tab of 30 rows, 10 of them on screen, cursor on the first.
+    fn long_list_app() -> App {
+        let mut app = repos_app();
+        let names: Vec<String> = (0..30).map(|i| format!("acme/r{i}")).collect();
+        app.repo_tab
+            .apply_load(names.iter().map(|n| sample_repo(n)).collect(), Vec::new());
+        app.page_rows = 10;
+        app.reset_selection();
+        app
+    }
+
+    #[test]
+    fn page_down_and_up_move_by_a_screen_and_stop_at_the_ends() {
+        let mut app = long_list_app();
+        app.page_down();
+        assert_eq!(app.repo_table_state.selected(), Some(10));
+        app.page_down();
+        app.page_down();
+        assert_eq!(
+            app.repo_table_state.selected(),
+            Some(29),
+            "not past the end"
+        );
+
+        app.page_up();
+        assert_eq!(app.repo_table_state.selected(), Some(19));
+        app.page_up();
+        app.page_up();
+        assert_eq!(app.repo_table_state.selected(), Some(0), "not past the top");
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_first_and_last_row() {
+        let mut app = long_list_app();
+        app.last();
+        assert_eq!(app.repo_table_state.selected(), Some(29));
+        app.first();
+        assert_eq!(app.repo_table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn end_reaches_the_clone_button() {
+        let mut app = tick_app();
+        app.toggle_tick();
+        app.last();
+        assert!(app.on_clone_button());
     }
 
     #[test]

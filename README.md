@@ -92,6 +92,8 @@ clone. Started in a folder that holds no git repo, gh-ui opens on this tab.
 | Key          | Action                                       |
 |--------------|----------------------------------------------|
 | `↑/↓`, `j/k` | navigate the list                            |
+| `PgUp/PgDn`  | move a page up / down                        |
+| `Home/End`   | jump to the first / last row                 |
 | `enter`      | open the selected PR, run or repo in the browser (Repos: on the clone button, clone the ticked repos) |
 | `space`      | Repos tab: tick / untick the repo                                 |
 | `tab`, `1/2/3` | switch tab (PRs / Actions / Repos)                              |

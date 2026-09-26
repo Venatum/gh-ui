@@ -55,14 +55,14 @@ impl Column for PrColumn {
 
     fn header(self) -> &'static str {
         match self {
-            PrColumn::Repo => "repo",
-            PrColumn::Updated => "updated",
+            PrColumn::Repo => "Repo",
+            PrColumn::Updated => "Updated",
             PrColumn::Number => "#",
-            PrColumn::Title => "title",
-            PrColumn::Author => "author",
-            PrColumn::Review => "review",
+            PrColumn::Title => "Title",
+            PrColumn::Author => "Author",
+            PrColumn::Review => "Review",
             PrColumn::Diff => "+/-",
-            PrColumn::Labels => "labels",
+            PrColumn::Labels => "Labels",
         }
     }
 
@@ -178,14 +178,14 @@ impl Column for RunColumn {
 
     fn header(self) -> &'static str {
         match self {
-            RunColumn::Repo => "repo",
-            RunColumn::Created => "created",
+            RunColumn::Repo => "Repo",
+            RunColumn::Created => "Created",
             RunColumn::Number => "#",
-            RunColumn::Workflow => "workflow",
-            RunColumn::Branch => "branch",
-            RunColumn::Event => "event",
-            RunColumn::Status => "status",
-            RunColumn::Title => "title",
+            RunColumn::Workflow => "Workflow",
+            RunColumn::Branch => "Branch",
+            RunColumn::Event => "Event",
+            RunColumn::Status => "Status",
+            RunColumn::Title => "Title",
         }
     }
 
@@ -249,12 +249,12 @@ impl Column for RepoColumn {
 
     fn header(self) -> &'static str {
         match self {
-            RepoColumn::Tick => "tick",
-            RepoColumn::Repo => "repo",
-            RepoColumn::State => "state",
-            RepoColumn::Visibility => "visibility",
-            RepoColumn::Pushed => "pushed",
-            RepoColumn::Description => "description",
+            RepoColumn::Tick => "Tick",
+            RepoColumn::Repo => "Repo",
+            RepoColumn::State => "State",
+            RepoColumn::Visibility => "Visibility",
+            RepoColumn::Pushed => "Pushed",
+            RepoColumn::Description => "Description",
         }
     }
 
@@ -492,6 +492,23 @@ impl Columns {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_header_starts_with_a_capital() {
+        let headers = PR_COLUMNS
+            .iter()
+            .map(|c| c.header())
+            .chain(RUN_COLUMNS.iter().map(|c| c.header()))
+            .chain(REPO_COLUMNS.iter().map(|c| c.header()));
+        for header in headers {
+            let first = header.chars().next().expect("a non-empty header");
+            // `#` and `+/-` are symbols: nothing to capitalize.
+            assert!(
+                !first.is_lowercase(),
+                "{header:?} should start with a capital"
+            );
+        }
+    }
 
     fn sample_pr() -> Pr {
         serde_json::from_str(
