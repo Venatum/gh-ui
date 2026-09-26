@@ -23,7 +23,10 @@ pub struct Repo {
     pub visibility: String,
     pub is_archived: bool,
     pub is_fork: bool,
-    pub pushed_at: String,
+    /// Nullable on GitHub's side (a repo never pushed to): one `null` must
+    /// not fail the parse of the whole list.
+    #[serde(default)]
+    pub pushed_at: Option<String>,
     pub url: String,
 }
 
@@ -57,13 +60,21 @@ pub enum RepoState {
 /// The `owner/name` a GitHub remote URL points to, or `None` for anything
 /// else. Accepts the three forms `git` writes — `https://github.com/o/n`,
 /// `git@github.com:o/n` and `ssh://git@github.com/o/n` — each with or
-/// without the `.git` suffix.
+/// without the `.git` suffix. The two ssh forms take any host: a
+/// `~/.ssh/config` alias (`git@github-perso:o/n`) is how one machine holds
+/// several GitHub accounts, and the caller compares the result with the
+/// repo's own `owner/name` anyway.
 pub fn parse_origin(url: &str) -> Option<String> {
     let url = url.trim();
+    let after_host = |rest: &'static str, sep: char| {
+        url.strip_prefix(rest)
+            .and_then(|rest| rest.split_once(sep))
+            .map(|(_host, path)| path)
+    };
     let path = url
         .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("git@github.com:"))
-        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+        .or_else(|| after_host("ssh://git@", '/'))
+        .or_else(|| after_host("git@", ':'))?;
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
@@ -373,13 +384,24 @@ impl ReposTab {
     }
 
     /// Stores a fresh list. Batch states the folder now confirms (`Cloned`)
-    /// give way to it; a tick on a repo that is no longer clonable — cloned
-    /// behind gh-ui's back, say — is dropped rather than left to fail.
+    /// give way to it, and so does a failure whose folder is no longer free
+    /// (cloned by hand since). A tick on a repo that is no longer clonable —
+    /// cloned behind gh-ui's back, say — is dropped rather than left to fail.
     pub fn apply_load(&mut self, repos: Vec<Repo>, locals: Vec<LocalRepo>) {
         self.repos = repos;
         self.locals = locals;
         self.loaded = true;
-        self.progress.retain(|_, state| *state != RepoState::Cloned);
+        let free: HashSet<String> = self
+            .repos
+            .iter()
+            .filter(|r| local_state(r, &self.locals) == RepoState::Clonable)
+            .map(|r| r.name_with_owner.clone())
+            .collect();
+        self.progress.retain(|name, state| match state {
+            RepoState::Cloned => false,
+            RepoState::Failed(_) => free.contains(name),
+            _ => true,
+        });
         let clonable: HashSet<String> = self
             .repos
             .iter()
@@ -415,7 +437,7 @@ pub fn sample_repo(name_with_owner: &str) -> Repo {
         visibility: "PRIVATE".to_string(),
         is_archived: false,
         is_fork: false,
-        pushed_at: "2026-09-20T10:00:00Z".to_string(),
+        pushed_at: Some("2026-09-20T10:00:00Z".to_string()),
         url: format!("https://github.com/{name_with_owner}"),
     }
 }
@@ -456,6 +478,20 @@ mod tests {
         );
         assert_eq!(
             parse_origin("ssh://git@github.com/acme/api"),
+            Some("acme/api".to_string())
+        );
+    }
+
+    #[test]
+    fn an_ssh_host_alias_gives_owner_and_name() {
+        // `~/.ssh/config` can name github.com anything, to pick a key per
+        // account: the alias says nothing, the path is what matters.
+        assert_eq!(
+            parse_origin("git@github-perso:acme/api.git"),
+            Some("acme/api".to_string())
+        );
+        assert_eq!(
+            parse_origin("ssh://git@github-work/acme/api.git"),
             Some("acme/api".to_string())
         );
     }
@@ -776,5 +812,38 @@ mod tests {
         let names: Vec<&str> = t.listed().iter().map(|r| r.name.as_str()).collect();
         // A taken name is not cloned: it stays, it is something to sort out.
         assert_eq!(names, ["api", "docs"]);
+    }
+
+    /// Final review I3: a failed row cloned by hand afterwards must read
+    /// cloned, and lose its tick, once the folder says so.
+    #[test]
+    fn a_failed_row_cloned_by_hand_reads_cloned_after_a_reload() {
+        let mut t = tab(&["acme/web"], &[]);
+        t.progress.insert(
+            "acme/web".to_string(),
+            RepoState::Failed("auth".to_string()),
+        );
+        t.toggle_tick("acme/web").unwrap();
+
+        let repos = t.repos.clone();
+        t.apply_load(repos, vec![local("web", Some("acme/web"))]);
+
+        assert_eq!(t.state_of(&t.repos[0]), RepoState::Cloned);
+        assert!(t.ticked.is_empty());
+    }
+
+    /// Final review M9: GitHub's `pushedAt` is nullable; one never-pushed
+    /// repo must not fail the parse of the whole list.
+    #[test]
+    fn a_repo_never_pushed_still_parses() {
+        let repo: Repo = serde_json::from_str(
+            r#"{
+                "nameWithOwner": "acme/empty", "name": "empty", "description": "",
+                "visibility": "PRIVATE", "isArchived": false, "isFork": false,
+                "pushedAt": null, "url": "https://github.com/acme/empty"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(repo.pushed_at, None);
     }
 }

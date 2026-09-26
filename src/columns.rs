@@ -303,11 +303,26 @@ impl RepoColumn {
                 Cell::from(Span::styled(label, style))
             }
             RepoColumn::Visibility => Cell::from(repo.visibility.to_lowercase()),
-            RepoColumn::Pushed => Cell::from(repo.pushed_at.get(..10).unwrap_or("").to_string()),
-            RepoColumn::Description => Cell::from(Span::styled(
-                repo.description.clone().unwrap_or_default(),
-                Style::new().fg(Color::DarkGray),
-            )),
+            RepoColumn::Pushed => Cell::from(
+                repo.pushed_at
+                    .as_deref()
+                    .and_then(|at| at.get(..10))
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            RepoColumn::Description => match state {
+                // Why the clone failed. The status line says it too, but the
+                // next step of the batch overwrites it within the same tick:
+                // the row is where the reason stays.
+                RepoState::Failed(message) => Cell::from(Span::styled(
+                    format!("✗ {message}"),
+                    Style::new().fg(Color::Red),
+                )),
+                _ => Cell::from(Span::styled(
+                    repo.description.clone().unwrap_or_default(),
+                    Style::new().fg(Color::DarkGray),
+                )),
+            },
         }
     }
 }
@@ -809,5 +824,30 @@ mod tests {
     fn a_config_written_before_the_repos_tab_still_gets_its_columns() {
         let columns = Columns::from_json(r#"{"prs":{"entries":[]}}"#);
         assert_eq!(columns.repos.entries.len(), RepoColumn::all().len());
+    }
+
+    /// Final review C1: the reason a clone failed must reach the screen —
+    /// the status line is overwritten within the same tick.
+    #[test]
+    fn a_failed_row_shows_why_in_its_description() {
+        let repo = crate::repos::sample_repo("acme/api");
+        let state = RepoState::Failed("fatal: repository not found".to_string());
+        assert_eq!(
+            RepoColumn::Description.cell(&repo, &state, false),
+            Cell::from(Span::styled(
+                "✗ fatal: repository not found".to_string(),
+                Style::new().fg(Color::Red)
+            ))
+        );
+    }
+
+    #[test]
+    fn a_never_pushed_repo_has_a_blank_date() {
+        let mut repo = crate::repos::sample_repo("acme/api");
+        repo.pushed_at = None;
+        assert_eq!(
+            RepoColumn::Pushed.cell(&repo, &RepoState::Clonable, false),
+            Cell::from(String::new())
+        );
     }
 }

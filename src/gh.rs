@@ -254,14 +254,19 @@ pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
 }
 
 /// The `gh repo clone` command for one repo, into `root/name`. Built apart
-/// from `clone_repo` so its safety settings are testable: stdin is closed
-/// and git's credential prompt disabled, because the TUI owns the terminal
-/// — a prompt there would be invisible and wait forever.
+/// from `clone_repo` so its safety settings are testable. The TUI owns the
+/// terminal, so a prompt there would be invisible and wait forever: stdin is
+/// closed and git's credential prompt disabled (https), and ssh — which
+/// opens `/dev/tty` itself for a passphrase or an unknown host — is made to
+/// ask an askpass that always fails, so it gives up instead. Unlike
+/// overriding `GIT_SSH_COMMAND`, this leaves the user's ssh config alone.
 fn clone_command(root: &Path, name_with_owner: &str, name: &str) -> Command {
     let mut cmd = Command::new("gh");
     cmd.args(["repo", "clone", name_with_owner])
         .arg(root.join(name))
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("SSH_ASKPASS", "/usr/bin/false")
         .stdin(Stdio::null());
     cmd
 }
@@ -367,5 +372,16 @@ mod tests {
                     && value == Some(std::ffi::OsStr::new("0"))),
             "git must not prompt for credentials"
         );
+        // Final review I4: ssh opens /dev/tty itself (passphrase, unknown
+        // host), past GIT_TERMINAL_PROMPT; routing every prompt to an askpass
+        // that fails makes it give up instead of blocking the TUI.
+        let env = |name: &str| {
+            cmd.get_envs()
+                .find(|(key, _)| *key == name)
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+        assert_eq!(env("SSH_ASKPASS_REQUIRE").as_deref(), Some("force"));
+        assert_eq!(env("SSH_ASKPASS").as_deref(), Some("/usr/bin/false"));
     }
 }

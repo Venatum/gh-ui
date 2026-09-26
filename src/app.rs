@@ -255,6 +255,10 @@ pub struct App {
     repos_loading: bool,
     /// A repo-list reload asked for while one was in flight.
     repos_pending: bool,
+    /// The status line of a PR/run load that landed behind the Repos tab,
+    /// held back for the PRs/Actions tabs instead of overwriting the line
+    /// the Repos tab is showing.
+    hidden_status: Option<String>,
 
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
@@ -307,6 +311,7 @@ impl App {
             repo_table_state: TableState::default(),
             repos_loading: false,
             repos_pending: false,
+            hidden_status: None,
             tx,
             rx,
         }
@@ -352,7 +357,11 @@ impl App {
         self.pending_job = None;
         self.last_refresh = Instant::now();
         self.reconcile_with_the_folder();
-        self.status = String::from("Loading…");
+        // Behind the Repos tab the PRs reload in the background: the line on
+        // screen is the Repos tab's, and stays so.
+        if self.active_tab != Tab::Repos {
+            self.status = String::from("Loading…");
+        }
         fetch::spawn(
             job,
             self.root.clone(),
@@ -461,7 +470,7 @@ impl App {
             && let Some(owner) = target
         {
             self.repo_tab.set_owner(owner);
-            self.reset_selection();
+            self.reset_repo_selection();
             if self.active_tab == Tab::Repos {
                 self.refresh_repos();
             }
@@ -512,10 +521,17 @@ impl App {
                 }
             };
             if let Some(status) = status {
-                self.status = match self.notice.take() {
+                let status = match self.notice.take() {
                     Some(notice) => format!("{status} · {notice}"),
                     None => status,
                 };
+                // Behind the Repos tab a PR/run load is background work: its
+                // line waits for the tabs it describes.
+                if self.active_tab == Tab::Repos {
+                    self.hidden_status = Some(status);
+                } else {
+                    self.status = status;
+                }
                 self.loading = false;
             }
             changed = true;
@@ -568,7 +584,9 @@ impl App {
         self.repos = result.all_repos;
         // The search survives a reload: the new rows go through it before the
         // selection is placed, so a refresh can never select a hidden row.
-        self.reset_selection();
+        // The runs are cross-referenced against the PRs: their view moves too.
+        self.reset_pr_selection();
+        self.reset_run_selection();
         format!(
             "{} PR(s) — {} repo(s){}",
             self.prs.len(),
@@ -583,7 +601,7 @@ impl App {
         self.repos = result.all_repos;
         self.runs_loaded = true;
         let n = self.visible_runs().len();
-        self.reset_selection();
+        self.reset_run_selection();
         format!(
             "{n} run(s) — {} repo(s){}",
             result.scanned,
@@ -618,7 +636,7 @@ impl App {
                 self.status = format!("gh repo list failed: {message}");
             }
         }
-        self.reset_selection();
+        self.reset_repo_selection();
     }
 
     /// Applies one step of the clone batch. Its end brings new folders: the
@@ -746,7 +764,7 @@ impl App {
                     }
                     .save();
                     self.repo_tab.set_owner(owner);
-                    self.reset_selection();
+                    self.reset_repo_selection();
                     self.refresh_repos();
                 }
                 return;
@@ -764,7 +782,7 @@ impl App {
             // In memory, like the Actions tab's filters: no reload.
             FilterField::HideCloned => {
                 self.repo_tab.filters.hide_cloned = !self.repo_tab.filters.hide_cloned;
-                self.reset_selection();
+                self.reset_repo_selection();
                 return;
             }
             FilterField::Author => {
@@ -925,12 +943,25 @@ impl App {
     /// through here — a load, a search edit, the Actions toggle — so the
     /// selection can never point at a row the filter just hid.
     fn reset_selection(&mut self) {
+        self.reset_pr_selection();
+        self.reset_run_selection();
+        self.reset_repo_selection();
+    }
+
+    /// The per-tab halves of `reset_selection`, for the paths that change
+    /// one tab only: a PR load landing behind the Repos tab must not move
+    /// the cursor the user is working with there.
+    fn reset_pr_selection(&mut self) {
         let prs = self.visible_prs().len();
         self.table_state
             .select(if prs == 0 { None } else { Some(0) });
+    }
+    fn reset_run_selection(&mut self) {
         let runs = self.visible_runs().len();
         self.run_table_state
             .select(if runs == 0 { None } else { Some(0) });
+    }
+    fn reset_repo_selection(&mut self) {
         let repos = self.visible_repos().len();
         self.repo_table_state
             .select(if repos == 0 { None } else { Some(0) });
@@ -1105,6 +1136,13 @@ impl App {
         // A stale grab from the previous tab would move the new tab's
         // columns as soon as the user presses ↑/↓ again.
         self.column_grabbed = false;
+        // Back from the Repos tab: the line of the last PR/run load that
+        // landed meanwhile.
+        if tab != Tab::Repos
+            && let Some(status) = self.hidden_status.take()
+        {
+            self.status = status;
+        }
         // First visit to a tab -> load what it shows.
         match tab {
             Tab::Prs if !self.prs_loaded => self.refresh(),
@@ -1874,5 +1912,43 @@ mod tests {
         );
         assert_eq!(tilde(Path::new("/tmp/ws"), Some(home)), "/tmp/ws");
         assert_eq!(tilde(Path::new("/tmp/ws"), None), "/tmp/ws");
+    }
+
+    fn empty_pr_load() -> Loaded {
+        Loaded::Prs(FetchResult {
+            prs: Vec::new(),
+            all_repos: Vec::new(),
+            scanned: 0,
+            errors: 0,
+        })
+    }
+
+    /// Final review I1: the auto-refresh reloads the PRs behind the Repos
+    /// tab; that must not move the Repos cursor.
+    #[test]
+    fn a_background_pr_load_keeps_the_repos_cursor() {
+        let mut app = tick_app();
+        app.next();
+        app.loading = true;
+        app.tx.send(empty_pr_load()).unwrap();
+        app.on_tick();
+        assert_eq!(app.repo_table_state.selected(), Some(1));
+    }
+
+    /// Final review I2: nor may it overwrite the Repos tab's status line —
+    /// which the PRs tab gets back when the user returns to it.
+    #[test]
+    fn a_background_pr_load_leaves_the_repos_status_alone() {
+        let mut app = tick_app();
+        app.status = "2 repo(s) — 1 cloned — 1 clone(s) failed".to_string();
+        app.loading = true;
+        app.tx.send(empty_pr_load()).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.status, "2 repo(s) — 1 cloned — 1 clone(s) failed");
+        assert!(!app.loading, "the load itself is over");
+
+        app.set_tab(Tab::Prs);
+        assert!(app.status.starts_with("0 PR(s)"), "got {:?}", app.status);
     }
 }
