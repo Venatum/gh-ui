@@ -2,7 +2,8 @@
 //! are shown. One enum per tab; the order/visibility logic is shared.
 
 use crate::config;
-use crate::model::{Pr, Run};
+use crate::issues::{Issue, linked_prs_label};
+use crate::model::{Label, Pr, Run};
 use crate::repos::{Repo, RepoState};
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Style};
@@ -21,6 +22,12 @@ pub trait Column: Copy + PartialEq + 'static {
     fn all() -> &'static [Self];
     fn header(self) -> &'static str;
     fn width(self) -> Constraint;
+
+    /// Whether a layout nobody has customized shows this column. Most do; a
+    /// column rarely worth its width starts hidden, one `c` away.
+    fn shown_by_default(self) -> bool {
+        true
+    }
 }
 
 /// The columns of the PRs tab.
@@ -106,6 +113,17 @@ fn review_look(decision: &str) -> (&'static str, Style) {
     }
 }
 
+/// Labels as `#bug #api`, grayed and truncated to the column width: the PRs
+/// and issues tables show them alike.
+fn labels_cell(labels: &[Label]) -> Cell<'static> {
+    let text = labels
+        .iter()
+        .map(|l| format!("#{}", l.name))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Cell::from(Span::styled(text, Style::new().fg(Color::DarkGray)))
+}
+
 impl PrColumn {
     /// The cell of this column for `pr`. `Cell<'static>`: every cell owns its
     /// `String`, so the row keeps borrowing neither the `Pr` nor the `App`.
@@ -132,16 +150,7 @@ impl PrColumn {
                 Span::raw("/"),
                 Span::styled(format!("-{}", pr.deletions), Style::new().fg(Color::Red)),
             ])),
-            // Joined labels: "#bug #api" (grayed), truncated to the column width.
-            PrColumn::Labels => {
-                let labels = pr
-                    .labels
-                    .iter()
-                    .map(|l| format!("#{}", l.name))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                Cell::from(Span::styled(labels, Style::new().fg(Color::DarkGray)))
-            }
+            PrColumn::Labels => labels_cell(&pr.labels),
         }
     }
 }
@@ -327,6 +336,101 @@ impl RepoColumn {
     }
 }
 
+/// The columns of the Issues tab.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueColumn {
+    Repo,
+    Number,
+    Updated,
+    Title,
+    Author,
+    Assignees,
+    Labels,
+    Prs,
+    Created,
+}
+
+const ISSUE_COLUMNS: [IssueColumn; 9] = [
+    IssueColumn::Repo,
+    IssueColumn::Number,
+    IssueColumn::Updated,
+    IssueColumn::Title,
+    IssueColumn::Author,
+    IssueColumn::Assignees,
+    IssueColumn::Labels,
+    IssueColumn::Prs,
+    IssueColumn::Created,
+];
+
+impl Column for IssueColumn {
+    fn all() -> &'static [Self] {
+        &ISSUE_COLUMNS
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            IssueColumn::Repo => "Repo",
+            IssueColumn::Number => "#",
+            IssueColumn::Updated => "Updated",
+            IssueColumn::Title => "Title",
+            IssueColumn::Author => "Author",
+            IssueColumn::Assignees => "Assignees",
+            IssueColumn::Labels => "Labels",
+            IssueColumn::Prs => "PRs",
+            IssueColumn::Created => "Created",
+        }
+    }
+
+    fn width(self) -> Constraint {
+        match self {
+            IssueColumn::Repo => Constraint::Length(16),
+            IssueColumn::Number => Constraint::Length(7),
+            IssueColumn::Updated => Constraint::Length(10),
+            IssueColumn::Title => Constraint::Fill(2),
+            IssueColumn::Author => Constraint::Length(20),
+            IssueColumn::Assignees => Constraint::Length(20),
+            IssueColumn::Labels => Constraint::Fill(1),
+            IssueColumn::Prs => Constraint::Length(16),
+            IssueColumn::Created => Constraint::Length(10),
+        }
+    }
+
+    /// `Updated` already orders the table; the creation date is there for
+    /// whoever wants it.
+    fn shown_by_default(self) -> bool {
+        self != IssueColumn::Created
+    }
+}
+
+impl IssueColumn {
+    /// The cell of this column for `issue`; owned, as the other tables'.
+    pub fn cell(self, issue: &Issue) -> Cell<'static> {
+        match self {
+            IssueColumn::Repo => Cell::from(issue.repo.clone()),
+            IssueColumn::Number => Cell::from(format!("#{}", issue.number)),
+            IssueColumn::Updated => {
+                Cell::from(issue.updated_at.get(..10).unwrap_or("").to_string())
+            }
+            IssueColumn::Title => Cell::from(issue.title.clone()),
+            IssueColumn::Author => Cell::from(format!("@{}", issue.author.login)),
+            IssueColumn::Assignees => Cell::from(
+                issue
+                    .assignees
+                    .iter()
+                    .map(|a| format!("@{}", a.login))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            IssueColumn::Labels => labels_cell(&issue.labels),
+            IssueColumn::Prs => Cell::from(linked_prs_label(issue)),
+            IssueColumn::Created => {
+                Cell::from(issue.created_at.get(..10).unwrap_or("").to_string())
+            }
+        }
+    }
+}
+
 /// One column and whether it is shown. The ORDER of the entries in
 /// `ColumnLayout` is the order of the table: no second collection to keep in
 /// sync with this one.
@@ -348,8 +452,8 @@ pub struct ColumnLayout<C> {
 }
 
 // Written by hand rather than derived: `derive(Default)` would need
-// `Vec::default()` (empty), whereas the default layout is "every column,
-// visible, in the order of `C::all()`".
+// `Vec::default()` (empty), whereas the default layout is "every column in the
+// order of `C::all()`, shown unless `shown_by_default` says otherwise".
 impl<C: Column> Default for ColumnLayout<C> {
     fn default() -> Self {
         Self {
@@ -357,7 +461,7 @@ impl<C: Column> Default for ColumnLayout<C> {
                 .iter()
                 .map(|&column| ColumnEntry {
                     column,
-                    visible: true,
+                    visible: column.shown_by_default(),
                 })
                 .collect(),
         }
@@ -366,7 +470,7 @@ impl<C: Column> Default for ColumnLayout<C> {
 
 impl<C: Column> ColumnLayout<C> {
     /// Makes a layout read from disk usable again: drops duplicates, then
-    /// appends (visible, at the end) every column the file did not mention.
+    /// appends (at the end, as they would be by default) every column the file did not mention.
     /// This is what makes a config written today survive a future new column.
     pub fn normalize(&mut self) {
         let mut seen: Vec<C> = Vec::new();
@@ -383,7 +487,7 @@ impl<C: Column> ColumnLayout<C> {
             if !seen.contains(&column) {
                 self.entries.push(ColumnEntry {
                     column,
-                    visible: true,
+                    visible: column.shown_by_default(),
                 });
             }
         }
@@ -441,16 +545,17 @@ pub struct Columns {
     pub prs: ColumnLayout<PrColumn>,
     pub runs: ColumnLayout<RunColumn>,
     pub repos: ColumnLayout<RepoColumn>,
+    pub issues: ColumnLayout<IssueColumn>,
 }
 
 impl Columns {
     /// Parses the config's contents. Split out of `load` so the behaviour that
-    /// matters — parse, then normalize BOTH layouts — is testable without
+    /// matters — parse, then normalize layouts — is testable without
     /// touching the filesystem. An unreadable or malformed file yields the
     /// defaults, like `Filters::load` does.
     fn from_json(content: &str) -> Self {
         let mut columns: Self = serde_json::from_str(content).unwrap_or_default();
-        // Both normalize calls are unconditional: they run even when the file
+        // Every normalize call is unconditional: they run even when the file
         // exactly matches our current defaults, so that old configs written
         // before new columns were added still yield complete layouts. If the
         // file already contains all columns in the right order, normalize is
@@ -458,6 +563,7 @@ impl Columns {
         columns.prs.normalize();
         columns.runs.normalize();
         columns.repos.normalize();
+        columns.issues.normalize();
         columns
     }
 
@@ -499,7 +605,8 @@ mod tests {
             .iter()
             .map(|c| c.header())
             .chain(RUN_COLUMNS.iter().map(|c| c.header()))
-            .chain(REPO_COLUMNS.iter().map(|c| c.header()));
+            .chain(REPO_COLUMNS.iter().map(|c| c.header()))
+            .chain(ISSUE_COLUMNS.iter().map(|c| c.header()));
         for header in headers {
             let first = header.chars().next().expect("a non-empty header");
             // `#` and `+/-` are symbols: nothing to capitalize.
@@ -866,5 +973,83 @@ mod tests {
             RepoColumn::Pushed.cell(&repo, &RepoState::Clonable, false),
             Cell::from(String::new())
         );
+    }
+
+    #[test]
+    fn the_issue_layout_hides_only_created_by_default() {
+        let layout = ColumnLayout::<IssueColumn>::default();
+        let hidden: Vec<IssueColumn> = layout
+            .entries
+            .iter()
+            .filter(|e| !e.visible)
+            .map(|e| e.column)
+            .collect();
+        assert_eq!(hidden, [IssueColumn::Created]);
+        assert_eq!(layout.entries.len(), IssueColumn::all().len());
+    }
+
+    #[test]
+    fn a_config_written_before_the_issues_tab_gets_the_default_issue_layout() {
+        let columns = Columns::from_json(r#"{"prs":{"entries":[]}}"#);
+        assert_eq!(columns.issues, ColumnLayout::<IssueColumn>::default());
+    }
+
+    /// A column the saved layout does not mention is appended as it would
+    /// be by default: `Created` hidden, the others shown.
+    #[test]
+    fn a_partial_issue_layout_appends_the_missing_columns_with_their_default() {
+        let columns =
+            Columns::from_json(r#"{"issues":{"entries":[{"column":"title","visible":true}]}}"#);
+        let entries = &columns.issues.entries;
+        assert_eq!(entries.len(), IssueColumn::all().len());
+        assert_eq!(entries[0].column, IssueColumn::Title);
+        for entry in entries {
+            assert_eq!(
+                entry.visible,
+                entry.column != IssueColumn::Created,
+                "{:?}",
+                entry.column
+            );
+        }
+    }
+
+    #[test]
+    fn an_issue_row_shows_its_number_people_date_and_linked_pr() {
+        let mut issue = crate::issues::sample_issue("api", 7, "2026-09-20T10:00:00Z");
+        issue.assignees = vec![
+            crate::model::Author {
+                login: "bob".to_string(),
+            },
+            crate::model::Author {
+                login: "carol".to_string(),
+            },
+        ];
+        issue.linked_prs = vec![crate::issues::PrRef {
+            number: 12,
+            repository: crate::issues::RepoRef {
+                name: "api".to_string(),
+                owner: crate::model::Author {
+                    login: "acme".to_string(),
+                },
+            },
+        }];
+
+        assert_eq!(
+            IssueColumn::Number.cell(&issue),
+            Cell::from("#7".to_string())
+        );
+        assert_eq!(
+            IssueColumn::Author.cell(&issue),
+            Cell::from("@alice".to_string())
+        );
+        assert_eq!(
+            IssueColumn::Assignees.cell(&issue),
+            Cell::from("@bob, @carol".to_string())
+        );
+        assert_eq!(
+            IssueColumn::Updated.cell(&issue),
+            Cell::from("2026-09-20".to_string())
+        );
+        assert_eq!(IssueColumn::Prs.cell(&issue), Cell::from("#12".to_string()));
     }
 }
