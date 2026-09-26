@@ -274,8 +274,6 @@ pub struct IssuesTab {
     pub loading: bool,
     /// A reload asked for while one was in flight.
     pub pending: bool,
-    /// The line of the last load, shown whenever the tab is on screen.
-    pub status: String,
     /// A note for the next load's line — today, a repo filter we dropped.
     pub notice: Option<String>,
 }

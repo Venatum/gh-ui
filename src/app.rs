@@ -184,11 +184,35 @@ impl Tab {
             Tab::Repos => Tab::Prs,
         }
     }
+}
 
-    /// Does this tab show the PR/run flow — and so its status line? The
-    /// Repos and Issues tabs have lines of their own.
-    pub fn shows_pr_flow(self) -> bool {
-        matches!(self, Tab::Prs | Tab::Runs)
+/// One status line per tab, for the tabs off screen (`App::status` holds
+/// the one on screen).
+#[derive(Debug, Default)]
+struct TabLines {
+    prs: String,
+    runs: String,
+    issues: String,
+    repos: String,
+}
+
+impl TabLines {
+    fn slot(&mut self, tab: Tab) -> &mut String {
+        match tab {
+            Tab::Prs => &mut self.prs,
+            Tab::Runs => &mut self.runs,
+            Tab::Issues => &mut self.issues,
+            Tab::Repos => &mut self.repos,
+        }
+    }
+}
+
+/// The tabs a job's result is shown on.
+fn tabs_of(job: Job) -> &'static [Tab] {
+    match job {
+        Job::Prs => &[Tab::Prs],
+        Job::Runs => &[Tab::Runs],
+        Job::Both => &[Tab::Prs, Tab::Runs],
     }
 }
 
@@ -276,7 +300,7 @@ pub struct App {
     /// The Repos tab: its list, filters, ticks and clone batch.
     pub repo_tab: ReposTab,
     pub repo_table_state: TableState,
-    /// The Issues tab: its issues, filters, loading flag and status line.
+    /// The Issues tab: its issues, filters and loading flag.
     pub issue_tab: IssuesTab,
     pub issue_table_state: TableState,
     /// How many rows the table showed at the last draw: the jump of
@@ -287,13 +311,10 @@ pub struct App {
     repos_loading: bool,
     /// A repo-list reload asked for while one was in flight.
     repos_pending: bool,
-    /// The status line of the PRs/Actions tabs while another tab is on
-    /// screen: stashed when leaving them, replaced by any PR/run load
-    /// landing meanwhile, restored on return.
-    hidden_status: Option<String>,
-    /// The Repos tab's own line (list loads, clone steps): kept for the tab
-    /// and shown only while it is on screen, as `IssuesTab::status` is.
-    repos_status: String,
+    /// The status line of every tab off screen. A load writes its own
+    /// tab's line (`set_line`); switching tabs puts the leaving tab's line
+    /// away and brings the new one's back — so no tab shows another's news.
+    lines: TabLines,
 
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
@@ -352,8 +373,7 @@ impl App {
             page_rows: 1,
             repos_loading: false,
             repos_pending: false,
-            hidden_status: None,
-            repos_status: String::new(),
+            lines: TabLines::default(),
             tx,
             rx,
         }
@@ -400,10 +420,9 @@ impl App {
         self.pending_job = None;
         self.last_refresh = Instant::now();
         self.reconcile_with_the_folder();
-        // Behind the Repos or Issues tab the PRs reload in the background:
-        // the line on screen is that tab's, and stays so.
-        if self.active_tab.shows_pr_flow() {
-            self.status = String::from("Loading…");
+        // Only the tabs this job reloads say so.
+        for &tab in tabs_of(job) {
+            self.set_line(tab, String::from("Loading…"));
         }
         fetch::spawn(
             job,
@@ -462,10 +481,13 @@ impl App {
     /// or explains why it cannot run when no owner is known yet.
     pub fn refresh_repos(&mut self) {
         let Some(owner) = self.repo_tab.filters.owner.clone() else {
-            self.set_repos_status(match self.login {
-                Login::Unknown => "No GitHub account: cannot list repos".to_string(),
-                _ => "Waiting for the GitHub account…".to_string(),
-            });
+            self.set_line(
+                Tab::Repos,
+                match self.login {
+                    Login::Unknown => "No GitHub account: cannot list repos".to_string(),
+                    _ => "Waiting for the GitHub account…".to_string(),
+                },
+            );
             return;
         };
         if self.repos_loading {
@@ -474,7 +496,7 @@ impl App {
         }
         self.repos_loading = true;
         self.repos_pending = false;
-        self.set_repos_status(format!("Loading {owner}'s repos…"));
+        self.set_line(Tab::Repos, format!("Loading {owner}'s repos…"));
         fetch::spawn_repos(
             self.root.clone(),
             owner,
@@ -493,10 +515,7 @@ impl App {
         self.issue_tab.loading = true;
         self.issue_tab.pending = false;
         self.reconcile_issue_repo();
-        self.issue_tab.status = String::from("Loading issues…");
-        if self.active_tab == Tab::Issues {
-            self.status = self.issue_tab.status.clone();
-        }
+        self.set_line(Tab::Issues, String::from("Loading issues…"));
         fetch::spawn_issues(
             self.root.clone(),
             self.issue_tab.filters.clone(),
@@ -568,19 +587,19 @@ impl App {
         let mut changed = false;
 
         while let Ok(msg) = self.rx.try_recv() {
-            // `None` = the message carries no PR/run status line, so it must
-            // leave `status` and `loading` alone: the login, the orgs and the
-            // repo list share the channel without being a PR/run load, and
+            // The PR/run lines this message brings, one per tab. Empty = not
+            // a PR/run load, so `loading` must stay as it is: the login, the
+            // orgs, the repo list and the issues share the channel, and
             // clearing `loading` here would cut short a fetch still in flight.
-            let status = match msg {
-                Loaded::Prs(result) => Some(self.apply_prs(result)),
-                Loaded::Runs(result) => Some(self.apply_runs(result)),
+            let lines: Vec<(Tab, String)> = match msg {
+                Loaded::Prs(result) => vec![(Tab::Prs, self.apply_prs(result))],
+                Loaded::Runs(result) => vec![(Tab::Runs, self.apply_runs(result))],
                 // PRs FIRST: `apply_runs` counts the visible runs, which are
                 // cross-referenced against `self.prs`.
                 Loaded::Both(prs, runs) => {
-                    let left = self.apply_prs(prs);
-                    let right = self.apply_runs(runs);
-                    Some(format!("{left} · {right}"))
+                    let prs = self.apply_prs(prs);
+                    let runs = self.apply_runs(runs);
+                    vec![(Tab::Prs, prs), (Tab::Runs, runs)]
                 }
                 Loaded::User(login) => {
                     self.login = match login {
@@ -588,37 +607,35 @@ impl App {
                         None => Login::Unknown,
                     };
                     self.reconcile_owner();
-                    None
+                    Vec::new()
                 }
                 Loaded::Orgs(orgs) => {
                     self.repo_tab.orgs = Some(orgs);
                     self.reconcile_owner();
-                    None
+                    Vec::new()
                 }
                 Loaded::Repos(result) => {
                     self.apply_repos(result);
-                    None
+                    Vec::new()
                 }
                 Loaded::Clone(event) => {
                     self.apply_clone(event);
-                    None
+                    Vec::new()
                 }
                 Loaded::Issues(result) => {
                     self.apply_issues(result);
-                    None
+                    Vec::new()
                 }
             };
-            if let Some(status) = status {
-                let status = match self.notice.take() {
-                    Some(notice) => format!("{status} · {notice}"),
-                    None => status,
-                };
-                // Behind the Repos or Issues tab a PR/run load is background
-                // work: its line waits for the tabs it describes.
-                if !self.active_tab.shows_pr_flow() {
-                    self.hidden_status = Some(status);
-                } else {
-                    self.status = status;
+            if !lines.is_empty() {
+                // The dropped-repo note concerns every flow of this load.
+                let notice = self.notice.take();
+                for (tab, line) in lines {
+                    let line = match &notice {
+                        Some(notice) => format!("{line} · {notice}"),
+                        None => line,
+                    };
+                    self.set_line(tab, line);
                 }
                 self.loading = false;
             }
@@ -711,37 +728,40 @@ impl App {
             Ok(list) => {
                 self.repo_tab.apply_load(list, result.locals);
                 let failed = self.repo_tab.failed_count();
-                self.set_repos_status(format!(
-                    "{} repo(s) — {} cloned{}",
-                    self.repo_tab.repos.len(),
-                    self.repo_tab.cloned_count(),
-                    if failed > 0 {
-                        format!(" — {failed} clone(s) failed")
-                    } else {
-                        String::new()
-                    }
-                ));
+                self.set_line(
+                    Tab::Repos,
+                    format!(
+                        "{} repo(s) — {} cloned{}",
+                        self.repo_tab.repos.len(),
+                        self.repo_tab.cloned_count(),
+                        if failed > 0 {
+                            format!(" — {failed} clone(s) failed")
+                        } else {
+                            String::new()
+                        }
+                    ),
+                );
             }
             Err(message) => {
                 self.repo_tab.apply_load(Vec::new(), result.locals);
-                self.set_repos_status(format!("gh repo list failed: {message}"));
+                self.set_line(Tab::Repos, format!("gh repo list failed: {message}"));
             }
         }
         self.reset_repo_selection();
     }
 
-    /// Writes the Repos tab's line: kept for the tab, shown now only if it
-    /// is on screen. A list or a clone step landing after the user left the
-    /// tab must not paint over the line of the tab they went to.
-    fn set_repos_status(&mut self, status: String) {
-        if self.active_tab == Tab::Repos {
-            self.status = status.clone();
+    /// Writes `tab`'s status line: on screen now if `tab` is, put away for
+    /// it otherwise. A load landing after the user left its tab must not
+    /// paint over the line of the tab they went to.
+    fn set_line(&mut self, tab: Tab, line: String) {
+        if self.active_tab == tab {
+            self.status = line;
+        } else {
+            *self.lines.slot(tab) = line;
         }
-        self.repos_status = status;
     }
 
-    /// Stores an issue load. Its line belongs to the Issues tab: kept there,
-    /// and shown now only if that tab is on screen.
+    /// Stores an issue load; its line goes to the Issues tab.
     fn apply_issues(&mut self, result: IssuesResult) {
         self.repos = result.all_repos;
         self.issue_tab.apply_load(result.issues);
@@ -754,10 +774,7 @@ impl App {
         if let Some(notice) = self.issue_tab.notice.take() {
             status = format!("{status} · {notice}");
         }
-        if self.active_tab == Tab::Issues {
-            self.status = status.clone();
-        }
-        self.issue_tab.status = status;
+        self.set_line(Tab::Issues, status);
         self.reset_issue_selection();
     }
 
@@ -767,7 +784,7 @@ impl App {
     fn apply_clone(&mut self, event: CloneEvent) {
         let finished = event == CloneEvent::Finished;
         let line = self.repo_tab.apply_event(event);
-        self.set_repos_status(line);
+        self.set_line(Tab::Repos, line);
         if finished {
             self.refresh_job(if self.runs_loaded {
                 Job::Both
@@ -1337,10 +1354,11 @@ impl App {
     // --- tabs ---
 
     pub fn set_tab(&mut self, tab: Tab) {
-        // Leaving PRs/Actions for a tab with its own line: keep theirs, so
-        // coming back shows it rather than the other tab's.
-        if self.active_tab.shows_pr_flow() && !tab.shows_pr_flow() {
-            self.hidden_status = Some(self.status.clone());
+        // Put the leaving tab's line away and bring the new tab's back.
+        if tab != self.active_tab {
+            let leaving = std::mem::take(&mut self.status);
+            *self.lines.slot(self.active_tab) = leaving;
+            self.status = std::mem::take(self.lines.slot(tab));
         }
         self.active_tab = tab;
         // The panels differ in length: keep the cursor inside the new slice.
@@ -1350,18 +1368,6 @@ impl App {
         // A stale grab from the previous tab would move the new tab's
         // columns as soon as the user presses ↑/↓ again.
         self.column_grabbed = false;
-        // Back on PRs/Actions: their line, as it stands now.
-        if tab.shows_pr_flow()
-            && let Some(status) = self.hidden_status.take()
-        {
-            self.status = status;
-        }
-        // The Issues and Repos tabs keep their own lines.
-        match tab {
-            Tab::Issues => self.status = self.issue_tab.status.clone(),
-            Tab::Repos => self.status = self.repos_status.clone(),
-            _ => {}
-        }
         // First visit to a tab -> load what it shows.
         match tab {
             Tab::Prs if !self.prs_loaded => self.refresh(),
@@ -1392,7 +1398,7 @@ impl App {
             return;
         };
         if let Err(why) = self.repo_tab.toggle_tick(&name) {
-            self.set_repos_status(why);
+            self.set_line(Tab::Repos, why);
         }
         self.clamp_repo_selection();
     }
@@ -1437,7 +1443,7 @@ impl App {
         if batch.is_empty() {
             return;
         }
-        self.status = format!("Cloning {} repo(s)…", batch.len());
+        self.set_line(Tab::Repos, format!("Cloning {} repo(s)…", batch.len()));
         fetch::spawn_clones(self.root.clone(), batch, self.tx.clone());
     }
 
@@ -2211,6 +2217,55 @@ mod tests {
         })
     }
 
+    fn empty_run_load() -> Loaded {
+        Loaded::Runs(RunsResult {
+            runs: Vec::new(),
+            all_repos: Vec::new(),
+            scanned: 0,
+            errors: 0,
+        })
+    }
+
+    /// The Actions tab visited, then left before its first load ended: the
+    /// runs landing behind the PRs tab must not paint "74 run(s)" over the
+    /// PRs line. Each tab gets its own line back.
+    #[test]
+    fn a_run_load_behind_the_prs_tab_keeps_the_prs_line() {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs_loaded = true;
+        app.runs_loaded = true; // no load on the way back to Actions
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+        app.loading = true;
+        app.tx.send(empty_run_load()).unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+
+        app.set_tab(Tab::Runs);
+        assert!(app.status.starts_with("0 run(s)"), "got {:?}", app.status);
+        app.set_tab(Tab::Prs);
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+    }
+
+    /// A load of both flows gives each tab its own line, not one line
+    /// describing both.
+    #[test]
+    fn a_load_of_both_flows_gives_each_tab_its_line() {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs_loaded = true;
+        app.runs_loaded = true;
+        app.loading = true;
+        let (Loaded::Prs(prs), Loaded::Runs(runs)) = (empty_pr_load(), empty_run_load()) else {
+            unreachable!()
+        };
+        app.tx.send(Loaded::Both(prs, runs)).unwrap();
+        app.on_tick();
+        assert!(app.status.starts_with("0 PR(s)"), "got {:?}", app.status);
+        assert!(!app.status.contains("run(s)"), "got {:?}", app.status);
+
+        app.set_tab(Tab::Runs);
+        assert!(app.status.starts_with("0 run(s)"), "got {:?}", app.status);
+    }
+
     /// Final review I1: the auto-refresh reloads the PRs behind the Repos
     /// tab; that must not move the Repos cursor.
     #[test]
@@ -2355,7 +2410,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
         app.prs_loaded = true;
         app.issue_tab.loaded = true;
-        app.issue_tab.status = "4 issue(s) — 2 repo(s)".to_string();
+        *app.lines.slot(Tab::Issues) = "4 issue(s) — 2 repo(s)".to_string();
         app.status = "3 PR(s) — 2 repo(s)".to_string();
 
         app.set_tab(Tab::Issues);
