@@ -1,11 +1,12 @@
 //! Everything that talks to the outside world: finding the git repos, and
-//! running `gh` to fetch the PRs.
+//! running `gh` (and `git`) to fetch the PRs, runs and repos, or to clone.
 
 use crate::filters::Filters;
 use crate::model::{Pr, Run};
+use crate::repos::{LocalRepo, Repo, RepoFilters, parse_origin};
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Maximum number of PRs fetched per repo (like the script's `--limit`).
 const PR_LIMIT: &str = "50";
@@ -21,6 +22,17 @@ const RUN_LIMIT: &str = "100";
 /// How many of those runs the Actions tab shows per repo when the "my PRs"
 /// filter is off. Deliberately smaller than `RUN_LIMIT`: see `fetch_runs`.
 pub const RUN_DISPLAY_LIMIT: usize = 20;
+
+/// Most repos `gh repo list` returns for one owner: far above any org this
+/// is meant for. `gh` pages through them itself.
+const REPO_LIMIT: &str = "1000";
+
+/// JSON fields requested from `gh` for each repo.
+const REPO_JSON_FIELDS: &str =
+    "nameWithOwner,name,description,visibility,isArchived,isFork,pushedAt,url";
+
+/// Most orgs `gh org list` returns (its default is 30).
+const ORG_LIMIT: &str = "100";
 
 /// JSON fields requested from `gh` for each run.
 const RUN_JSON_FIELDS: &str =
@@ -161,6 +173,121 @@ pub fn fetch_login() -> Result<String> {
     Ok(login)
 }
 
+/// The arguments of `gh repo list` for `owner` under `filters`. Split out
+/// so the flags are testable without running `gh`.
+pub fn repo_list_args(owner: &str, filters: &RepoFilters) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "repo",
+        "list",
+        owner,
+        "--limit",
+        REPO_LIMIT,
+        "--json",
+        REPO_JSON_FIELDS,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.extend(filters.to_gh_args());
+    args
+}
+
+/// Runs `gh repo list` for `owner` and parses the JSON into `Vec<Repo>`.
+pub fn fetch_repos(owner: &str, filters: &RepoFilters) -> Result<Vec<Repo>> {
+    let output = Command::new("gh")
+        .args(repo_list_args(owner, filters))
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh repo list` failed: {}", stderr.trim());
+    }
+
+    serde_json::from_slice(&output.stdout).context("parsing the JSON returned by `gh repo list`")
+}
+
+/// The orgs of the authenticated account, for the owner picker.
+pub fn fetch_orgs() -> Result<Vec<String>> {
+    let output = Command::new("gh")
+        .args(["org", "list", "--limit", ORG_LIMIT])
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh org list` failed: {}", stderr.trim());
+    }
+    Ok(parse_org_list(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// `gh org list` prints one login per line when its output is not a
+/// terminal — the case here, since we capture it.
+fn parse_org_list(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The scanned folder's repos with the `owner/name` of their `origin`
+/// remote, asked of `git` itself: local, instant, no network. A folder
+/// whose origin is missing or not on GitHub gets `None`.
+pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
+    discover_repos(root)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|folder| {
+            let origin = Command::new("git")
+                .arg("-C")
+                .arg(root.join(&folder))
+                .args(["remote", "get-url", "origin"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| parse_origin(&String::from_utf8_lossy(&output.stdout)));
+            LocalRepo { folder, origin }
+        })
+        .collect()
+}
+
+/// The `gh repo clone` command for one repo, into `root/name`. Built apart
+/// from `clone_repo` so its safety settings are testable: stdin is closed
+/// and git's credential prompt disabled, because the TUI owns the terminal
+/// — a prompt there would be invisible and wait forever.
+fn clone_command(root: &Path, name_with_owner: &str, name: &str) -> Command {
+    let mut cmd = Command::new("gh");
+    cmd.args(["repo", "clone", name_with_owner])
+        .arg(root.join(name))
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null());
+    cmd
+}
+
+/// Clones `name_with_owner` into `root/name`. On failure, the error is the
+/// last line `gh` printed: the one that says why.
+pub fn clone_repo(root: &Path, name_with_owner: &str, name: &str) -> Result<()> {
+    let output = clone_command(root, name_with_owner, name)
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+    if !output.status.success() {
+        anyhow::bail!("{}", last_line(&String::from_utf8_lossy(&output.stderr)));
+    }
+    Ok(())
+}
+
+/// The last non-blank line of `text`. For a failed clone the first one is
+/// git's `Cloning into '…'...`, which says nothing.
+fn last_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or("unknown error")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +313,59 @@ mod tests {
         assert!(
             limit <= 100,
             "RUN_LIMIT={limit} would force `gh` to paginate"
+        );
+    }
+
+    #[test]
+    fn repo_list_asks_for_the_owner_with_the_boxes_flags() {
+        let args = repo_list_args("acme", &RepoFilters::default());
+        assert_eq!(
+            args,
+            [
+                "repo",
+                "list",
+                "acme",
+                "--limit",
+                REPO_LIMIT,
+                "--json",
+                REPO_JSON_FIELDS,
+                "--no-archived",
+                "--source",
+            ]
+        );
+    }
+
+    #[test]
+    fn org_list_output_is_one_login_per_line() {
+        assert_eq!(parse_org_list("acme\n  corp \n\n"), ["acme", "corp"]);
+        assert!(parse_org_list("").is_empty());
+    }
+
+    /// Review focus 3: git prints `Cloning into '…'...` first, which says
+    /// nothing about the failure; the reason comes last.
+    #[test]
+    fn a_failed_clone_reports_its_last_line() {
+        let stderr = "Cloning into 'api'...\nfatal: repository not found\n\n";
+        assert_eq!(last_line(stderr), "fatal: repository not found");
+        assert_eq!(last_line("  \n"), "unknown error");
+    }
+
+    /// Review focus 1: the TUI owns the terminal, so a credential prompt
+    /// would be invisible and wait forever. It must fail instead.
+    #[test]
+    fn the_clone_command_targets_the_folder_and_never_prompts() {
+        let cmd = clone_command(Path::new("/ws"), "acme/api", "api");
+
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["repo", "clone", "acme/api", "/ws/api"]);
+        assert!(
+            cmd.get_envs()
+                .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
+                    && value == Some(std::ffi::OsStr::new("0"))),
+            "git must not prompt for credentials"
         );
     }
 }
