@@ -38,7 +38,7 @@ impl Since {
             Since::M1 => "1m",
         }
     }
-    fn next(self) -> Self {
+    pub fn next(self) -> Self {
         match self {
             Since::Off => Since::D1,
             Since::D1 => Since::D3,
@@ -48,7 +48,7 @@ impl Since {
             Since::M1 => Since::Off,
         }
     }
-    fn prev(self) -> Self {
+    pub fn prev(self) -> Self {
         match self {
             Since::Off => Since::M1,
             Since::D1 => Since::Off,
@@ -57,6 +57,16 @@ impl Since {
             Since::W2 => Since::W1,
             Since::M1 => Since::W2,
         }
+    }
+
+    /// The `updated:>=YYYY-MM-DD` search qualifier, or `None` when off.
+    /// Shared by the PR and the issue filters.
+    pub fn updated_qualifier(self) -> Option<String> {
+        let days = self.days()?;
+        // Cutoff date = today - N days. `chrono` handles the calendar; a
+        // NaiveDate already displays in YYYY-MM-DD format.
+        let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(days);
+        Some(format!("updated:>={cutoff}"))
     }
 }
 
@@ -146,6 +156,68 @@ impl AuthorFilter {
             _ => AuthorFilter::not_me(),
         }
     }
+
+    /// Adds this author to a `gh … list` command line: a plain `--author`,
+    /// or an exclusion in the search — the list commands have no flag for
+    /// one. Shared by the PR and the issue filters.
+    pub fn push_gh_args(&self, args: &mut Vec<String>, search: &mut Vec<String>) {
+        match self {
+            AuthorFilter::Any => {}
+            AuthorFilter::Is(login) => {
+                args.push("--author".to_string());
+                args.push(login.clone());
+            }
+            AuthorFilter::IsNot(login) => search.push(format!("-author:{login}")),
+        }
+    }
+}
+
+/// The repo selection after `current`: all → repo0 → repo1 → … → all.
+/// Free functions rather than `Filters` methods: the issue filters hold a
+/// selection of their own and cycle it the same way.
+pub fn next_repo(current: Option<&str>, repos: &[String]) -> Option<String> {
+    match current {
+        None => repos.first().cloned(),
+        Some(current) => match repos.iter().position(|r| r == current) {
+            // not the last → the next one
+            Some(i) if i + 1 < repos.len() => Some(repos[i + 1].clone()),
+            // last (or not found) → back to "all"
+            _ => None,
+        },
+    }
+}
+
+/// Same cycle, backwards: all → last → … → repo0 → all.
+pub fn prev_repo(current: Option<&str>, repos: &[String]) -> Option<String> {
+    match current {
+        None => repos.last().cloned(),
+        Some(current) => match repos.iter().position(|r| r == current) {
+            Some(0) | None => None, // first (or not found) → "all"
+            Some(i) => Some(repos[i - 1].clone()),
+        },
+    }
+}
+
+/// Drops a repo selection that this folder does not hold, and returns the
+/// name we let go. The config is global while a selection names a folder,
+/// so a selection made in `~/dev/perso` would filter EVERYTHING out once
+/// gh-ui is pointed at `~/dev/client` — with nothing on screen saying why.
+///
+/// An empty `repos` is left alone on purpose: it means either an empty
+/// folder or a `read_dir` that failed, and there is nothing to show in
+/// either case. Nor does the caller save afterwards: the selection stays
+/// valid in the folder it was made for, and each run repairs itself in
+/// memory.
+pub fn reconcile_repo_selection(
+    selection: &mut Option<String>,
+    repos: &[String],
+) -> Option<String> {
+    if repos.is_empty() {
+        return None;
+    }
+    // `take_if` hands us the value only when the closure says so, leaving
+    // the selection as `None` in that case — exactly the fallback we want.
+    selection.take_if(|sel| !repos.contains(sel))
 }
 
 /// The set of active filters. `Default` gives the "everything, nothing checked" state.
@@ -204,52 +276,17 @@ impl Filters {
 
     /// Scrolls through the repo selection: all → repo0 → repo1 → … → all.
     pub fn cycle_repo(&mut self, repos: &[String]) {
-        if repos.is_empty() {
-            self.repo = None;
-            return;
-        }
-        self.repo = match &self.repo {
-            None => Some(repos[0].clone()),
-            Some(current) => match repos.iter().position(|r| r == current) {
-                // not the last → the next one
-                Some(i) if i + 1 < repos.len() => Some(repos[i + 1].clone()),
-                // last (or not found) → back to "all"
-                _ => None,
-            },
-        };
+        self.repo = next_repo(self.repo.as_deref(), repos);
     }
 
     /// Same cycle, backwards: all → last → … → repo0 → all.
     pub fn cycle_repo_prev(&mut self, repos: &[String]) {
-        if repos.is_empty() {
-            self.repo = None;
-            return;
-        }
-        self.repo = match &self.repo {
-            None => Some(repos[repos.len() - 1].clone()),
-            Some(current) => match repos.iter().position(|r| r == current) {
-                Some(0) | None => None, // first (or not found) → "all"
-                Some(i) => Some(repos[i - 1].clone()),
-            },
-        };
+        self.repo = prev_repo(self.repo.as_deref(), repos);
     }
 
-    /// Drops a repo selection that this folder does not hold, and returns the
-    /// name we let go. The config is global while `repo` names a folder, so a
-    /// selection made in `~/dev/perso` would filter EVERYTHING out once gh-ui
-    /// is pointed at `~/dev/client` — with nothing on screen saying why.
-    ///
-    /// An empty `repos` is left alone on purpose: it means either an empty
-    /// folder or a `read_dir` that failed, and there is nothing to show in
-    /// either case. Nor do we save afterwards: the selection stays valid in
-    /// the folder it was made for, and each run repairs itself in memory.
+    /// See `reconcile_repo_selection`.
     pub fn reconcile_repo(&mut self, repos: &[String]) -> Option<String> {
-        if repos.is_empty() {
-            return None;
-        }
-        // `take_if` hands us the value only when the closure says so, leaving
-        // `self.repo` as `None` in that case — exactly the fallback we want.
-        self.repo.take_if(|sel| !repos.contains(sel))
+        reconcile_repo_selection(&mut self.repo, repos)
     }
 
     /// The part of the summary that ALSO applies to the Actions tab.
@@ -302,15 +339,7 @@ impl Filters {
         // `search`: the qualifiers joined into a single `--search "a b c"`.
         let mut search: Vec<String> = Vec::new();
 
-        match &self.author {
-            AuthorFilter::Any => {}
-            AuthorFilter::Is(login) => {
-                args.push("--author".to_string());
-                args.push(login.clone());
-            }
-            // `gh pr list` has no flag for an exclusion: only the search has it.
-            AuthorFilter::IsNot(login) => search.push(format!("-author:{login}")),
-        }
+        self.author.push_gh_args(&mut args, &mut search);
         if self.review_requested {
             search.push("review-requested:@me".to_string());
         }
@@ -321,11 +350,8 @@ impl Filters {
             args.push(label.clone());
         }
 
-        if let Some(days) = self.since.days() {
-            // Cutoff date = today - N days. `chrono` handles the calendar.
-            let cutoff = chrono::Local::now().date_naive() - chrono::Duration::days(days);
-            // A NaiveDate already displays in YYYY-MM-DD format.
-            search.push(format!("updated:>={cutoff}"));
+        if let Some(updated) = self.since.updated_qualifier() {
+            search.push(updated);
         }
 
         if self.no_draft {

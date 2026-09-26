@@ -4,6 +4,7 @@ mod config;
 mod fetch;
 mod filters;
 mod gh;
+mod issues;
 mod model;
 mod refresh;
 mod repos;
