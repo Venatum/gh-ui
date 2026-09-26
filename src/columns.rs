@@ -3,6 +3,7 @@
 
 use crate::config;
 use crate::model::{Pr, Run};
+use crate::repos::{Repo, RepoState};
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -220,6 +221,97 @@ impl RunColumn {
     }
 }
 
+/// The columns of the Repos tab.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoColumn {
+    Tick,
+    Repo,
+    State,
+    Visibility,
+    Pushed,
+    Description,
+}
+
+const REPO_COLUMNS: [RepoColumn; 6] = [
+    RepoColumn::Tick,
+    RepoColumn::Repo,
+    RepoColumn::State,
+    RepoColumn::Visibility,
+    RepoColumn::Pushed,
+    RepoColumn::Description,
+];
+
+impl Column for RepoColumn {
+    fn all() -> &'static [Self] {
+        &REPO_COLUMNS
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            RepoColumn::Tick => "tick",
+            RepoColumn::Repo => "repo",
+            RepoColumn::State => "state",
+            RepoColumn::Visibility => "visibility",
+            RepoColumn::Pushed => "pushed",
+            RepoColumn::Description => "description",
+        }
+    }
+
+    fn width(self) -> Constraint {
+        match self {
+            RepoColumn::Tick => Constraint::Length(4),
+            RepoColumn::Repo => Constraint::Length(32),
+            RepoColumn::State => Constraint::Length(26),
+            RepoColumn::Visibility => Constraint::Length(10),
+            RepoColumn::Pushed => Constraint::Length(10),
+            RepoColumn::Description => Constraint::Fill(1),
+        }
+    }
+}
+
+/// Label + color of a repo's state. A clonable row reads blank: its tick
+/// box already says it can be cloned.
+fn repo_state_look(state: &RepoState) -> (String, Style) {
+    match state {
+        RepoState::Clonable => (String::new(), Style::new()),
+        RepoState::Cloned => ("✓ cloned".to_string(), Style::new().fg(Color::Green)),
+        RepoState::NameTaken(origin) => (
+            format!("name taken → {}", origin.as_deref().unwrap_or("?")),
+            Style::new().fg(Color::Yellow),
+        ),
+        RepoState::Queued => ("queued".to_string(), Style::new().fg(Color::Gray)),
+        RepoState::Cloning => ("cloning…".to_string(), Style::new().fg(Color::Yellow)),
+        RepoState::Failed(_) => ("✗ failed".to_string(), Style::new().fg(Color::Red)),
+    }
+}
+
+impl RepoColumn {
+    /// `state` and `ticked` come from the tab, not from the repo: the same
+    /// repo reads differently depending on the folder and the batch.
+    pub fn cell(self, repo: &Repo, state: &RepoState, ticked: bool) -> Cell<'static> {
+        match self {
+            RepoColumn::Tick => match state {
+                RepoState::Clonable | RepoState::Failed(_) => {
+                    Cell::from(if ticked { "[x]" } else { "[ ]" })
+                }
+                _ => Cell::from(""),
+            },
+            RepoColumn::Repo => Cell::from(repo.name_with_owner.clone()),
+            RepoColumn::State => {
+                let (label, style) = repo_state_look(state);
+                Cell::from(Span::styled(label, style))
+            }
+            RepoColumn::Visibility => Cell::from(repo.visibility.to_lowercase()),
+            RepoColumn::Pushed => Cell::from(repo.pushed_at.get(..10).unwrap_or("").to_string()),
+            RepoColumn::Description => Cell::from(Span::styled(
+                repo.description.clone().unwrap_or_default(),
+                Style::new().fg(Color::DarkGray),
+            )),
+        }
+    }
+}
+
 /// One column and whether it is shown. The ORDER of the entries in
 /// `ColumnLayout` is the order of the table: no second collection to keep in
 /// sync with this one.
@@ -326,13 +418,14 @@ impl<C: Column> ColumnLayout<C> {
     }
 }
 
-/// The layout of BOTH tables, as persisted. Its own file, next to
+/// The layout of every table, as persisted. Its own file, next to
 /// `filters.json` but separate from it: two independent settings, two files.
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Columns {
     pub prs: ColumnLayout<PrColumn>,
     pub runs: ColumnLayout<RunColumn>,
+    pub repos: ColumnLayout<RepoColumn>,
 }
 
 impl Columns {
@@ -349,6 +442,7 @@ impl Columns {
         // fast; if it's partial, normalize fills the gaps.
         columns.prs.normalize();
         columns.runs.normalize();
+        columns.repos.normalize();
         columns
     }
 
@@ -597,6 +691,7 @@ mod tests {
 
         assert_eq!(columns.prs.entries.len(), PrColumn::all().len());
         assert_eq!(columns.runs.entries.len(), RunColumn::all().len());
+        assert_eq!(columns.repos.entries.len(), RepoColumn::all().len());
     }
 
     #[test]
@@ -654,5 +749,65 @@ mod tests {
         assert_eq!(run_look("completed", "cancelled").0, "cancelled");
         assert_eq!(run_look("in_progress", "").0, "● running");
         assert_eq!(run_look("queued", "").0, "queued");
+    }
+
+    #[test]
+    fn a_repo_row_shows_its_name_visibility_and_date() {
+        let repo = crate::repos::sample_repo("acme/api");
+        let state = RepoState::Clonable;
+
+        assert_eq!(
+            RepoColumn::Repo.cell(&repo, &state, false),
+            Cell::from("acme/api".to_string())
+        );
+        assert_eq!(
+            RepoColumn::Visibility.cell(&repo, &state, false),
+            Cell::from("private".to_string())
+        );
+        assert_eq!(
+            RepoColumn::Pushed.cell(&repo, &state, false),
+            Cell::from("2026-09-20".to_string())
+        );
+    }
+
+    #[test]
+    fn only_a_clonable_or_failed_row_has_a_tick_box() {
+        let repo = crate::repos::sample_repo("acme/api");
+        let tick = |state: RepoState, ticked| RepoColumn::Tick.cell(&repo, &state, ticked);
+
+        assert_eq!(tick(RepoState::Clonable, true), Cell::from("[x]"));
+        assert_eq!(tick(RepoState::Clonable, false), Cell::from("[ ]"));
+        assert_eq!(
+            tick(RepoState::Failed("x".into()), false),
+            Cell::from("[ ]")
+        );
+        assert_eq!(tick(RepoState::Cloned, false), Cell::from(""));
+        assert_eq!(tick(RepoState::NameTaken(None), false), Cell::from(""));
+    }
+
+    #[test]
+    fn repo_states_read_as_words() {
+        assert_eq!(repo_state_look(&RepoState::Clonable).0, "");
+        assert_eq!(repo_state_look(&RepoState::Cloned).0, "✓ cloned");
+        assert_eq!(
+            repo_state_look(&RepoState::NameTaken(Some("other/api".into()))).0,
+            "name taken → other/api"
+        );
+        assert_eq!(
+            repo_state_look(&RepoState::NameTaken(None)).0,
+            "name taken → ?"
+        );
+        assert_eq!(repo_state_look(&RepoState::Queued).0, "queued");
+        assert_eq!(repo_state_look(&RepoState::Cloning).0, "cloning…");
+        assert_eq!(
+            repo_state_look(&RepoState::Failed("x".into())).0,
+            "✗ failed"
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_the_repos_tab_still_gets_its_columns() {
+        let columns = Columns::from_json(r#"{"prs":{"entries":[]}}"#);
+        assert_eq!(columns.repos.entries.len(), RepoColumn::all().len());
     }
 }
