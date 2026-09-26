@@ -40,8 +40,7 @@ fn main() -> Result<()> {
     let root: PathBuf = arg.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
     let mut app = App::new(root);
-    app.refresh(); // first load, BEFORE entering the TUI
-    app.load_login(); // resolves the account shown in the header
+    app.start(); // the account, the orgs, and the first load — BEFORE the TUI
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app); // capture the result...
@@ -141,6 +140,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Tab => app.next_tab(),
         KeyCode::Char('1') => app.set_tab(Tab::Prs),
         KeyCode::Char('2') => app.set_tab(Tab::Runs),
+        KeyCode::Char('3') => app.set_tab(Tab::Repos),
         // "Mine" on either tab: my PRs, or the runs of my PRs.
         KeyCode::Char('m') => app.toggle_mine(),
         _ => {}

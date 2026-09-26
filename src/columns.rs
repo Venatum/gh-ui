@@ -261,7 +261,7 @@ impl Column for RepoColumn {
     fn width(self) -> Constraint {
         match self {
             RepoColumn::Tick => Constraint::Length(4),
-            RepoColumn::Repo => Constraint::Length(32),
+            RepoColumn::Repo => Constraint::Length(40),
             RepoColumn::State => Constraint::Length(26),
             RepoColumn::Visibility => Constraint::Length(10),
             RepoColumn::Pushed => Constraint::Length(10),

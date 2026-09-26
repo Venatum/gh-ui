@@ -2,9 +2,10 @@
 //! decides nothing, it only draws what `App` holds.
 
 use crate::app::{App, FilterField, InputKind, Tab, section_of};
-use crate::columns::{Column, ColumnLayout, PrColumn, RunColumn};
+use crate::columns::{Column, ColumnLayout, PrColumn, RepoColumn, RunColumn};
 use crate::filters::{AuthorFilter, Filters};
 use crate::refresh::{self, AutoRefresh};
+use crate::repos::RepoFilters;
 use crate::runfilters::RunFilters;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -67,7 +68,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("gh-ui", Style::new().bold().fg(Color::Cyan)),
         Span::raw("  —  "),
     ];
-    if app.loading {
+    if app.is_busy() {
         const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let c = FRAMES[app.spinner_frame % FRAMES.len()];
         top.push(Span::styled(
@@ -110,6 +111,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("PRs", app.active_tab == Tab::Prs),
         Span::raw(" "),
         tab_span("Actions", app.active_tab == Tab::Runs),
+        Span::raw(" "),
+        tab_span("Repos", app.active_tab == Tab::Repos),
     ]);
 
     // Line 3: depending on the tab, PRs filters summary OR the runs toggle
@@ -131,6 +134,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Style::new().fg(Color::DarkGray),
         ),
+        Tab::Repos => Span::styled(
+            format!(
+                "{} · {} repos · {} cloned",
+                app.repo_tab.filters.summary(),
+                app.repo_tab.repos.len(),
+                app.repo_tab.cloned_count()
+            ),
+            Style::new().fg(Color::DarkGray),
+        ),
     }];
 
     // Counted against the tab's own list: the PRs tab compares with everything
@@ -138,6 +150,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let (shown, total) = match app.active_tab {
         Tab::Prs => (app.visible_prs().len(), app.prs.len()),
         Tab::Runs => (app.visible_runs().len(), app.branch_runs().len()),
+        Tab::Repos => (app.visible_repos().len(), app.repo_tab.listed().len()),
     };
     if let Some(chip) = search_summary(&app.search, shown, total) {
         subtitle.push(Span::raw("  "));
@@ -153,6 +166,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.active_tab {
         Tab::Prs => render_pr_table(frame, app, area),
         Tab::Runs => render_run_table(frame, app, area),
+        Tab::Repos => render_repo_table(frame, app, area),
     }
 }
 
@@ -202,6 +216,38 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.run_table_state);
 }
 
+fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    let columns: Vec<RepoColumn> = app.columns.repos.visible().collect();
+
+    let header =
+        Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    // Owned cells, as in the other tables: nothing may still borrow `app`
+    // when `&mut app.repo_table_state` is handed over below.
+    let rows: Vec<Row<'static>> = app
+        .visible_repos()
+        .into_iter()
+        .map(|repo| {
+            let state = app.repo_tab.state_of(repo);
+            let ticked = app.repo_tab.ticked.contains(&repo.name_with_owner);
+            Row::new(
+                columns
+                    .iter()
+                    .map(|c| c.cell(repo, &state, ticked))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol("▌ ")
+        .block(Block::bordered());
+
+    frame.render_stateful_widget(table, area, &mut app.repo_table_state);
+}
+
 /// The footer shortcuts, in the order they matter. `?` is not in the list: it
 /// is appended separately and never dropped, because it is how the user
 /// reaches everything the footer had to cut.
@@ -211,7 +257,7 @@ const HINTS: [(&str, &str); 10] = [
     // the one key on this row that is not reachable from a panel.
     ("/", "search"),
     ("enter", "open"),
-    ("tab/1/2", "tab"),
+    ("tab/1/2/3", "tab"),
     ("f", "filters"),
     ("m", "mine"),
     ("c", "columns"),
@@ -328,7 +374,7 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         let text = format!(
             "{marker}{:<12} {}",
             field_name(field),
-            field_value(field, f, &app.run_filters)
+            field_value(field, f, &app.run_filters, &app.repo_tab.filters)
         );
         lines.push(if focused {
             Line::from(Span::styled(
@@ -365,6 +411,10 @@ fn render_column_panel(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Runs => (
             " Columns — Actions ",
             column_lines(&app.columns.runs, app.column_cursor, app.column_grabbed),
+        ),
+        Tab::Repos => (
+            " Columns — Repos ",
+            column_lines(&app.columns.repos, app.column_cursor, app.column_grabbed),
         ),
     };
 
@@ -437,17 +487,25 @@ fn field_name(field: FilterField) -> &'static str {
         FilterField::RunStatus => "Status",
         FilterField::RunEvent => "Event",
         FilterField::RunWorkflow => "Workflow",
+        FilterField::Owner => "Owner",
+        FilterField::Archived => "Archived",
+        FilterField::Forks => "Forks",
+        FilterField::HideCloned => "Hide cloned",
     }
 }
 
 /// The displayed value of a field: cycle "◂ x ▸", box "[x]", or text.
-fn field_value(field: FilterField, f: &Filters, rf: &RunFilters) -> String {
+fn field_value(field: FilterField, f: &Filters, rf: &RunFilters, rpf: &RepoFilters) -> String {
     let empty = "(empty)  ⏎ edit";
     match field {
         FilterField::OnlyPrRuns => toggle_box(rf.only_pr_runs),
         FilterField::RunStatus => format!("◂ {} ▸", rf.status.label()),
         FilterField::RunEvent => format!("◂ {} ▸", rf.event.as_deref().unwrap_or("all")),
         FilterField::RunWorkflow => format!("◂ {} ▸", rf.workflow.as_deref().unwrap_or("all")),
+        FilterField::Owner => format!("◂ {} ▸", rpf.owner.as_deref().unwrap_or("…")),
+        FilterField::Archived => toggle_box(rpf.archived),
+        FilterField::Forks => toggle_box(rpf.forks),
+        FilterField::HideCloned => toggle_box(rpf.hide_cloned),
         FilterField::Since => format!("◂ {} ▸", f.since.label()),
         FilterField::NoDraft => toggle_box(f.no_draft),
         FilterField::Unreviewed => toggle_box(f.unreviewed),
@@ -496,7 +554,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("r", "reload now"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
-        help_row("tab, 1/2", "switch tab (PRs / Actions)"),
+        help_row("tab/1/2/3", "switch tab (PRs / Actions / Repos)"),
         help_row("m", "my PRs / their runs (f: status/event/workflow)"),
         help_row("q", "quit"),
         Line::from(""),
@@ -564,6 +622,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::columns::{ColumnLayout, PrColumn};
+    use crate::repos::RepoFilters;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
@@ -671,15 +730,27 @@ mod tests {
         let f = Filters::default();
         let rf = RunFilters::default();
 
-        assert_eq!(field_value(FilterField::RunEvent, &f, &rf), "◂ all ▸");
-        assert_eq!(field_value(FilterField::RunWorkflow, &f, &rf), "◂ all ▸");
-        assert_eq!(field_value(FilterField::RunStatus, &f, &rf), "◂ all ▸");
+        assert_eq!(
+            field_value(FilterField::RunEvent, &f, &rf, &RepoFilters::default()),
+            "◂ all ▸"
+        );
+        assert_eq!(
+            field_value(FilterField::RunWorkflow, &f, &rf, &RepoFilters::default()),
+            "◂ all ▸"
+        );
+        assert_eq!(
+            field_value(FilterField::RunStatus, &f, &rf, &RepoFilters::default()),
+            "◂ all ▸"
+        );
 
         let rf = RunFilters {
             event: Some("push".into()),
             ..rf
         };
-        assert_eq!(field_value(FilterField::RunEvent, &f, &rf), "◂ push ▸");
+        assert_eq!(
+            field_value(FilterField::RunEvent, &f, &rf, &RepoFilters::default()),
+            "◂ push ▸"
+        );
     }
 
     /// The `m` row names both of its meanings (my PRs on the PRs tab, their
@@ -846,8 +917,14 @@ mod tests {
             review_requested: true,
             ..Default::default()
         };
-        assert_eq!(field_value(FilterField::ReviewAsked, &off, &rf), "[ ]");
-        assert_eq!(field_value(FilterField::ReviewAsked, &on, &rf), "[x]");
+        assert_eq!(
+            field_value(FilterField::ReviewAsked, &off, &rf, &RepoFilters::default()),
+            "[ ]"
+        );
+        assert_eq!(
+            field_value(FilterField::ReviewAsked, &on, &rf, &RepoFilters::default()),
+            "[x]"
+        );
     }
 
     /// "Review asked" is 12 characters, one more than the name column held.
@@ -872,7 +949,7 @@ mod tests {
                 author,
                 ..Default::default()
             };
-            field_value(FilterField::Author, &f, &rf)
+            field_value(FilterField::Author, &f, &rf, &RepoFilters::default())
         };
         assert_eq!(row(AuthorFilter::Any), "◂ any ▸");
         assert_eq!(row(AuthorFilter::me()), "◂ @me ▸");
@@ -882,5 +959,39 @@ mod tests {
             row(AuthorFilter::IsNot("octocat".to_string())),
             "◂ not octocat ▸"
         );
+    }
+
+    #[test]
+    fn the_repos_rows_show_the_owner_and_the_boxes() {
+        let f = Filters::default();
+        let rf = RunFilters::default();
+        let rpf = RepoFilters {
+            owner: Some("acme".to_string()),
+            hide_cloned: true,
+            ..Default::default()
+        };
+        assert_eq!(field_value(FilterField::Owner, &f, &rf, &rpf), "◂ acme ▸");
+        assert_eq!(field_value(FilterField::Archived, &f, &rf, &rpf), "[ ]");
+        assert_eq!(field_value(FilterField::HideCloned, &f, &rf, &rpf), "[x]");
+        assert_eq!(
+            field_value(FilterField::Owner, &f, &rf, &RepoFilters::default()),
+            "◂ … ▸"
+        );
+    }
+
+    #[test]
+    fn the_hide_cloned_row_is_not_truncated() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Repos;
+        let text = render_to_text(80, 24, |frame| {
+            render_filter_panel(frame, &app, frame.area())
+        });
+        assert!(text.contains("Hide cloned  [ ]"), "got {text}");
+    }
+
+    #[test]
+    fn the_tab_help_row_names_the_three_tabs() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+        assert!(text.contains("switch tab (PRs / Actions / Repos)"));
     }
 }

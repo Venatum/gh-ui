@@ -4,6 +4,7 @@
 use crate::filters::Filters;
 use crate::gh;
 use crate::model::{Pr, Run};
+use crate::repos::{LocalRepo, Repo, RepoFilters};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -26,6 +27,15 @@ pub struct RunsResult {
     pub errors: usize,
 }
 
+/// A repo-list load: for whom, what `gh` answered, and the folder's repos
+/// read in the same pass (the row states are derived from both).
+pub struct ReposResult {
+    pub owner: String,
+    /// `Err` carries `gh`'s message for the status line.
+    pub repos: Result<Vec<Repo>, String>,
+    pub locals: Vec<LocalRepo>,
+}
+
 /// What the background thread returns: PRs, runs, or both at once.
 pub enum Loaded {
     Prs(FetchResult),
@@ -34,6 +44,11 @@ pub enum Loaded {
     /// The authenticated account, or `None` if `gh` could not tell us.
     /// Not a load: it rides the same channel, but carries no status line.
     User(Option<String>),
+    /// The owner's repos (Repos tab). Not a `Job`: the list has its own
+    /// loading flag in `App`, so it never merges with the PR and run flows.
+    Repos(ReposResult),
+    /// The account's orgs, for the owner picker; empty when `gh` failed.
+    Orgs(Vec<String>),
 }
 
 /// What we ask the thread to load.
@@ -62,6 +77,27 @@ pub fn spawn_login(tx: Sender<Loaded>) {
         // A failure here is not worth an error banner — the header shows `@?`
         // and the status line already reports whatever broke the PR load.
         let _ = tx.send(Loaded::User(gh::fetch_login().ok()));
+    });
+}
+
+/// Asks for the account's orgs, once, like `spawn_login`.
+pub fn spawn_orgs(tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        // A failure only shrinks the picker to the account itself.
+        let _ = tx.send(Loaded::Orgs(gh::fetch_orgs().unwrap_or_default()));
+    });
+}
+
+/// Loads `owner`'s repos, and reads the folder's origins alongside.
+pub fn spawn_repos(root: PathBuf, owner: String, filters: RepoFilters, tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        let repos = gh::fetch_repos(&owner, &filters).map_err(|e| e.to_string());
+        let locals = gh::local_origins(&root);
+        let _ = tx.send(Loaded::Repos(ReposResult {
+            owner,
+            repos,
+            locals,
+        }));
     });
 }
 

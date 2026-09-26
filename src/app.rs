@@ -1,16 +1,17 @@
 //! The application state and its logic (independent of rendering).
 
 use crate::columns::Columns;
-use crate::fetch::{self, FetchResult, Job, Loaded, RunsResult};
+use crate::fetch::{self, FetchResult, Job, Loaded, ReposResult, RunsResult};
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
+use crate::repos::{self, Repo, RepoFilters, RepoSettings, ReposTab};
 use crate::runfilters::{self, RunFilters};
 use crate::search;
 use ratatui::widgets::TableState;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -64,6 +65,14 @@ pub enum FilterField {
     RunEvent,
     /// Actions tab only: keep the runs of one workflow.
     RunWorkflow,
+    /// Repos tab only: whose repos to list (account or org).
+    Owner,
+    /// Repos tab only: show archived repos too.
+    Archived,
+    /// Repos tab only: show forks too.
+    Forks,
+    /// Repos tab only: hide the repos already cloned (in memory).
+    HideCloned,
 }
 
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
@@ -86,12 +95,22 @@ const RUN_FIELDS: [FilterField; 5] = [
     FilterField::RunWorkflow,
 ];
 
+/// Panel rows on the Repos tab. No `Repo` row: the folder filter means
+/// nothing for a list of repos that are, mostly, not in the folder yet.
+const REPO_FIELDS: [FilterField; 4] = [
+    FilterField::Owner,
+    FilterField::Archived,
+    FilterField::Forks,
+    FilterField::HideCloned,
+];
+
 /// The panel rows for `tab`. The cursor is an index into THIS slice, so its
 /// length changes with the tab (hence the clamping in `set_tab`).
 pub fn fields_for(tab: Tab) -> &'static [FilterField] {
     match tab {
         Tab::Prs => &PR_FIELDS,
         Tab::Runs => &RUN_FIELDS,
+        Tab::Repos => &REPO_FIELDS,
     }
 }
 
@@ -111,6 +130,10 @@ pub fn section_of(field: FilterField) -> &'static str {
         | FilterField::RunStatus
         | FilterField::RunEvent
         | FilterField::RunWorkflow => "Actions",
+        FilterField::Owner
+        | FilterField::Archived
+        | FilterField::Forks
+        | FilterField::HideCloned => "Repos",
         _ => "PRs",
     }
 }
@@ -120,15 +143,27 @@ pub fn section_of(field: FilterField) -> &'static str {
 pub enum Tab {
     Prs,
     Runs,
+    Repos,
 }
 
 impl Tab {
-    /// The next tab (cycle Prs -> Runs -> Prs).
+    /// The next tab (cycle Prs -> Runs -> Repos -> Prs).
     pub fn next(self) -> Tab {
         match self {
             Tab::Prs => Tab::Runs,
-            Tab::Runs => Tab::Prs,
+            Tab::Runs => Tab::Repos,
+            Tab::Repos => Tab::Prs,
         }
+    }
+}
+
+/// The tab to open on: Repos when the folder holds no git repo — there is
+/// nothing to show elsewhere, and cloning is what comes next.
+pub fn initial_tab(root: &Path) -> Tab {
+    if gh::discover_repos(root).unwrap_or_default().is_empty() {
+        Tab::Repos
+    } else {
+        Tab::Prs
     }
 }
 
@@ -197,6 +232,18 @@ pub struct App {
     pub run_filters: RunFilters,
     /// Have we already loaded the runs at least once?
     runs_loaded: bool,
+    /// Have we already loaded the PRs at least once? False only when the app
+    /// opened on the Repos tab: the PRs tab then loads on its first visit.
+    prs_loaded: bool,
+
+    /// The Repos tab: its list, filters, ticks and clone batch.
+    pub repo_tab: ReposTab,
+    pub repo_table_state: TableState,
+    /// A repo-list load is in flight. Separate from `loading`: the list is
+    /// not a `Job`, it never merges with the PR and run flows.
+    repos_loading: bool,
+    /// A repo-list reload asked for while one was in flight.
+    repos_pending: bool,
 
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
@@ -205,6 +252,13 @@ pub struct App {
 impl App {
     pub fn new(root: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
+        // Field by field: `ReposTab` keeps private counters, so it cannot be
+        // built with `..Default::default()` from outside its module.
+        let mut repo_tab = ReposTab::default();
+        repo_tab.filters = RepoFilters {
+            owner: RepoSettings::load().owner,
+            ..Default::default()
+        };
         Self {
             root,
             prs: Vec::new(),
@@ -236,6 +290,11 @@ impl App {
             run_table_state: TableState::default(),
             run_filters: RunFilters::default(),
             runs_loaded: false,
+            prs_loaded: false,
+            repo_tab,
+            repo_table_state: TableState::default(),
+            repos_loading: false,
+            repos_pending: false,
             tx,
             rx,
         }
@@ -243,14 +302,26 @@ impl App {
 
     /// Reloads what the active tab shows.
     pub fn refresh(&mut self) {
-        self.refresh_job(self.active_job());
+        match self.active_tab {
+            Tab::Repos => self.refresh_repos(),
+            _ => self.refresh_job(self.active_job()),
+        }
     }
 
-    /// The flow the active tab displays.
+    /// The flow the active tab displays — and, on the Repos tab, the one the
+    /// auto-refresh keeps fresh in the background: the repo list itself
+    /// rarely changes and is never auto-reloaded.
     fn active_job(&self) -> Job {
         match self.active_tab {
             Tab::Prs => Job::Prs,
             Tab::Runs => Job::Runs,
+            Tab::Repos => {
+                if self.runs_loaded {
+                    Job::Both
+                } else {
+                    Job::Prs
+                }
+            }
         }
     }
 
@@ -307,6 +378,84 @@ impl App {
         fetch::spawn_login(self.tx.clone());
     }
 
+    /// Everything the first frame needs: the account, the orgs, and the
+    /// first load of the tab we open on.
+    pub fn start(&mut self) {
+        self.load_login();
+        fetch::spawn_orgs(self.tx.clone());
+        match initial_tab(&self.root) {
+            Tab::Repos => self.set_tab(Tab::Repos),
+            _ => self.refresh(),
+        }
+    }
+
+    /// Is anything loading? Drives the header's spinner.
+    pub fn is_busy(&self) -> bool {
+        self.loading || self.repos_loading
+    }
+
+    /// Reloads the Repos tab's list — or queues it behind the one in flight,
+    /// or explains why it cannot run when no owner is known yet.
+    pub fn refresh_repos(&mut self) {
+        let Some(owner) = self.repo_tab.filters.owner.clone() else {
+            self.status = match self.login {
+                Login::Unknown => "No GitHub account: cannot list repos".to_string(),
+                _ => "Waiting for the GitHub account…".to_string(),
+            };
+            return;
+        };
+        if self.repos_loading {
+            self.repos_pending = true;
+            return;
+        }
+        self.repos_loading = true;
+        self.repos_pending = false;
+        self.status = format!("Loading {owner}'s repos…");
+        fetch::spawn_repos(
+            self.root.clone(),
+            owner,
+            self.repo_tab.filters.clone(),
+            self.tx.clone(),
+        );
+    }
+
+    /// The owner picker's values, from what is known so far.
+    pub fn owners(&self) -> Vec<String> {
+        let login = match &self.login {
+            Login::Known(name) => Some(name.as_str()),
+            _ => None,
+        };
+        repos::owners(login, self.repo_tab.orgs.as_deref().unwrap_or(&[]))
+    }
+
+    /// Settles the owner as the account and the orgs come in: none picked
+    /// yet → the account; a saved one the account no longer reaches (org
+    /// left) → the account too, but only once the orgs are known. The
+    /// fallback is not saved: a `gh org list` that failed for a moment must
+    /// not erase the choice. Reloads the list when the tab is on screen.
+    fn reconcile_owner(&mut self) {
+        if !matches!(self.login, Login::Known(_)) {
+            if self.active_tab == Tab::Repos && self.repo_tab.filters.owner.is_none() {
+                self.refresh_repos(); // says why the tab stays empty
+            }
+            return;
+        }
+        let current = self.repo_tab.filters.owner.clone();
+        if current.is_some() && self.repo_tab.orgs.is_none() {
+            return;
+        }
+        let target = repos::valid_owner(current.as_deref(), &self.owners());
+        if target != current
+            && let Some(owner) = target
+        {
+            self.repo_tab.set_owner(owner);
+            self.reset_selection();
+            if self.active_tab == Tab::Repos {
+                self.refresh_repos();
+            }
+        }
+    }
+
     /// Keeps the state alive on every loop iteration. Returns `true` if the
     /// display must be refreshed (a result arrived, or a load is animating the
     /// spinner) — to avoid redrawing a frozen screen 10×/s for nothing.
@@ -314,10 +463,10 @@ impl App {
         let mut changed = false;
 
         while let Ok(msg) = self.rx.try_recv() {
-            // `None` = the message carries no status line, so it must leave
-            // `status` and `loading` alone. Only the login does that: it shares
-            // the channel without being a load, and clearing `loading` here
-            // would cut short a fetch still in flight.
+            // `None` = the message carries no PR/run status line, so it must
+            // leave `status` and `loading` alone: the login, the orgs and the
+            // repo list share the channel without being a PR/run load, and
+            // clearing `loading` here would cut short a fetch still in flight.
             let status = match msg {
                 Loaded::Prs(result) => Some(self.apply_prs(result)),
                 Loaded::Runs(result) => Some(self.apply_runs(result)),
@@ -333,6 +482,16 @@ impl App {
                         Some(name) => Login::Known(name),
                         None => Login::Unknown,
                     };
+                    self.reconcile_owner();
+                    None
+                }
+                Loaded::Orgs(orgs) => {
+                    self.repo_tab.orgs = Some(orgs);
+                    self.reconcile_owner();
+                    None
+                }
+                Loaded::Repos(result) => {
+                    self.apply_repos(result);
                     None
                 }
             };
@@ -351,6 +510,9 @@ impl App {
         {
             self.refresh_job(job);
         }
+        if !self.repos_loading && self.repos_pending {
+            self.refresh_repos();
+        }
 
         // Auto-refresh: if a pace is set, no load is in progress, no prompt is
         // open and the interval has elapsed, we relaunch. Holding it while the
@@ -363,7 +525,7 @@ impl App {
             && !self.is_input_mode()
             && self.last_refresh.elapsed() >= interval
         {
-            self.refresh();
+            self.refresh_job(self.active_job());
         }
 
         // The countdown runs down in the header: ask for a redraw when the
@@ -375,7 +537,7 @@ impl App {
             changed = true;
         }
 
-        if self.loading {
+        if self.is_busy() {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
             changed = true; // the spinner is spinning → we must redraw
         }
@@ -386,6 +548,7 @@ impl App {
     /// Stores a PR load and returns the status line describing it.
     fn apply_prs(&mut self, result: FetchResult) -> String {
         self.prs = result.prs;
+        self.prs_loaded = true;
         self.repos = result.all_repos;
         // The search survives a reload: the new rows go through it before the
         // selection is placed, so a refresh can never select a hidden row.
@@ -410,6 +573,36 @@ impl App {
             result.scanned,
             errors_suffix(result.errors)
         )
+    }
+
+    /// Stores a repo-list load. An answer for an owner we already left is
+    /// dropped: the reload queued by that change is on its way.
+    fn apply_repos(&mut self, result: ReposResult) {
+        self.repos_loading = false;
+        if self.repo_tab.filters.owner.as_deref() != Some(result.owner.as_str()) {
+            return;
+        }
+        match result.repos {
+            Ok(list) => {
+                self.repo_tab.apply_load(list, result.locals);
+                let failed = self.repo_tab.failed_count();
+                self.status = format!(
+                    "{} repo(s) — {} cloned{}",
+                    self.repo_tab.repos.len(),
+                    self.repo_tab.cloned_count(),
+                    if failed > 0 {
+                        format!(" — {failed} clone(s) failed")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            Err(message) => {
+                self.repo_tab.apply_load(Vec::new(), result.locals);
+                self.status = format!("gh repo list failed: {message}");
+            }
+        }
+        self.reset_selection();
     }
 
     // --- auto-refresh ---
@@ -510,6 +703,37 @@ impl App {
                 self.reset_selection();
                 return;
             }
+            FilterField::Owner => {
+                let current = self.repo_tab.filters.owner.clone();
+                if let Some(owner) = repos::cycle_owner(&self.owners(), current.as_deref(), forward)
+                    && current.as_deref() != Some(owner.as_str())
+                {
+                    RepoSettings {
+                        owner: Some(owner.clone()),
+                    }
+                    .save();
+                    self.repo_tab.set_owner(owner);
+                    self.reset_selection();
+                    self.refresh_repos();
+                }
+                return;
+            }
+            FilterField::Archived => {
+                self.repo_tab.filters.archived = !self.repo_tab.filters.archived;
+                self.refresh_repos();
+                return;
+            }
+            FilterField::Forks => {
+                self.repo_tab.filters.forks = !self.repo_tab.filters.forks;
+                self.refresh_repos();
+                return;
+            }
+            // In memory, like the Actions tab's filters: no reload.
+            FilterField::HideCloned => {
+                self.repo_tab.filters.hide_cloned = !self.repo_tab.filters.hide_cloned;
+                self.reset_selection();
+                return;
+            }
             FilterField::Author => {
                 if forward {
                     self.filters.cycle_author();
@@ -571,6 +795,7 @@ impl App {
         match self.active_tab {
             Tab::Prs => self.columns.prs.entries.len(),
             Tab::Runs => self.columns.runs.entries.len(),
+            Tab::Repos => self.columns.repos.entries.len(),
         }
     }
 
@@ -589,6 +814,7 @@ impl App {
         match self.active_tab {
             Tab::Prs => self.columns.prs.toggle(i),
             Tab::Runs => self.columns.runs.toggle(i),
+            Tab::Repos => self.columns.repos.toggle(i),
         }
         self.columns.save();
     }
@@ -602,6 +828,8 @@ impl App {
             (Tab::Prs, false) => self.columns.prs.move_down(i),
             (Tab::Runs, true) => self.columns.runs.move_up(i),
             (Tab::Runs, false) => self.columns.runs.move_down(i),
+            (Tab::Repos, true) => self.columns.repos.move_up(i),
+            (Tab::Repos, false) => self.columns.repos.move_down(i),
         };
         self.columns.save();
     }
@@ -625,6 +853,12 @@ impl App {
     /// The PRs tab's counterpart of `visible_runs`.
     pub fn visible_prs(&self) -> Vec<&Pr> {
         search::keep_prs(&self.prs, &self.search)
+    }
+
+    /// The repos the Repos table shows: its list (minus the cloned ones if
+    /// `hide cloned`), narrowed by the search.
+    pub fn visible_repos(&self) -> Vec<&Repo> {
+        search::keep_repos(self.repo_tab.listed(), &self.search)
     }
 
     /// Opens the search prompt, pre-filled with the active query so it can be
@@ -664,6 +898,9 @@ impl App {
         let runs = self.visible_runs().len();
         self.run_table_state
             .select(if runs == 0 { None } else { Some(0) });
+        let repos = self.visible_repos().len();
+        self.repo_table_state
+            .select(if repos == 0 { None } else { Some(0) });
     }
 
     // --- input mode (author / label / search) ---
@@ -771,6 +1008,7 @@ impl App {
         match self.active_tab {
             Tab::Prs => self.visible_prs().len(),
             Tab::Runs => self.visible_runs().len(),
+            Tab::Repos => self.visible_repos().len(),
         }
     }
 
@@ -779,6 +1017,7 @@ impl App {
         match self.active_tab {
             Tab::Prs => &mut self.table_state,
             Tab::Runs => &mut self.run_table_state,
+            Tab::Repos => &mut self.repo_table_state,
         }
     }
 
@@ -793,6 +1032,10 @@ impl App {
                 .run_table_state
                 .selected()
                 .and_then(|i| self.visible_runs().get(i).map(|r| r.url.clone())),
+            Tab::Repos => self
+                .repo_table_state
+                .selected()
+                .and_then(|i| self.visible_repos().get(i).map(|r| r.url.clone())),
         }
     }
 
@@ -802,14 +1045,17 @@ impl App {
         self.active_tab = tab;
         // The panel is shorter on Actions: keep the cursor inside the new slice.
         self.filter_cursor = self.filter_cursor.min(fields_for(tab).len() - 1);
-        // Both column lists hold 8 entries, so a reset is enough here.
+        // The tabs hold different column counts: back to the top.
         self.column_cursor = 0;
         // A stale grab from the previous tab would move the new tab's
         // columns as soon as the user presses ↑/↓ again.
         self.column_grabbed = false;
-        // First visit to Actions -> load the runs.
-        if tab == Tab::Runs && !self.runs_loaded {
-            self.refresh();
+        // First visit to a tab -> load what it shows.
+        match tab {
+            Tab::Prs if !self.prs_loaded => self.refresh(),
+            Tab::Runs if !self.runs_loaded => self.refresh(),
+            Tab::Repos if !self.repo_tab.loaded && !self.repos_loading => self.refresh(),
+            _ => {}
         }
     }
 
@@ -847,6 +1093,8 @@ impl App {
                 self.filters.toggle_mine();
                 self.apply_filter_change(FilterField::Author);
             }
+            // Nothing is "mine" in a list of repos to clone.
+            Tab::Repos => {}
         }
     }
 }
@@ -864,6 +1112,7 @@ fn errors_suffix(errors: usize) -> String {
 mod tests {
     use super::*;
     use crate::filters::AuthorFilter;
+    use crate::repos::{LocalRepo, sample_repo};
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -994,7 +1243,8 @@ mod tests {
     #[test]
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
-        assert_eq!(Tab::Runs.next(), Tab::Prs);
+        assert_eq!(Tab::Runs.next(), Tab::Repos);
+        assert_eq!(Tab::Repos.next(), Tab::Prs);
     }
 
     #[test]
@@ -1134,5 +1384,211 @@ mod tests {
 
         app.filter_change(false);
         assert_eq!(app.filters.author, AuthorFilter::Any);
+    }
+
+    /// An `App` on the Repos tab, owner `acme`, with a list load "in
+    /// flight" so any reload queues (`repos_pending`) instead of running `gh`.
+    fn repos_app() -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Repos;
+        app.repo_tab.filters.owner = Some("acme".to_string());
+        app.repos_loading = true;
+        app
+    }
+
+    fn repos_answer(owner: &str, repos: &[&str]) -> Loaded {
+        Loaded::Repos(ReposResult {
+            owner: owner.to_string(),
+            repos: Ok(repos.iter().map(|r| sample_repo(r)).collect()),
+            locals: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn the_repos_panel_rows_in_order() {
+        assert_eq!(
+            fields_for(Tab::Repos),
+            [
+                FilterField::Owner,
+                FilterField::Archived,
+                FilterField::Forks,
+                FilterField::HideCloned,
+            ]
+        );
+        assert_eq!(section_of(FilterField::Owner), "Repos");
+        assert_eq!(section_of(FilterField::HideCloned), "Repos");
+    }
+
+    #[test]
+    fn switching_to_repos_clamps_the_filter_cursor() {
+        let mut app = App::new(PathBuf::from("."));
+        app.repos_loading = true;
+        app.filter_cursor = fields_for(Tab::Prs).len() - 1;
+        app.set_tab(Tab::Repos);
+        assert!(app.filter_cursor < fields_for(Tab::Repos).len());
+    }
+
+    #[test]
+    fn a_list_answer_fills_the_tab() {
+        let mut app = repos_app();
+        app.tx
+            .send(repos_answer("acme", &["acme/api", "acme/web"]))
+            .unwrap();
+        app.on_tick();
+
+        assert!(!app.repos_loading);
+        assert_eq!(app.visible_repos().len(), 2);
+        assert!(app.status.contains("2 repo(s)"), "got {:?}", app.status);
+        assert_eq!(app.repo_table_state.selected(), Some(0));
+    }
+
+    /// Review focus 2: the answer for an owner we already left must not be
+    /// painted under the new one.
+    #[test]
+    fn a_late_answer_for_another_owner_is_dropped() {
+        let mut app = repos_app();
+        app.tx
+            .send(repos_answer("old-owner", &["old-owner/x"]))
+            .unwrap();
+        app.on_tick();
+
+        assert!(app.repo_tab.repos.is_empty());
+        assert!(
+            !app.repos_loading,
+            "the flag clears so the queued reload runs"
+        );
+    }
+
+    #[test]
+    fn a_failed_list_says_so() {
+        let mut app = repos_app();
+        app.tx
+            .send(Loaded::Repos(ReposResult {
+                owner: "acme".to_string(),
+                repos: Err("HTTP 404".to_string()),
+                locals: Vec::new(),
+            }))
+            .unwrap();
+        app.on_tick();
+        assert!(app.status.contains("HTTP 404"), "got {:?}", app.status);
+    }
+
+    #[test]
+    fn the_account_becomes_the_owner_once_known() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_tab(Tab::Repos); // no owner yet: nothing to load
+        assert!(app.status.contains("Waiting"), "got {:?}", app.status);
+
+        app.repos_loading = true; // queue instead of running `gh`
+        app.tx
+            .send(Loaded::User(Some("vincent".to_string())))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.repo_tab.filters.owner.as_deref(), Some("vincent"));
+        assert!(app.repos_pending, "the tab is on screen: it reloads");
+    }
+
+    #[test]
+    fn without_an_account_the_tab_says_why_it_stays_empty() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Repos;
+        app.tx.send(Loaded::User(None)).unwrap();
+        app.on_tick();
+        assert!(
+            app.status.contains("No GitHub account"),
+            "got {:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn a_saved_owner_waits_for_the_orgs_before_being_judged() {
+        let mut app = repos_app();
+        app.tx
+            .send(Loaded::User(Some("vincent".to_string())))
+            .unwrap();
+        app.on_tick();
+        assert_eq!(app.repo_tab.filters.owner.as_deref(), Some("acme"));
+
+        // The orgs arrive and `acme` is not among them: back to the account.
+        app.tx.send(Loaded::Orgs(vec!["corp".to_string()])).unwrap();
+        app.on_tick();
+        assert_eq!(app.repo_tab.filters.owner.as_deref(), Some("vincent"));
+        assert!(app.repos_pending);
+    }
+
+    fn repos_app_on(field: FilterField) -> App {
+        let mut app = repos_app();
+        app.login = Login::Known("vincent".to_string());
+        app.repo_tab.orgs = Some(vec!["acme".to_string()]);
+        app.filter_cursor = fields_for(Tab::Repos)
+            .iter()
+            .position(|f| *f == field)
+            .expect("a Repos panel row");
+        app
+    }
+
+    #[test]
+    fn arrows_on_owner_switch_it_and_reload_the_list() {
+        let mut app = repos_app_on(FilterField::Owner);
+        app.filter_change(true);
+        assert_eq!(app.repo_tab.filters.owner.as_deref(), Some("vincent"));
+        assert!(app.repos_pending);
+    }
+
+    #[test]
+    fn the_archived_box_reloads_but_hide_cloned_does_not() {
+        let mut app = repos_app_on(FilterField::Archived);
+        app.filter_change(true);
+        assert!(app.repo_tab.filters.archived);
+        assert!(app.repos_pending);
+
+        let mut app = repos_app_on(FilterField::HideCloned);
+        app.filter_change(true);
+        assert!(app.repo_tab.filters.hide_cloned);
+        assert!(!app.repos_pending, "hide cloned narrows in memory");
+    }
+
+    #[test]
+    fn the_auto_refresh_never_reloads_the_repo_list() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Repos;
+        assert_eq!(app.active_job(), Job::Prs);
+        app.runs_loaded = true;
+        assert_eq!(app.active_job(), Job::Both);
+    }
+
+    #[test]
+    fn the_prs_tab_loads_on_its_first_visit() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Repos;
+        app.loading = true; // queue instead of running `gh`
+        app.set_tab(Tab::Prs);
+        assert_eq!(app.pending_job, Some(Job::Prs));
+    }
+
+    #[test]
+    fn an_empty_folder_opens_on_the_repos_tab() {
+        let root = std::env::temp_dir().join("gh-ui-initial-tab");
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(initial_tab(&root), Tab::Repos);
+
+        std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
+        assert_eq!(initial_tab(&root), Tab::Prs);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn enter_on_a_repo_opens_its_page() {
+        let mut app = repos_app();
+        app.repo_tab
+            .apply_load(vec![sample_repo("acme/api")], Vec::<LocalRepo>::new());
+        app.reset_selection();
+        assert_eq!(
+            app.selected_url().as_deref(),
+            Some("https://github.com/acme/api")
+        );
     }
 }
