@@ -6,7 +6,7 @@ use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
-use crate::repos::{self, Repo, RepoFilters, RepoSettings, ReposTab};
+use crate::repos::{self, CloneEvent, Repo, RepoFilters, RepoSettings, ReposTab};
 use crate::runfilters::{self, RunFilters};
 use crate::search;
 use ratatui::widgets::TableState;
@@ -44,6 +44,15 @@ pub enum InputKind {
     /// The `/` search. Unlike the two above it applies live, on every
     /// keystroke, and is never sent to `gh`.
     Search,
+}
+
+/// A yes/no question in the footer. Holds the keyboard until answered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Confirm {
+    /// Clone the ticked repos: how many, and into which folder.
+    Clone { count: usize, into: String },
+    /// Quit while a clone batch runs.
+    Quit,
 }
 
 /// The rows of the filter panel, in display order.
@@ -201,6 +210,8 @@ pub struct App {
     /// Input in progress (author/label): `None` = not in input mode.
     pub input_kind: Option<InputKind>,
     pub input_buffer: String,
+    /// A yes/no prompt waiting for its answer (clone, quit).
+    pub confirm: Option<Confirm>,
     /// Free-text search (key `/`), applied client-side to the fetched rows.
     /// Empty = no search. Transient on purpose: never saved, never restored.
     pub search: String,
@@ -278,6 +289,7 @@ impl App {
             notice: None,
             input_kind: None,
             input_buffer: String::new(),
+            confirm: None,
             search: String::new(),
             filter_panel_open: false,
             filter_cursor: 0,
@@ -494,6 +506,10 @@ impl App {
                     self.apply_repos(result);
                     None
                 }
+                Loaded::Clone(event) => {
+                    self.apply_clone(event);
+                    None
+                }
             };
             if let Some(status) = status {
                 self.status = match self.notice.take() {
@@ -514,15 +530,15 @@ impl App {
             self.refresh_repos();
         }
 
-        // Auto-refresh: if a pace is set, no load is in progress, no prompt is
-        // open and the interval has elapsed, we relaunch. Holding it while the
-        // user types keeps a reload from resetting the selection under their
-        // fingers — and `last_refresh` is deliberately NOT touched here, so the
-        // reload fires on the first tick after the prompt closes rather than
-        // skipping a beat.
+        // Auto-refresh: if a pace is set, no load is in progress, no prompt
+        // (text or yes/no) is open and the interval has elapsed, we relaunch.
+        // Holding it while the user types keeps a reload from resetting the
+        // selection under their fingers — and `last_refresh` is deliberately
+        // NOT touched here, so the reload fires on the first tick after the
+        // prompt closes rather than skipping a beat.
         if let Some(interval) = self.auto_refresh.interval()
             && !self.loading
-            && !self.is_input_mode()
+            && !self.is_prompt_open()
             && self.last_refresh.elapsed() >= interval
         {
             self.refresh_job(self.active_job());
@@ -603,6 +619,23 @@ impl App {
             }
         }
         self.reset_selection();
+    }
+
+    /// Applies one step of the clone batch. Its end brings new folders: the
+    /// PRs (and runs, once loaded) pick them up, and the list recomputes its
+    /// states from the folder.
+    fn apply_clone(&mut self, event: CloneEvent) {
+        let finished = event == CloneEvent::Finished;
+        self.status = self.repo_tab.apply_event(event);
+        if finished {
+            self.refresh_job(if self.runs_loaded {
+                Job::Both
+            } else {
+                Job::Prs
+            });
+            self.refresh_repos();
+        }
+        self.clamp_repo_selection();
     }
 
     // --- auto-refresh ---
@@ -909,6 +942,11 @@ impl App {
         self.input_kind.is_some()
     }
 
+    /// Is any prompt open, text or yes/no? Holds the auto-refresh.
+    pub fn is_prompt_open(&self) -> bool {
+        self.input_kind.is_some() || self.confirm.is_some()
+    }
+
     /// Opens the prompt, pre-filled with the filter's current value.
     pub fn start_input(&mut self, kind: InputKind) {
         self.input_buffer = match kind {
@@ -1008,7 +1046,24 @@ impl App {
         match self.active_tab {
             Tab::Prs => self.visible_prs().len(),
             Tab::Runs => self.visible_runs().len(),
-            Tab::Repos => self.visible_repos().len(),
+            Tab::Repos => self.repo_rows(),
+        }
+    }
+
+    /// Rows of the Repos table: the visible repos, plus the clone button
+    /// while it shows.
+    fn repo_rows(&self) -> usize {
+        self.visible_repos().len() + usize::from(self.repo_tab.show_button())
+    }
+
+    /// Keeps the Repos selection on a row that exists: the button can vanish
+    /// under the cursor (batch started, last tick removed).
+    fn clamp_repo_selection(&mut self) {
+        let rows = self.repo_rows();
+        if let Some(i) = self.repo_table_state.selected()
+            && i >= rows
+        {
+            self.repo_table_state.select(rows.checked_sub(1));
         }
     }
 
@@ -1063,6 +1118,81 @@ impl App {
         self.set_tab(self.active_tab.next());
     }
 
+    // --- repos: ticks, clone, quit ---
+
+    /// `space` on the Repos tab: ticks or unticks the repo under the cursor.
+    /// A row that cannot be ticked says why in the status line.
+    pub fn toggle_tick(&mut self) {
+        if self.active_tab != Tab::Repos {
+            return;
+        }
+        let Some(name) = self.repo_table_state.selected().and_then(|i| {
+            self.visible_repos()
+                .get(i)
+                .map(|r| r.name_with_owner.clone())
+        }) else {
+            return;
+        };
+        if let Err(why) = self.repo_tab.toggle_tick(&name) {
+            self.status = why;
+        }
+        self.clamp_repo_selection();
+    }
+
+    /// Is the cursor on the clone button (the row below the list)?
+    pub fn on_clone_button(&self) -> bool {
+        self.active_tab == Tab::Repos
+            && self.repo_tab.show_button()
+            && self.repo_table_state.selected() == Some(self.visible_repos().len())
+    }
+
+    /// `enter` on the clone button: asks before touching the disk.
+    pub fn ask_clone(&mut self) {
+        if !self.on_clone_button() {
+            return;
+        }
+        let root = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        let into = tilde(&root, dirs::home_dir().as_deref());
+        self.confirm = Some(Confirm::Clone {
+            count: self.repo_tab.ticked.len(),
+            into,
+        });
+    }
+
+    /// `y` on a prompt.
+    pub fn confirm_yes(&mut self) {
+        match self.confirm.take() {
+            Some(Confirm::Clone { .. }) => self.start_clones(),
+            Some(Confirm::Quit) => self.should_quit = true,
+            None => {}
+        }
+    }
+
+    /// `n` or `esc` on a prompt: nothing changes.
+    pub fn confirm_no(&mut self) {
+        self.confirm = None;
+    }
+
+    fn start_clones(&mut self) {
+        let batch = self.repo_tab.start_batch();
+        self.clamp_repo_selection();
+        if batch.is_empty() {
+            return;
+        }
+        self.status = format!("Cloning {} repo(s)…", batch.len());
+        fetch::spawn_clones(self.root.clone(), batch, self.tx.clone());
+    }
+
+    /// `q`: quits, unless a clone batch runs — quitting then leaves a
+    /// half-cloned folder behind, so it asks first.
+    pub fn request_quit(&mut self) {
+        if self.repo_tab.cloning {
+            self.confirm = Some(Confirm::Quit);
+        } else {
+            self.should_quit = true;
+        }
+    }
+
     // --- runs view ---
 
     /// The runs the Actions tab holds before the search: the fetched runs,
@@ -1099,6 +1229,15 @@ impl App {
     }
 }
 
+/// `path` with the home folder written `~`: the absolute form of a folder
+/// under `$HOME` is long enough to push the prompt's `(y/n)` off screen.
+fn tilde(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 /// The " — N failed" tail of a status line, empty when nothing failed.
 fn errors_suffix(errors: usize) -> String {
     if errors > 0 {
@@ -1112,7 +1251,7 @@ fn errors_suffix(errors: usize) -> String {
 mod tests {
     use super::*;
     use crate::filters::AuthorFilter;
-    use crate::repos::{LocalRepo, sample_repo};
+    use crate::repos::{CloneEvent, LocalRepo, sample_repo};
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -1590,5 +1729,150 @@ mod tests {
             app.selected_url().as_deref(),
             Some("https://github.com/acme/api")
         );
+    }
+
+    /// A Repos tab holding `acme/api` (clonable) and `acme/web` (cloned),
+    /// cursor on the first row.
+    fn tick_app() -> App {
+        let mut app = repos_app();
+        app.repo_tab.apply_load(
+            vec![sample_repo("acme/api"), sample_repo("acme/web")],
+            vec![LocalRepo {
+                folder: "web".to_string(),
+                origin: Some("acme/web".to_string()),
+            }],
+        );
+        app.reset_selection();
+        app
+    }
+
+    #[test]
+    fn space_ticks_the_repo_under_the_cursor() {
+        let mut app = tick_app();
+        app.toggle_tick();
+        assert!(app.repo_tab.ticked.contains("acme/api"));
+        app.toggle_tick();
+        assert!(app.repo_tab.ticked.is_empty());
+    }
+
+    #[test]
+    fn space_on_a_cloned_repo_says_why_nothing_happens() {
+        let mut app = tick_app();
+        app.next();
+        app.toggle_tick();
+        assert!(app.repo_tab.ticked.is_empty());
+        assert_eq!(app.status, "acme/web is already cloned");
+    }
+
+    #[test]
+    fn space_does_nothing_outside_the_repos_tab() {
+        let mut app = tick_app();
+        app.active_tab = Tab::Prs;
+        app.toggle_tick();
+        assert!(app.repo_tab.ticked.is_empty());
+    }
+
+    #[test]
+    fn the_clone_button_is_the_row_below_the_list() {
+        let mut app = tick_app();
+        app.toggle_tick();
+        assert!(!app.on_clone_button());
+
+        app.next();
+        app.next(); // past `acme/web`: the button
+        assert!(app.on_clone_button());
+        assert_eq!(app.selected_url(), None, "enter here clones, not opens");
+
+        app.ask_clone();
+        assert!(matches!(app.confirm, Some(Confirm::Clone { count: 1, .. })));
+        assert!(app.is_prompt_open(), "the prompt holds the auto-refresh");
+
+        app.confirm_no();
+        assert_eq!(app.confirm, None);
+        assert!(
+            app.repo_tab.ticked.contains("acme/api"),
+            "no keeps the ticks"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_row_never_asks_to_clone() {
+        let mut app = tick_app();
+        app.toggle_tick();
+        app.ask_clone(); // cursor on `acme/api`, not on the button
+        assert_eq!(app.confirm, None);
+    }
+
+    /// Review focus 5: the button vanishes under the cursor.
+    #[test]
+    fn the_cursor_leaves_the_button_when_it_vanishes() {
+        let mut app = tick_app();
+        app.toggle_tick();
+        app.next();
+        app.next();
+        assert!(app.on_clone_button());
+
+        app.repo_tab.start_batch();
+        app.clamp_repo_selection();
+
+        assert_eq!(app.repo_table_state.selected(), Some(1));
+        assert!(!app.on_clone_button());
+    }
+
+    #[test]
+    fn quitting_during_a_batch_asks_first() {
+        let mut app = tick_app();
+        app.repo_tab.cloning = true;
+
+        app.request_quit();
+        assert!(!app.should_quit);
+        assert_eq!(app.confirm, Some(Confirm::Quit));
+
+        app.confirm_yes();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quitting_without_a_batch_is_immediate() {
+        let mut app = tick_app();
+        app.request_quit();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn a_clone_step_leaves_the_pr_loading_flag_alone() {
+        let mut app = tick_app();
+        app.loading = true;
+        app.tx
+            .send(Loaded::Clone(CloneEvent::Started("acme/api".to_string())))
+            .unwrap();
+        app.on_tick();
+
+        assert!(app.loading, "a clone step is not the end of a PR load");
+        assert_eq!(app.status, "Cloning acme/api…");
+    }
+
+    #[test]
+    fn the_end_of_a_batch_reloads_the_prs_and_the_list() {
+        let mut app = tick_app();
+        app.loading = true; // queue the PR reload instead of running `gh`
+        app.repo_tab.cloning = true;
+        app.tx.send(Loaded::Clone(CloneEvent::Finished)).unwrap();
+        app.on_tick();
+
+        assert!(!app.repo_tab.cloning);
+        assert_eq!(app.pending_job, Some(Job::Prs));
+        assert!(app.repos_pending);
+    }
+
+    #[test]
+    fn the_clone_prompt_abbreviates_the_home_folder() {
+        let home = Path::new("/Users/vincent");
+        assert_eq!(
+            tilde(Path::new("/Users/vincent/dev/workspace"), Some(home)),
+            "~/dev/workspace"
+        );
+        assert_eq!(tilde(Path::new("/tmp/ws"), Some(home)), "/tmp/ws");
+        assert_eq!(tilde(Path::new("/tmp/ws"), None), "/tmp/ws");
     }
 }

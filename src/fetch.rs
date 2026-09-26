@@ -4,7 +4,7 @@
 use crate::filters::Filters;
 use crate::gh;
 use crate::model::{Pr, Run};
-use crate::repos::{LocalRepo, Repo, RepoFilters};
+use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -49,6 +49,8 @@ pub enum Loaded {
     Repos(ReposResult),
     /// The account's orgs, for the owner picker; empty when `gh` failed.
     Orgs(Vec<String>),
+    /// One step of a clone batch.
+    Clone(CloneEvent),
 }
 
 /// What we ask the thread to load.
@@ -98,6 +100,23 @@ pub fn spawn_repos(root: PathBuf, owner: String, filters: RepoFilters, tx: Sende
             repos,
             locals,
         }));
+    });
+}
+
+/// Clones `batch` — (`owner/name`, folder) pairs — one repo after the
+/// other, reporting each step. Sequential on purpose: a batch is rare, and
+/// one clone at a time keeps every error attributable.
+pub fn spawn_clones(root: PathBuf, batch: Vec<(String, String)>, tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        for (name_with_owner, name) in batch {
+            let _ = tx.send(Loaded::Clone(CloneEvent::Started(name_with_owner.clone())));
+            let event = match gh::clone_repo(&root, &name_with_owner, &name) {
+                Ok(()) => CloneEvent::Done(name_with_owner),
+                Err(e) => CloneEvent::Failed(name_with_owner, e.to_string()),
+            };
+            let _ = tx.send(Loaded::Clone(event));
+        }
+        let _ = tx.send(Loaded::Clone(CloneEvent::Finished));
     });
 }
 

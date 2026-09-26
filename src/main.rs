@@ -92,9 +92,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             match event::read()? {
                 // A key was pressed (we ignore releases).
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Five modes, by priority: input, help, filters, columns, normal.
+                    // Six modes, by priority: input, yes/no prompt, help,
+                    // filters, columns, normal.
                     if app.is_input_mode() {
                         handle_input_key(app, key.code);
+                    } else if app.confirm.is_some() {
+                        handle_confirm_key(app, key.code);
                     } else if app.show_help {
                         app.toggle_help(); // any key closes the help
                     } else if app.filter_panel_open {
@@ -124,13 +127,22 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 /// Shortcuts in normal mode (list navigation).
 fn handle_normal_key(app: &mut App, code: KeyCode) {
     match code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => app.request_quit(),
         KeyCode::Char('j') | KeyCode::Down => app.next(),
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char('a') => app.cycle_auto_refresh(),
         KeyCode::Char('A') => app.disable_auto_refresh(),
-        KeyCode::Enter => open_selected(app),
+        // On the Repos tab's clone button, enter clones; everywhere else it
+        // opens the selected item in the browser.
+        KeyCode::Enter => {
+            if app.on_clone_button() {
+                app.ask_clone();
+            } else {
+                open_selected(app);
+            }
+        }
+        KeyCode::Char(' ') => app.toggle_tick(),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('c') => app.toggle_column_panel(),
         KeyCode::Char('?') => app.toggle_help(),
@@ -151,7 +163,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
 fn handle_filter_panel_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('f') => app.close_filter_panel(),
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => app.request_quit(),
         KeyCode::Down | KeyCode::Char('j') => app.filter_cursor_next(),
         KeyCode::Up | KeyCode::Char('k') => app.filter_cursor_prev(),
         KeyCode::Right | KeyCode::Char('l') => app.filter_change(true),
@@ -173,7 +185,7 @@ fn handle_filter_panel_key(app: &mut App, code: KeyCode) {
 /// the focused column instead of the cursor; `space` drops it again.
 fn handle_column_panel_key(app: &mut App, code: KeyCode) {
     match code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => app.request_quit(),
         // Always closes, grabbed or not: `close_column_panel` clears the
         // grab flag itself, so leaving the panel never leaves it stale.
         KeyCode::Char('c') => app.close_column_panel(),
@@ -221,6 +233,15 @@ fn handle_input_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => app.input_commit(),
         KeyCode::Backspace => app.input_backspace(),
         KeyCode::Char(c) => app.input_push(c),
+        _ => {}
+    }
+}
+
+/// Keys on a yes/no prompt: only an explicit `y` says yes.
+fn handle_confirm_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Char('y' | 'Y') => app.confirm_yes(),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => app.confirm_no(),
         _ => {}
     }
 }

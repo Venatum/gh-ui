@@ -70,6 +70,21 @@ actually present in the loaded runs, so a repo with no cron never offers
 what makes `status:failed` able to surface a failure sitting well past that
 limit. None of the four is saved: the tab reopens on `my PRs` every time.
 
+The **Repos** tab lists the repositories of an owner — your account, or one
+of your orgs, picked with `owner` in the filters panel and remembered between
+runs (in `~/.config/gh-ui/repos.json`). Each row says where it stands
+against the scanned folder, judged by the folder's `origin` remote rather than
+its name: `✓ cloned`, `name taken → other/api` when a folder of that name holds
+another repo (not clonable: `gh repo clone` would refuse it), or blank when it
+can be cloned. `space` ticks clonable rows; a `[ Clone N repos ]` row then
+appears under the list — go down to it and press `enter`, confirm with `y`,
+and gh-ui clones them one after the other into the scanned folder, each row
+showing `queued`, `cloning…`, then `✓ cloned` or `✗ failed` (tick a failed row
+again to retry). When the batch is over, the new repos show up in the PRs and
+Actions tabs. Quitting while a batch runs asks first. Archived repos and forks
+are hidden unless their box is ticked; `hide cloned` keeps only what is left to
+clone. Started in a folder that holds no git repo, gh-ui opens on this tab.
+
 ## Shortcuts
 
 ### List
@@ -77,7 +92,9 @@ limit. None of the four is saved: the tab reopens on `my PRs` every time.
 | Key          | Action                                       |
 |--------------|----------------------------------------------|
 | `↑/↓`, `j/k` | navigate the list                            |
-| `enter`      | open the selected PR in the browser          |
+| `enter`      | open the selected PR, run or repo in the browser (Repos: on the clone button, clone the ticked repos) |
+| `space`      | Repos tab: tick / untick the repo                                 |
+| `tab`, `1/2/3` | switch tab (PRs / Actions / Repos)                              |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
 | `m`          | my PRs on/off (Actions tab: their runs)      |
@@ -106,6 +123,9 @@ unticked), and pressing it again puts `author` back to `any`.
 
 On the **Actions** tab: `repo` (the one filter shared by both tabs), plus
 `only my PRs`, `status`, `event` and `workflow`.
+
+On the **Repos** tab: `owner` (cycles through your account and your orgs),
+`archived`, `forks` and `hide cloned`.
 
 Auto-refresh cycles through `off → 1mn → 5mn → 10mn → 30mn → 1h → off`. It
 starts **off** the first time, and the pace you leave it on is remembered

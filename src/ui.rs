@@ -1,7 +1,7 @@
 //! The rendering: turns the state (`App`) into ratatui widgets. This module
 //! decides nothing, it only draws what `App` holds.
 
-use crate::app::{App, FilterField, InputKind, Tab, section_of};
+use crate::app::{App, Confirm, FilterField, InputKind, Tab, section_of};
 use crate::columns::{Column, ColumnLayout, PrColumn, RepoColumn, RunColumn};
 use crate::filters::{AuthorFilter, Filters};
 use crate::refresh::{self, AutoRefresh};
@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table};
 use std::time::Duration;
 
 /// Width (in columns) of the centered overlays.
@@ -224,7 +224,7 @@ fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
     // Owned cells, as in the other tables: nothing may still borrow `app`
     // when `&mut app.repo_table_state` is handed over below.
-    let rows: Vec<Row<'static>> = app
+    let mut rows: Vec<Row<'static>> = app
         .visible_repos()
         .into_iter()
         .map(|repo| {
@@ -238,6 +238,27 @@ fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
             )
         })
         .collect();
+
+    // The clone button: one more row, so ↓ reaches it like any other. Its
+    // label sits in the first column wide enough for it (not the tick box).
+    if app.repo_tab.show_button() {
+        let n = app.repo_tab.ticked.len();
+        let label_at = columns
+            .iter()
+            .position(|c| *c != RepoColumn::Tick)
+            .unwrap_or(0);
+        let cells = (0..columns.len()).map(|i| {
+            if i == label_at {
+                Cell::from(Span::styled(
+                    format!("[ Clone {n} {} ]", repos_word(n)),
+                    Style::new().bold().fg(Color::Cyan),
+                ))
+            } else {
+                Cell::from("")
+            }
+        });
+        rows.push(Row::new(cells.collect::<Vec<_>>()));
+    }
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -302,6 +323,19 @@ fn fitting_hints(width: usize) -> (Vec<(&'static str, &'static str)>, bool) {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    // A yes/no prompt takes the footer over, like a text prompt does.
+    if let Some(confirm) = &app.confirm {
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", confirm_question(confirm)),
+                Style::new().fg(Color::Black).bg(Color::Yellow),
+            ),
+            Span::styled("  (y/n)", Style::new().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
     // In input mode, the footer becomes a text prompt.
     if let Some(kind) = app.input_kind {
         let prompt = match kind {
@@ -350,6 +384,21 @@ fn input_hint(kind: InputKind) -> &'static str {
         InputKind::Search => "   (live · enter: keep · esc: clear)",
         InputKind::Author | InputKind::Label => "   (enter: confirm · esc: cancel)",
     }
+}
+
+/// The question a yes/no prompt asks.
+fn confirm_question(confirm: &Confirm) -> String {
+    match confirm {
+        Confirm::Clone { count, into } => {
+            format!("Clone {count} {} into {into}?", repos_word(*count))
+        }
+        Confirm::Quit => "Clones in progress, quit anyway?".to_string(),
+    }
+}
+
+/// "repo" or "repos", for the button and the prompt.
+fn repos_word(n: usize) -> &'static str {
+    if n == 1 { "repo" } else { "repos" }
 }
 
 /// The navigable filter panel, centered over the interface.
@@ -549,14 +598,14 @@ fn render_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         help_row("↑/↓, j/k", "navigate the list"),
-        help_row("enter", "open the PR in the browser"),
+        help_row("enter", "open in the browser · on the clone button: clone"),
+        help_row("space", "Repos: tick a repo · ↓ to the clone button"),
         help_row("/", "search the visible list · esc clears it"),
-        help_row("r", "reload now"),
+        help_row("r / q", "reload now / quit"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab/1/2/3", "switch tab (PRs / Actions / Repos)"),
         help_row("m", "my PRs / their runs (f: status/event/workflow)"),
-        help_row("q", "quit"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
         help_row("↑/↓", "choose a filter"),
@@ -621,6 +670,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Confirm;
     use crate::columns::{ColumnLayout, PrColumn};
     use crate::repos::RepoFilters;
     use ratatui::Terminal;
@@ -993,5 +1043,36 @@ mod tests {
     fn the_tab_help_row_names_the_three_tabs() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
         assert!(text.contains("switch tab (PRs / Actions / Repos)"));
+    }
+
+    #[test]
+    fn the_prompts_ask_a_yes_no_question() {
+        assert_eq!(
+            confirm_question(&Confirm::Clone {
+                count: 3,
+                into: "/ws".to_string()
+            }),
+            "Clone 3 repos into /ws?"
+        );
+        assert_eq!(
+            confirm_question(&Confirm::Clone {
+                count: 1,
+                into: "/ws".to_string()
+            }),
+            "Clone 1 repo into /ws?"
+        );
+        assert_eq!(
+            confirm_question(&Confirm::Quit),
+            "Clones in progress, quit anyway?"
+        );
+    }
+
+    #[test]
+    fn the_help_explains_ticking_and_the_clone_button() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+        assert!(text.contains("open in the browser · on the clone button: clone"));
+        assert!(text.contains("Repos: tick a repo · ↓ to the clone button"));
+        assert!(text.contains("reload now / quit"));
+        assert!(text.contains("(any key to close)"), "still fits 80x24");
     }
 }
