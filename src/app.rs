@@ -1,9 +1,10 @@
 //! The application state and its logic (independent of rendering).
 
 use crate::columns::Columns;
-use crate::fetch::{self, FetchResult, Job, Loaded, ReposResult, RunsResult};
+use crate::fetch::{self, FetchResult, IssuesResult, Job, Loaded, ReposResult, RunsResult};
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
+use crate::issues::{Issue, IssueFilters, IssuesTab};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
 use crate::repos::{self, CloneEvent, Repo, RepoFilters, RepoSettings, ReposTab};
@@ -82,6 +83,8 @@ pub enum FilterField {
     Forks,
     /// Repos tab only: hide the repos already cloned (in memory).
     HideCloned,
+    /// Issues tab only: any / @me / nobody.
+    Assignee,
 }
 
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
@@ -113,6 +116,16 @@ const REPO_FIELDS: [FilterField; 4] = [
     FilterField::HideCloned,
 ];
 
+/// Panel rows on the Issues tab. `Repo`, `Author`, `Since` and `Label` are
+/// the PRs tab's rows, but here they edit the issue filters.
+const ISSUE_FIELDS: [FilterField; 5] = [
+    FilterField::Repo,
+    FilterField::Author,
+    FilterField::Assignee,
+    FilterField::Since,
+    FilterField::Label,
+];
+
 /// The panel rows for `tab`. The cursor is an index into THIS slice, so its
 /// length changes with the tab (hence the clamping in `set_tab`).
 pub fn fields_for(tab: Tab) -> &'static [FilterField] {
@@ -120,6 +133,7 @@ pub fn fields_for(tab: Tab) -> &'static [FilterField] {
         Tab::Prs => &PR_FIELDS,
         Tab::Runs => &RUN_FIELDS,
         Tab::Repos => &REPO_FIELDS,
+        Tab::Issues => &ISSUE_FIELDS,
     }
 }
 
@@ -129,8 +143,12 @@ pub fn is_common(field: FilterField) -> bool {
     matches!(field, FilterField::Repo)
 }
 
-/// The section a field is displayed under, in the panel.
-pub fn section_of(field: FilterField) -> &'static str {
+/// The section a field is displayed under, in the panel. The Issues tab
+/// shares no filter with the others: one section.
+pub fn section_of(tab: Tab, field: FilterField) -> &'static str {
+    if tab == Tab::Issues {
+        return "Issues";
+    }
     if is_common(field) {
         return "Common";
     }
@@ -153,16 +171,24 @@ pub enum Tab {
     Prs,
     Runs,
     Repos,
+    Issues,
 }
 
 impl Tab {
-    /// The next tab (cycle Prs -> Runs -> Repos -> Prs).
+    /// The next tab (cycle Prs -> Runs -> Repos -> Issues -> Prs).
     pub fn next(self) -> Tab {
         match self {
             Tab::Prs => Tab::Runs,
             Tab::Runs => Tab::Repos,
-            Tab::Repos => Tab::Prs,
+            Tab::Repos => Tab::Issues,
+            Tab::Issues => Tab::Prs,
         }
+    }
+
+    /// Does this tab show the PR/run flow — and so its status line? The
+    /// Repos and Issues tabs have lines of their own.
+    pub fn shows_pr_flow(self) -> bool {
+        matches!(self, Tab::Prs | Tab::Runs)
     }
 }
 
@@ -250,6 +276,9 @@ pub struct App {
     /// The Repos tab: its list, filters, ticks and clone batch.
     pub repo_tab: ReposTab,
     pub repo_table_state: TableState,
+    /// The Issues tab: its issues, filters, loading flag and status line.
+    pub issue_tab: IssuesTab,
+    pub issue_table_state: TableState,
     /// How many rows the table showed at the last draw: the jump of
     /// `PgUp`/`PgDn`. Written by `ui::render`, which alone knows the height.
     pub page_rows: usize,
@@ -258,9 +287,9 @@ pub struct App {
     repos_loading: bool,
     /// A repo-list reload asked for while one was in flight.
     repos_pending: bool,
-    /// The status line of a PR/run load that landed behind the Repos tab,
-    /// held back for the PRs/Actions tabs instead of overwriting the line
-    /// the Repos tab is showing.
+    /// The status line of the PRs/Actions tabs while another tab is on
+    /// screen: stashed when leaving them, replaced by any PR/run load
+    /// landing meanwhile, restored on return.
     hidden_status: Option<String>,
 
     tx: Sender<Loaded>,
@@ -312,6 +341,11 @@ impl App {
             prs_loaded: false,
             repo_tab,
             repo_table_state: TableState::default(),
+            issue_tab: IssuesTab {
+                filters: IssueFilters::load(),
+                ..Default::default()
+            },
+            issue_table_state: TableState::default(),
             page_rows: 1,
             repos_loading: false,
             repos_pending: false,
@@ -325,18 +359,19 @@ impl App {
     pub fn refresh(&mut self) {
         match self.active_tab {
             Tab::Repos => self.refresh_repos(),
+            Tab::Issues => self.refresh_issues(),
             _ => self.refresh_job(self.active_job()),
         }
     }
 
-    /// The flow the active tab displays — and, on the Repos tab, the one the
-    /// auto-refresh keeps fresh in the background: the repo list itself
-    /// rarely changes and is never auto-reloaded.
+    /// The flow the active tab displays — and, on the Repos and Issues tabs,
+    /// the one the auto-refresh keeps fresh in the background: the repo list
+    /// itself rarely changes and is never auto-reloaded.
     fn active_job(&self) -> Job {
         match self.active_tab {
             Tab::Prs => Job::Prs,
             Tab::Runs => Job::Runs,
-            Tab::Repos => {
+            Tab::Repos | Tab::Issues => {
                 if self.runs_loaded {
                     Job::Both
                 } else {
@@ -361,9 +396,9 @@ impl App {
         self.pending_job = None;
         self.last_refresh = Instant::now();
         self.reconcile_with_the_folder();
-        // Behind the Repos tab the PRs reload in the background: the line on
-        // screen is the Repos tab's, and stays so.
-        if self.active_tab != Tab::Repos {
+        // Behind the Repos or Issues tab the PRs reload in the background:
+        // the line on screen is that tab's, and stays so.
+        if self.active_tab.shows_pr_flow() {
             self.status = String::from("Loading…");
         }
         fetch::spawn(
@@ -416,7 +451,7 @@ impl App {
 
     /// Is anything loading? Drives the header's spinner.
     pub fn is_busy(&self) -> bool {
-        self.loading || self.repos_loading
+        self.loading || self.repos_loading || self.issue_tab.loading
     }
 
     /// Reloads the Repos tab's list — or queues it behind the one in flight,
@@ -442,6 +477,47 @@ impl App {
             self.repo_tab.filters.clone(),
             self.tx.clone(),
         );
+    }
+
+    /// Reloads the Issues tab — or queues it behind the load in flight. The
+    /// repo filter is checked against the folder first, as for the PRs.
+    pub fn refresh_issues(&mut self) {
+        if self.issue_tab.loading {
+            self.issue_tab.pending = true;
+            return;
+        }
+        self.issue_tab.loading = true;
+        self.issue_tab.pending = false;
+        self.reconcile_issue_repo();
+        self.issue_tab.status = String::from("Loading issues…");
+        if self.active_tab == Tab::Issues {
+            self.status = self.issue_tab.status.clone();
+        }
+        fetch::spawn_issues(
+            self.root.clone(),
+            self.issue_tab.filters.clone(),
+            self.tx.clone(),
+        );
+    }
+
+    /// `reconcile_with_the_folder` for the issue filters: re-reads the
+    /// folder and drops an issue repo filter it does not hold. The note goes
+    /// into the Issues tab's next line, not the PRs'.
+    fn reconcile_issue_repo(&mut self) {
+        self.repos = gh::discover_repos(&self.root).unwrap_or_default();
+        if let Some(dropped) = self.issue_tab.filters.reconcile_repo(&self.repos) {
+            self.issue_tab.notice = Some(format!("repo \"{dropped}\" is not here, showing all"));
+        }
+    }
+
+    /// What the auto-refresh reloads: the flow the active tab shows (the
+    /// PRs behind the Repos and Issues tabs), plus the issues once they have
+    /// been loaded — whichever tab is on screen, as the runs are.
+    fn background_reload(&mut self) {
+        self.refresh_job(self.active_job());
+        if self.issue_tab.loaded {
+            self.refresh_issues();
+        }
     }
 
     /// The owner picker's values, from what is known so far.
@@ -523,15 +599,19 @@ impl App {
                     self.apply_clone(event);
                     None
                 }
+                Loaded::Issues(result) => {
+                    self.apply_issues(result);
+                    None
+                }
             };
             if let Some(status) = status {
                 let status = match self.notice.take() {
                     Some(notice) => format!("{status} · {notice}"),
                     None => status,
                 };
-                // Behind the Repos tab a PR/run load is background work: its
-                // line waits for the tabs it describes.
-                if self.active_tab == Tab::Repos {
+                // Behind the Repos or Issues tab a PR/run load is background
+                // work: its line waits for the tabs it describes.
+                if !self.active_tab.shows_pr_flow() {
                     self.hidden_status = Some(status);
                 } else {
                     self.status = status;
@@ -549,6 +629,9 @@ impl App {
         if !self.repos_loading && self.repos_pending {
             self.refresh_repos();
         }
+        if !self.issue_tab.loading && self.issue_tab.pending {
+            self.refresh_issues();
+        }
 
         // Auto-refresh: if a pace is set, no load is in progress, no prompt
         // (text or yes/no) is open and the interval has elapsed, we relaunch.
@@ -561,7 +644,7 @@ impl App {
             && !self.is_prompt_open()
             && self.last_refresh.elapsed() >= interval
         {
-            self.refresh_job(self.active_job());
+            self.background_reload();
         }
 
         // The countdown runs down in the header: ask for a redraw when the
@@ -643,9 +726,30 @@ impl App {
         self.reset_repo_selection();
     }
 
+    /// Stores an issue load. Its line belongs to the Issues tab: kept there,
+    /// and shown now only if that tab is on screen.
+    fn apply_issues(&mut self, result: IssuesResult) {
+        self.repos = result.all_repos;
+        self.issue_tab.apply_load(result.issues);
+        let mut status = format!(
+            "{} issue(s) — {} repo(s){}",
+            self.issue_tab.issues.len(),
+            result.scanned,
+            errors_suffix(result.errors)
+        );
+        if let Some(notice) = self.issue_tab.notice.take() {
+            status = format!("{status} · {notice}");
+        }
+        if self.active_tab == Tab::Issues {
+            self.status = status.clone();
+        }
+        self.issue_tab.status = status;
+        self.reset_issue_selection();
+    }
+
     /// Applies one step of the clone batch. Its end brings new folders: the
-    /// PRs (and runs, once loaded) pick them up, and the list recomputes its
-    /// states from the folder.
+    /// PRs (and runs, and issues, once loaded) pick them up, and the list
+    /// recomputes its states from the folder.
     fn apply_clone(&mut self, event: CloneEvent) {
         let finished = event == CloneEvent::Finished;
         self.status = self.repo_tab.apply_event(event);
@@ -656,6 +760,10 @@ impl App {
                 Job::Prs
             });
             self.refresh_repos();
+            // The new repos have issues too.
+            if self.issue_tab.loaded {
+                self.refresh_issues();
+            }
         }
         self.clamp_repo_selection();
     }
@@ -717,6 +825,10 @@ impl App {
     /// Changes the value of the focused field. `forward` = cycle direction (←/→).
     pub fn filter_change(&mut self, forward: bool) {
         let field = self.active_fields()[self.filter_cursor];
+        if self.active_tab == Tab::Issues {
+            self.issue_filter_change(field, forward);
+            return;
+        }
         match field {
             FilterField::Since => {
                 if forward {
@@ -798,6 +910,8 @@ impl App {
             }
             // text field: edited with Enter, not with ←/→
             FilterField::Label => return,
+            // Issues tab only: handled by `issue_filter_change`.
+            FilterField::Assignee => return,
         }
         self.apply_filter_change(field);
     }
@@ -830,6 +944,28 @@ impl App {
         }
     }
 
+    /// `filter_change` on the Issues tab: the same rows as on the PRs tab,
+    /// but they edit the issue filters, and reload the issues only.
+    fn issue_filter_change(&mut self, field: FilterField, forward: bool) {
+        // Two disjoint fields of `self`: borrowing one mutably and the
+        // other immutably is allowed, as long as it is done field by field.
+        let f = &mut self.issue_tab.filters;
+        match field {
+            FilterField::Repo => f.cycle_repo(&self.repos, forward),
+            FilterField::Author => f.cycle_author(forward),
+            FilterField::Assignee => f.cycle_assignee(forward),
+            FilterField::Since => f.cycle_since(forward),
+            // text field: edited with Enter, not with ←/→
+            _ => return,
+        }
+        self.apply_issue_filter_change();
+    }
+
+    fn apply_issue_filter_change(&mut self) {
+        self.issue_tab.filters.save();
+        self.refresh_issues();
+    }
+
     // --- column panel ---
 
     pub fn toggle_column_panel(&mut self) {
@@ -851,6 +987,7 @@ impl App {
             Tab::Prs => self.columns.prs.entries.len(),
             Tab::Runs => self.columns.runs.entries.len(),
             Tab::Repos => self.columns.repos.entries.len(),
+            Tab::Issues => self.columns.issues.entries.len(),
         }
     }
 
@@ -870,6 +1007,7 @@ impl App {
             Tab::Prs => self.columns.prs.toggle(i),
             Tab::Runs => self.columns.runs.toggle(i),
             Tab::Repos => self.columns.repos.toggle(i),
+            Tab::Issues => self.columns.issues.toggle(i),
         }
         self.columns.save();
     }
@@ -885,6 +1023,8 @@ impl App {
             (Tab::Runs, false) => self.columns.runs.move_down(i),
             (Tab::Repos, true) => self.columns.repos.move_up(i),
             (Tab::Repos, false) => self.columns.repos.move_down(i),
+            (Tab::Issues, true) => self.columns.issues.move_up(i),
+            (Tab::Issues, false) => self.columns.issues.move_down(i),
         };
         self.columns.save();
     }
@@ -914,6 +1054,12 @@ impl App {
     /// `hide cloned`), narrowed by the search.
     pub fn visible_repos(&self) -> Vec<&Repo> {
         search::keep_repos(self.repo_tab.listed(), &self.search)
+    }
+
+    /// The issues the Issues table shows: every loaded issue, narrowed by the
+    /// search.
+    pub fn visible_issues(&self) -> Vec<&Issue> {
+        search::keep_issues(&self.issue_tab.issues, &self.search)
     }
 
     /// Opens the search prompt, pre-filled with the active query so it can be
@@ -950,6 +1096,7 @@ impl App {
         self.reset_pr_selection();
         self.reset_run_selection();
         self.reset_repo_selection();
+        self.reset_issue_selection();
     }
 
     /// The per-tab halves of `reset_selection`, for the paths that change
@@ -970,6 +1117,11 @@ impl App {
         self.repo_table_state
             .select(if repos == 0 { None } else { Some(0) });
     }
+    fn reset_issue_selection(&mut self) {
+        let issues = self.visible_issues().len();
+        self.issue_table_state
+            .select(if issues == 0 { None } else { Some(0) });
+    }
 
     // --- input mode (author / label / search) ---
 
@@ -984,7 +1136,10 @@ impl App {
 
     /// Opens the prompt, pre-filled with the filter's current value.
     pub fn start_input(&mut self, kind: InputKind) {
+        let issues = self.active_tab == Tab::Issues;
         self.input_buffer = match kind {
+            InputKind::Author if issues => self.issue_tab.filters.author.to_input(),
+            InputKind::Label if issues => self.issue_tab.filters.labels.join(" "),
             InputKind::Author => self.filters.author.to_input(),
             InputKind::Label => self.filters.labels.join(" "),
             InputKind::Search => self.search.clone(),
@@ -1016,7 +1171,8 @@ impl App {
 
     /// Commits the input: applies it to the matching filter, then reloads.
     pub fn input_commit(&mut self) {
-        let field = match self.input_kind {
+        let issues = self.active_tab == Tab::Issues;
+        match self.input_kind {
             // The search is applied keystroke by keystroke: enter only hands
             // the keyboard back to the list — no save, no refetch.
             Some(InputKind::Search) => {
@@ -1024,18 +1180,28 @@ impl App {
                 self.input_buffer.clear();
                 return;
             }
-            Some(InputKind::Author) => {
-                self.filters.set_author(&self.input_buffer);
-                FilterField::Author
+            // The prompt opened from the Issues panel edits the issue filters.
+            Some(InputKind::Author) if issues => {
+                self.issue_tab.filters.set_author(&self.input_buffer)
             }
-            Some(InputKind::Label) => {
-                self.filters.set_labels(&self.input_buffer);
-                FilterField::Label
+            Some(InputKind::Label) if issues => {
+                self.issue_tab.filters.set_labels(&self.input_buffer)
             }
+            Some(InputKind::Author) => self.filters.set_author(&self.input_buffer),
+            Some(InputKind::Label) => self.filters.set_labels(&self.input_buffer),
             None => return,
+        }
+        let field = if self.input_kind == Some(InputKind::Author) {
+            FilterField::Author
+        } else {
+            FilterField::Label
         };
         self.input_cancel();
-        self.apply_filter_change(field);
+        if issues {
+            self.apply_issue_filter_change();
+        } else {
+            self.apply_filter_change(field);
+        }
     }
 
     // --- help ---
@@ -1100,6 +1266,7 @@ impl App {
             Tab::Prs => self.visible_prs().len(),
             Tab::Runs => self.visible_runs().len(),
             Tab::Repos => self.repo_rows(),
+            Tab::Issues => self.visible_issues().len(),
         }
     }
 
@@ -1126,10 +1293,11 @@ impl App {
             Tab::Prs => &mut self.table_state,
             Tab::Runs => &mut self.run_table_state,
             Tab::Repos => &mut self.repo_table_state,
+            Tab::Issues => &mut self.issue_table_state,
         }
     }
 
-    /// The URL of the selected item in the active tab (PR or run).
+    /// The URL of the selected item in the active tab (PR, run or issue).
     pub fn selected_url(&self) -> Option<String> {
         match self.active_tab {
             Tab::Prs => self
@@ -1144,32 +1312,45 @@ impl App {
                 .repo_table_state
                 .selected()
                 .and_then(|i| self.visible_repos().get(i).map(|r| r.url.clone())),
+            Tab::Issues => self
+                .issue_table_state
+                .selected()
+                .and_then(|i| self.visible_issues().get(i).map(|issue| issue.url.clone())),
         }
     }
 
     // --- tabs ---
 
     pub fn set_tab(&mut self, tab: Tab) {
+        // Leaving PRs/Actions for a tab with its own line: keep theirs, so
+        // coming back shows it rather than the other tab's.
+        if self.active_tab.shows_pr_flow() && !tab.shows_pr_flow() {
+            self.hidden_status = Some(self.status.clone());
+        }
         self.active_tab = tab;
-        // The panel is shorter on Actions: keep the cursor inside the new slice.
+        // The panels differ in length: keep the cursor inside the new slice.
         self.filter_cursor = self.filter_cursor.min(fields_for(tab).len() - 1);
         // The tabs hold different column counts: back to the top.
         self.column_cursor = 0;
         // A stale grab from the previous tab would move the new tab's
         // columns as soon as the user presses ↑/↓ again.
         self.column_grabbed = false;
-        // Back from the Repos tab: the line of the last PR/run load that
-        // landed meanwhile.
-        if tab != Tab::Repos
+        // Back on PRs/Actions: their line, as it stands now.
+        if tab.shows_pr_flow()
             && let Some(status) = self.hidden_status.take()
         {
             self.status = status;
+        }
+        // The Issues tab keeps its own line.
+        if tab == Tab::Issues {
+            self.status = self.issue_tab.status.clone();
         }
         // First visit to a tab -> load what it shows.
         match tab {
             Tab::Prs if !self.prs_loaded => self.refresh(),
             Tab::Runs if !self.runs_loaded => self.refresh(),
             Tab::Repos if !self.repo_tab.loaded && !self.repos_loading => self.refresh(),
+            Tab::Issues if !self.issue_tab.loaded && !self.issue_tab.loading => self.refresh(),
             _ => {}
         }
     }
@@ -1285,6 +1466,8 @@ impl App {
             }
             // Nothing is "mine" in a list of repos to clone.
             Tab::Repos => {}
+            // Task 6 wires the Issues tab's own "mine".
+            Tab::Issues => {}
         }
     }
 }
@@ -1311,6 +1494,7 @@ fn errors_suffix(errors: usize) -> String {
 mod tests {
     use super::*;
     use crate::filters::AuthorFilter;
+    use crate::issues::{AssigneeFilter, sample_issue};
     use crate::repos::{CloneEvent, LocalRepo, sample_repo};
 
     #[test]
@@ -1352,11 +1536,11 @@ mod tests {
 
     #[test]
     fn section_groups_the_fields() {
-        assert_eq!(section_of(FilterField::Repo), "Common");
-        assert_eq!(section_of(FilterField::Author), "PRs");
-        assert_eq!(section_of(FilterField::OnlyPrRuns), "Actions");
-        assert_eq!(section_of(FilterField::RunStatus), "Actions");
-        assert_eq!(section_of(FilterField::RunWorkflow), "Actions");
+        assert_eq!(section_of(Tab::Prs, FilterField::Repo), "Common");
+        assert_eq!(section_of(Tab::Prs, FilterField::Author), "PRs");
+        assert_eq!(section_of(Tab::Runs, FilterField::OnlyPrRuns), "Actions");
+        assert_eq!(section_of(Tab::Runs, FilterField::RunStatus), "Actions");
+        assert_eq!(section_of(Tab::Runs, FilterField::RunWorkflow), "Actions");
     }
 
     #[test]
@@ -1443,7 +1627,8 @@ mod tests {
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
         assert_eq!(Tab::Runs.next(), Tab::Repos);
-        assert_eq!(Tab::Repos.next(), Tab::Prs);
+        assert_eq!(Tab::Repos.next(), Tab::Issues);
+        assert_eq!(Tab::Issues.next(), Tab::Prs);
     }
 
     #[test]
@@ -1614,8 +1799,8 @@ mod tests {
                 FilterField::HideCloned,
             ]
         );
-        assert_eq!(section_of(FilterField::Owner), "Repos");
-        assert_eq!(section_of(FilterField::HideCloned), "Repos");
+        assert_eq!(section_of(Tab::Repos, FilterField::Owner), "Repos");
+        assert_eq!(section_of(Tab::Repos, FilterField::HideCloned), "Repos");
     }
 
     #[test]
@@ -2020,5 +2205,243 @@ mod tests {
 
         app.set_tab(Tab::Prs);
         assert!(app.status.starts_with("0 PR(s)"), "got {:?}", app.status);
+    }
+
+    /// An `App` on the Issues tab with an issue load "in flight", so any
+    /// reload queues (`issue_tab.pending`) instead of running `gh`. The root
+    /// does not exist: a load that does start discovers no repo, runs no `gh`.
+    fn issues_app() -> App {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.active_tab = Tab::Issues;
+        app.issue_tab.loading = true;
+        app
+    }
+
+    fn issues_answer(issues: Vec<Issue>) -> Loaded {
+        Loaded::Issues(IssuesResult {
+            issues,
+            all_repos: vec!["api".to_string(), "web".to_string()],
+            scanned: 2,
+            errors: 1,
+        })
+    }
+
+    #[test]
+    fn the_issues_tab_comes_after_repos_and_wraps_to_prs() {
+        assert_eq!(Tab::Repos.next(), Tab::Issues);
+        assert_eq!(Tab::Issues.next(), Tab::Prs);
+    }
+
+    #[test]
+    fn an_issue_load_is_sorted_newest_first_and_says_what_failed() {
+        let mut app = issues_app();
+        app.tx
+            .send(issues_answer(vec![
+                sample_issue("api", 1, "2026-09-01T00:00:00Z"),
+                sample_issue("web", 2, "2026-09-20T00:00:00Z"),
+            ]))
+            .unwrap();
+        app.on_tick();
+
+        let numbers: Vec<u64> = app.visible_issues().iter().map(|i| i.number).collect();
+        assert_eq!(numbers, [2, 1]);
+        assert_eq!(app.status, "2 issue(s) — 2 repo(s) — 1 failed");
+        assert!(!app.issue_tab.loading);
+        assert_eq!(app.issue_table_state.selected(), Some(0));
+        assert_eq!(
+            app.selected_url().as_deref(),
+            Some("https://github.com/acme/web/issues/2")
+        );
+    }
+
+    /// Review focus 1: the auto-refresh reloads the issues behind the PRs
+    /// tab; their line must wait for the Issues tab.
+    #[test]
+    fn an_issue_load_behind_another_tab_keeps_that_tab_line() {
+        let mut app = issues_app();
+        app.active_tab = Tab::Prs;
+        app.prs_loaded = true;
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+        app.tx.send(issues_answer(Vec::new())).unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+
+        app.set_tab(Tab::Issues);
+        assert!(app.status.starts_with("0 issue(s)"), "got {:?}", app.status);
+    }
+
+    /// Review focus 2: leaving PRs for Issues and back shows the PRs line.
+    #[test]
+    fn the_prs_line_comes_back_after_a_visit_to_the_issues_tab() {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs_loaded = true;
+        app.issue_tab.loaded = true;
+        app.issue_tab.status = "4 issue(s) — 2 repo(s)".to_string();
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+
+        app.set_tab(Tab::Issues);
+        assert_eq!(app.status, "4 issue(s) — 2 repo(s)");
+        app.set_tab(Tab::Prs);
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+    }
+
+    #[test]
+    fn a_pr_load_behind_the_issues_tab_waits_for_the_prs_tab() {
+        let mut app = issues_app();
+        app.status = "4 issue(s)".to_string();
+        app.loading = true;
+        app.tx.send(empty_pr_load()).unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "4 issue(s)");
+
+        app.set_tab(Tab::Prs);
+        assert!(app.status.starts_with("0 PR(s)"), "got {:?}", app.status);
+    }
+
+    #[test]
+    fn the_issues_tab_loads_on_its_first_visit_only() {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs_loaded = true;
+        app.set_tab(Tab::Issues);
+        assert!(app.issue_tab.loading, "first visit: a load starts");
+        assert_eq!(app.status, "Loading issues…");
+
+        app.issue_tab.loading = false;
+        app.issue_tab.loaded = true;
+        app.set_tab(Tab::Prs);
+        app.set_tab(Tab::Issues);
+        assert!(!app.issue_tab.loading, "second visit: no reload");
+    }
+
+    /// Review focus 4: a reload asked for during a load queues, once.
+    #[test]
+    fn a_reload_asked_during_an_issue_load_queues() {
+        let mut app = issues_app();
+        app.refresh();
+        assert!(app.issue_tab.pending);
+        assert!(app.issue_tab.loading, "still the first load");
+    }
+
+    #[test]
+    fn the_auto_refresh_reloads_the_issues_once_they_are_loaded() {
+        let mut app = issues_app();
+        app.loading = true; // the PR job queues instead of running `gh`
+        app.background_reload();
+        assert!(!app.issue_tab.pending, "never loaded: the first visit will");
+
+        app.issue_tab.loaded = true;
+        app.background_reload();
+        assert!(app.issue_tab.pending);
+        assert!(app.pending_job.is_some(), "the PRs reload too");
+    }
+
+    #[test]
+    fn the_end_of_a_clone_batch_reloads_loaded_issues() {
+        let mut app = issues_app();
+        app.loading = true;
+        app.issue_tab.loaded = true;
+        app.tx.send(Loaded::Clone(CloneEvent::Finished)).unwrap();
+        app.on_tick();
+        assert!(app.issue_tab.pending);
+    }
+
+    /// Review focus 3, on a real folder: an issue repo filter saved
+    /// elsewhere is dropped before the load, and the Issues line says so.
+    #[test]
+    fn reconciling_drops_an_issue_repo_the_folder_does_not_hold() {
+        let root = std::env::temp_dir().join("gh-ui-reconcile-issues");
+        std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
+
+        let mut app = App::new(root.clone());
+        app.issue_tab.filters.repo = Some("ghost".to_string());
+        app.reconcile_issue_repo();
+
+        assert_eq!(app.issue_tab.filters.repo, None);
+        assert!(
+            app.issue_tab
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("ghost")),
+            "got {:?}",
+            app.issue_tab.notice
+        );
+        assert_eq!(app.notice, None, "the PRs line is not concerned");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_issues_panel_has_its_own_section() {
+        assert_eq!(section_of(Tab::Issues, FilterField::Repo), "Issues");
+        assert_eq!(section_of(Tab::Issues, FilterField::Assignee), "Issues");
+        assert_eq!(section_of(Tab::Prs, FilterField::Repo), "Common");
+    }
+
+    #[test]
+    fn the_issues_panel_edits_the_issue_filters_and_reloads_the_issues_only() {
+        let mut app = issues_app();
+        app.filter_cursor = fields_for(Tab::Issues)
+            .iter()
+            .position(|f| *f == FilterField::Assignee)
+            .unwrap();
+        app.filter_change(true);
+
+        assert_eq!(app.issue_tab.filters.assignee, AssigneeFilter::Me);
+        assert!(app.issue_tab.pending, "the issues reload");
+        assert_eq!(app.pending_job, None, "the PRs do not");
+    }
+
+    #[test]
+    fn the_issues_panel_cycles_the_issue_repo_not_the_pr_one() {
+        let mut app = issues_app();
+        app.repos = vec!["api".to_string(), "web".to_string()];
+        app.filter_cursor = 0; // Repo
+        app.filter_change(true);
+        assert_eq!(app.issue_tab.filters.repo.as_deref(), Some("api"));
+        assert_eq!(app.filters.repo, None);
+    }
+
+    #[test]
+    fn an_author_typed_on_the_issues_tab_goes_to_the_issue_filters() {
+        let mut app = issues_app();
+        app.filter_cursor = fields_for(Tab::Issues)
+            .iter()
+            .position(|f| *f == FilterField::Author)
+            .unwrap();
+        app.filter_activate();
+        assert!(app.input_kind == Some(InputKind::Author));
+        for c in "octocat".chars() {
+            app.input_push(c);
+        }
+        app.input_commit();
+
+        assert_eq!(
+            app.issue_tab.filters.author,
+            AuthorFilter::Is("octocat".to_string())
+        );
+        assert_eq!(app.filters.author, AuthorFilter::Any);
+        assert!(app.issue_tab.pending);
+    }
+
+    #[test]
+    fn the_label_prompt_opens_prefilled_with_the_issue_labels() {
+        let mut app = issues_app();
+        app.issue_tab.filters.labels = vec!["bug".to_string(), "ui".to_string()];
+        app.filter_cursor = fields_for(Tab::Issues)
+            .iter()
+            .position(|f| *f == FilterField::Label)
+            .unwrap();
+        app.filter_activate();
+        assert_eq!(app.input_buffer, "bug ui");
+    }
+
+    #[test]
+    fn the_filter_cursor_stays_inside_the_shorter_issues_panel() {
+        let mut app = issues_app();
+        app.active_tab = Tab::Prs;
+        app.issue_tab.loaded = true;
+        app.filter_cursor = fields_for(Tab::Prs).len() - 1;
+        app.set_tab(Tab::Issues);
+        assert!(app.filter_cursor < fields_for(Tab::Issues).len());
     }
 }

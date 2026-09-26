@@ -60,6 +60,9 @@ pub enum Loaded {
     Orgs(Vec<String>),
     /// One step of a clone batch.
     Clone(CloneEvent),
+    /// The folder's open issues (Issues tab). Not a `Job`: the issues have
+    /// their own loading flag, like the repo list.
+    Issues(IssuesResult),
 }
 
 /// What we ask the thread to load.
@@ -186,6 +189,13 @@ pub fn spawn_repos(root: PathBuf, owner: String, filters: RepoFilters, tx: Sende
             repos,
             locals,
         }));
+    });
+}
+
+/// Loads the issues of every repo (or of the selected one) in the background.
+pub fn spawn_issues(root: PathBuf, filters: IssueFilters, tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        let _ = tx.send(Loaded::Issues(load_issues(&root, &filters)));
     });
 }
 

@@ -2,8 +2,9 @@
 //! decides nothing, it only draws what `App` holds.
 
 use crate::app::{App, Confirm, FilterField, InputKind, Tab, section_of};
-use crate::columns::{Column, ColumnLayout, PrColumn, RepoColumn, RunColumn};
+use crate::columns::{Column, ColumnLayout, IssueColumn, PrColumn, RepoColumn, RunColumn};
 use crate::filters::{AuthorFilter, Filters};
+use crate::issues::IssueFilters;
 use crate::refresh::{self, AutoRefresh};
 use crate::repos::RepoFilters;
 use crate::runfilters::RunFilters;
@@ -18,6 +19,9 @@ use std::time::Duration;
 const FILTER_PANEL_WIDTH: u16 = 52;
 const COLUMN_PANEL_WIDTH: u16 = 54;
 const HELP_WIDTH: u16 = 64;
+
+/// What an empty text filter reads in the panel.
+const EMPTY_TEXT_FILTER: &str = "(empty)  ⏎ edit";
 
 /// The column panel's hint, while browsing (the default mode). Named so a
 /// test can build the exact same `Line` the panel renders without needing an
@@ -113,6 +117,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("Actions", app.active_tab == Tab::Runs),
         Span::raw(" "),
         tab_span("Repos", app.active_tab == Tab::Repos),
+        Span::raw(" "),
+        tab_span("Issues", app.active_tab == Tab::Issues),
     ]);
 
     // Line 3: depending on the tab, PRs filters summary OR the runs toggle
@@ -143,6 +149,10 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Style::new().fg(Color::DarkGray),
         ),
+        Tab::Issues => Span::styled(
+            app.issue_tab.filters.summary(),
+            Style::new().fg(Color::DarkGray),
+        ),
     }];
 
     // Counted against the tab's own list: the PRs tab compares with everything
@@ -151,6 +161,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Prs => (app.visible_prs().len(), app.prs.len()),
         Tab::Runs => (app.visible_runs().len(), app.branch_runs().len()),
         Tab::Repos => (app.visible_repos().len(), app.repo_tab.listed().len()),
+        Tab::Issues => (app.visible_issues().len(), app.issue_tab.issues.len()),
     };
     if let Some(chip) = search_summary(&app.search, shown, total) {
         subtitle.push(Span::raw("  "));
@@ -169,6 +180,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Tab::Prs => render_pr_table(frame, app, area),
         Tab::Runs => render_run_table(frame, app, area),
         Tab::Repos => render_repo_table(frame, app, area),
+        Tab::Issues => render_issue_table(frame, app, area),
     }
 }
 
@@ -216,6 +228,29 @@ fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::bordered());
 
     frame.render_stateful_widget(table, area, &mut app.run_table_state);
+}
+
+fn render_issue_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    let columns: Vec<IssueColumn> = app.columns.issues.visible().collect();
+
+    let header =
+        Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    // Owned cells, as in the other tables: nothing may still borrow `app`
+    // when `&mut app.issue_table_state` is handed over below.
+    let rows: Vec<Row<'static>> = app
+        .visible_issues()
+        .into_iter()
+        .map(|issue| Row::new(columns.iter().map(|c| c.cell(issue)).collect::<Vec<_>>()))
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol("▌ ")
+        .block(Block::bordered());
+
+    frame.render_stateful_widget(table, area, &mut app.issue_table_state);
 }
 
 fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -412,8 +447,8 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let mut section = "";
     for (i, &field) in app.active_fields().iter().enumerate() {
-        if section_of(field) != section {
-            section = section_of(field);
+        if section_of(app.active_tab, field) != section {
+            section = section_of(app.active_tab, field);
             lines.push(Line::from(Span::styled(
                 format!(" {section}"),
                 Style::new().bold().fg(Color::Cyan),
@@ -422,11 +457,12 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
 
         let focused = i == app.filter_cursor;
         let marker = if focused { "▸ " } else { "  " };
-        let text = format!(
-            "{marker}{:<12} {}",
-            field_name(field),
+        let value = if app.active_tab == Tab::Issues {
+            issue_field_value(field, &app.issue_tab.filters)
+        } else {
             field_value(field, f, &app.run_filters, &app.repo_tab.filters)
-        );
+        };
+        let text = format!("{marker}{:<12} {}", field_name(field), value);
         lines.push(if focused {
             Line::from(Span::styled(
                 text,
@@ -466,6 +502,10 @@ fn render_column_panel(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Repos => (
             " Columns — Repos ",
             column_lines(&app.columns.repos, app.column_cursor, app.column_grabbed),
+        ),
+        Tab::Issues => (
+            " Columns — Issues ",
+            column_lines(&app.columns.issues, app.column_cursor, app.column_grabbed),
         ),
     };
 
@@ -542,12 +582,12 @@ fn field_name(field: FilterField) -> &'static str {
         FilterField::Archived => "Archived",
         FilterField::Forks => "Forks",
         FilterField::HideCloned => "Hide cloned",
+        FilterField::Assignee => "Assignee",
     }
 }
 
 /// The displayed value of a field: cycle "◂ x ▸", box "[x]", or text.
 fn field_value(field: FilterField, f: &Filters, rf: &RunFilters, rpf: &RepoFilters) -> String {
-    let empty = "(empty)  ⏎ edit";
     match field {
         FilterField::OnlyPrRuns => toggle_box(rf.only_pr_runs),
         FilterField::RunStatus => format!("◂ {} ▸", rf.status.label()),
@@ -565,11 +605,13 @@ fn field_value(field: FilterField, f: &Filters, rf: &RunFilters, rpf: &RepoFilte
         FilterField::Author => format!("◂ {} ▸", author_label(&f.author)),
         FilterField::Label => {
             if f.labels.is_empty() {
-                empty.to_string()
+                EMPTY_TEXT_FILTER.to_string()
             } else {
                 f.labels.join(" ")
             }
         }
+        // Issues tab only: drawn by `issue_field_value`.
+        FilterField::Assignee => String::new(),
     }
 }
 
@@ -578,6 +620,21 @@ fn toggle_box(on: bool) -> String {
         "[x]".to_string()
     } else {
         "[ ]".to_string()
+    }
+}
+
+/// The displayed value of a field on the Issues tab, read from its own
+/// filters: the rows are the PRs tab's, the values are not.
+fn issue_field_value(field: FilterField, f: &IssueFilters) -> String {
+    match field {
+        FilterField::Repo => format!("◂ {} ▸", f.repo.as_deref().unwrap_or("all")),
+        FilterField::Author => format!("◂ {} ▸", author_label(&f.author)),
+        FilterField::Assignee => format!("◂ {} ▸", f.assignee.label()),
+        FilterField::Since => format!("◂ {} ▸", f.since.label()),
+        FilterField::Label if f.labels.is_empty() => EMPTY_TEXT_FILTER.to_string(),
+        FilterField::Label => f.labels.join(" "),
+        // Not an Issues row.
+        _ => String::new(),
     }
 }
 
@@ -1076,5 +1133,18 @@ mod tests {
         assert!(text.contains("Repos: tick a repo · ↓ to the clone button"));
         assert!(text.contains("reload now / quit"));
         assert!(text.contains("(any key to close)"), "still fits 80x24");
+    }
+
+    #[test]
+    fn the_issues_panel_reads_the_issue_filters() {
+        let f = IssueFilters {
+            assignee: crate::issues::AssigneeFilter::Nobody,
+            repo: Some("api".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(issue_field_value(FilterField::Assignee, &f), "◂ nobody ▸");
+        assert_eq!(issue_field_value(FilterField::Repo, &f), "◂ api ▸");
+        assert_eq!(issue_field_value(FilterField::Author, &f), "◂ any ▸");
+        assert_eq!(issue_field_value(FilterField::Label, &f), EMPTY_TEXT_FILTER);
     }
 }
