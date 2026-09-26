@@ -6,6 +6,7 @@ mod filters;
 mod gh;
 mod model;
 mod refresh;
+mod repos;
 mod runfilters;
 mod search;
 mod ui;
