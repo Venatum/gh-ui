@@ -170,18 +170,18 @@ pub fn section_of(tab: Tab, field: FilterField) -> &'static str {
 pub enum Tab {
     Prs,
     Runs,
-    Repos,
     Issues,
+    Repos,
 }
 
 impl Tab {
-    /// The next tab (cycle Prs -> Runs -> Repos -> Issues -> Prs).
+    /// The next tab (cycle Prs -> Runs -> Issues -> Repos -> Prs).
     pub fn next(self) -> Tab {
         match self {
             Tab::Prs => Tab::Runs,
-            Tab::Runs => Tab::Repos,
-            Tab::Repos => Tab::Issues,
-            Tab::Issues => Tab::Prs,
+            Tab::Runs => Tab::Issues,
+            Tab::Issues => Tab::Repos,
+            Tab::Repos => Tab::Prs,
         }
     }
 
@@ -1626,9 +1626,9 @@ mod tests {
     #[test]
     fn tab_cycle() {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
-        assert_eq!(Tab::Runs.next(), Tab::Repos);
-        assert_eq!(Tab::Repos.next(), Tab::Issues);
-        assert_eq!(Tab::Issues.next(), Tab::Prs);
+        assert_eq!(Tab::Runs.next(), Tab::Issues);
+        assert_eq!(Tab::Issues.next(), Tab::Repos);
+        assert_eq!(Tab::Repos.next(), Tab::Prs);
     }
 
     #[test]
@@ -2224,12 +2224,6 @@ mod tests {
             scanned: 2,
             errors: 1,
         })
-    }
-
-    #[test]
-    fn the_issues_tab_comes_after_repos_and_wraps_to_prs() {
-        assert_eq!(Tab::Repos.next(), Tab::Issues);
-        assert_eq!(Tab::Issues.next(), Tab::Prs);
     }
 
     #[test]

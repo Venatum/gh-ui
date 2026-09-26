@@ -116,9 +116,9 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         tab_span("Actions", app.active_tab == Tab::Runs),
         Span::raw(" "),
-        tab_span("Repos", app.active_tab == Tab::Repos),
-        Span::raw(" "),
         tab_span("Issues", app.active_tab == Tab::Issues),
+        Span::raw(" "),
+        tab_span("Repos", app.active_tab == Tab::Repos),
     ]);
 
     // Line 3: depending on the tab, PRs filters summary OR the runs toggle
