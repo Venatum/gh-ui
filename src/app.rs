@@ -291,6 +291,9 @@ pub struct App {
     /// screen: stashed when leaving them, replaced by any PR/run load
     /// landing meanwhile, restored on return.
     hidden_status: Option<String>,
+    /// The Repos tab's own line (list loads, clone steps): kept for the tab
+    /// and shown only while it is on screen, as `IssuesTab::status` is.
+    repos_status: String,
 
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
@@ -350,6 +353,7 @@ impl App {
             repos_loading: false,
             repos_pending: false,
             hidden_status: None,
+            repos_status: String::new(),
             tx,
             rx,
         }
@@ -458,10 +462,10 @@ impl App {
     /// or explains why it cannot run when no owner is known yet.
     pub fn refresh_repos(&mut self) {
         let Some(owner) = self.repo_tab.filters.owner.clone() else {
-            self.status = match self.login {
+            self.set_repos_status(match self.login {
                 Login::Unknown => "No GitHub account: cannot list repos".to_string(),
                 _ => "Waiting for the GitHub account…".to_string(),
-            };
+            });
             return;
         };
         if self.repos_loading {
@@ -470,7 +474,7 @@ impl App {
         }
         self.repos_loading = true;
         self.repos_pending = false;
-        self.status = format!("Loading {owner}'s repos…");
+        self.set_repos_status(format!("Loading {owner}'s repos…"));
         fetch::spawn_repos(
             self.root.clone(),
             owner,
@@ -707,7 +711,7 @@ impl App {
             Ok(list) => {
                 self.repo_tab.apply_load(list, result.locals);
                 let failed = self.repo_tab.failed_count();
-                self.status = format!(
+                self.set_repos_status(format!(
                     "{} repo(s) — {} cloned{}",
                     self.repo_tab.repos.len(),
                     self.repo_tab.cloned_count(),
@@ -716,14 +720,24 @@ impl App {
                     } else {
                         String::new()
                     }
-                );
+                ));
             }
             Err(message) => {
                 self.repo_tab.apply_load(Vec::new(), result.locals);
-                self.status = format!("gh repo list failed: {message}");
+                self.set_repos_status(format!("gh repo list failed: {message}"));
             }
         }
         self.reset_repo_selection();
+    }
+
+    /// Writes the Repos tab's line: kept for the tab, shown now only if it
+    /// is on screen. A list or a clone step landing after the user left the
+    /// tab must not paint over the line of the tab they went to.
+    fn set_repos_status(&mut self, status: String) {
+        if self.active_tab == Tab::Repos {
+            self.status = status.clone();
+        }
+        self.repos_status = status;
     }
 
     /// Stores an issue load. Its line belongs to the Issues tab: kept there,
@@ -752,7 +766,8 @@ impl App {
     /// recomputes its states from the folder.
     fn apply_clone(&mut self, event: CloneEvent) {
         let finished = event == CloneEvent::Finished;
-        self.status = self.repo_tab.apply_event(event);
+        let line = self.repo_tab.apply_event(event);
+        self.set_repos_status(line);
         if finished {
             self.refresh_job(if self.runs_loaded {
                 Job::Both
@@ -1341,9 +1356,11 @@ impl App {
         {
             self.status = status;
         }
-        // The Issues tab keeps its own line.
-        if tab == Tab::Issues {
-            self.status = self.issue_tab.status.clone();
+        // The Issues and Repos tabs keep their own lines.
+        match tab {
+            Tab::Issues => self.status = self.issue_tab.status.clone(),
+            Tab::Repos => self.status = self.repos_status.clone(),
+            _ => {}
         }
         // First visit to a tab -> load what it shows.
         match tab {
@@ -1375,7 +1392,7 @@ impl App {
             return;
         };
         if let Err(why) = self.repo_tab.toggle_tick(&name) {
-            self.status = why;
+            self.set_repos_status(why);
         }
         self.clamp_repo_selection();
     }
@@ -2221,6 +2238,58 @@ mod tests {
 
         app.set_tab(Tab::Prs);
         assert!(app.status.starts_with("0 PR(s)"), "got {:?}", app.status);
+    }
+
+    /// The other way round: a repo list landing after the user left the
+    /// Repos tab must not paint "81 repo(s) — 5 cloned" over the PRs line;
+    /// the Repos tab shows it when it comes back.
+    #[test]
+    fn a_repo_list_landing_behind_the_prs_tab_keeps_the_prs_line() {
+        let mut app = repos_app();
+        app.active_tab = Tab::Prs;
+        app.prs_loaded = true;
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+        app.tx
+            .send(repos_answer("acme", &["acme/api", "acme/web"]))
+            .unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+
+        app.set_tab(Tab::Repos);
+        assert!(app.status.starts_with("2 repo(s)"), "got {:?}", app.status);
+    }
+
+    /// Nor does the Repos tab show the line of the tab it was reached from.
+    #[test]
+    fn the_repos_tab_shows_its_own_line_after_the_issues_tab() {
+        let mut app = repos_app();
+        app.tx
+            .send(repos_answer("acme", &["acme/api", "acme/web"]))
+            .unwrap();
+        app.on_tick();
+        app.issue_tab.loaded = true; // no load on the way through
+        app.set_tab(Tab::Issues);
+        app.status = "4 issue(s) — 2 repo(s)".to_string();
+        app.set_tab(Tab::Repos);
+        assert!(app.status.starts_with("2 repo(s)"), "got {:?}", app.status);
+    }
+
+    /// A clone step reported while another tab is on screen waits for the
+    /// Repos tab.
+    #[test]
+    fn a_clone_step_behind_the_prs_tab_keeps_the_prs_line() {
+        let mut app = tick_app();
+        app.active_tab = Tab::Prs;
+        app.prs_loaded = true;
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+        app.tx
+            .send(Loaded::Clone(CloneEvent::Started("acme/api".to_string())))
+            .unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+
+        app.set_tab(Tab::Repos);
+        assert_eq!(app.status, "Cloning acme/api…");
     }
 
     /// An `App` on the Issues tab with an issue load "in flight", so any
