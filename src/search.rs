@@ -79,7 +79,6 @@ pub fn keep_repos<'a>(repos: Vec<&'a Repo>, query: &str) -> Vec<&'a Repo> {
 
 /// The text an issue is searched on — a fixed set of fields, whatever the
 /// columns panel shows, as for the PRs.
-#[allow(dead_code)]
 pub fn issue_haystack(issue: &Issue) -> String {
     let assignees = issue
         .assignees
@@ -100,7 +99,6 @@ pub fn issue_haystack(issue: &Issue) -> String {
 }
 
 /// The issues matching `query`, in the order they were loaded.
-#[allow(dead_code)]
 pub fn keep_issues<'a>(issues: &'a [Issue], query: &str) -> Vec<&'a Issue> {
     issues
         .iter()

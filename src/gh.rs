@@ -138,20 +138,17 @@ pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
 }
 
 /// Maximum number of open issues fetched per repo, as `PR_LIMIT` for PRs.
-#[allow(dead_code)]
 const ISSUE_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each issue. Deliberately without
 /// `comments`: `gh` has no comment count, and that field brings every
 /// comment's body — about forty times the payload, three times the wait.
-#[allow(dead_code)]
 const ISSUE_JSON_FIELDS: &str =
     "number,title,author,assignees,labels,createdAt,updatedAt,url,closedByPullRequestsReferences";
 
 /// The `gh issue list` command line for `filters`: open issues only, the
 /// filter arguments last. Split out of `fetch_issues` so a test can read it
 /// without running `gh`.
-#[allow(dead_code)]
 fn issue_list_args(filters: &IssueFilters) -> Vec<String> {
     let mut args: Vec<String> = [
         "issue",
@@ -173,7 +170,6 @@ fn issue_list_args(filters: &IssueFilters) -> Vec<String> {
 /// Runs `gh issue list` (with the filters) in `repo_dir` and parses the JSON.
 /// A repo with issues disabled makes `gh` fail: the caller counts it as a
 /// failed repo, the others still show.
-#[allow(dead_code)]
 pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue>> {
     let output = Command::new("gh")
         .args(issue_list_args(filters))

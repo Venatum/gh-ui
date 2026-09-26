@@ -29,7 +29,6 @@ pub struct RunsResult {
 }
 
 /// Mirror of `FetchResult`, for the issues.
-#[allow(dead_code)]
 pub struct IssuesResult {
     pub issues: Vec<Issue>,
     pub all_repos: Vec<String>,
@@ -267,7 +266,6 @@ fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
 }
 
 /// Like `load_prs`, for the issues, with the Issues tab's own repo filter.
-#[allow(dead_code)]
 fn load_issues(root: &Path, filters: &IssueFilters) -> IssuesResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
     let to_scan = repos_to_scan(&all_repos, filters.repo.as_deref());
