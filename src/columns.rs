@@ -387,11 +387,14 @@ impl Column for IssueColumn {
             IssueColumn::Repo => Constraint::Length(16),
             IssueColumn::Number => Constraint::Length(7),
             IssueColumn::Updated => Constraint::Length(10),
-            IssueColumn::Title => Constraint::Fill(2),
+            // The title is what an issue is read by: 3 shares of the rest.
+            IssueColumn::Title => Constraint::Fill(3),
             IssueColumn::Author => Constraint::Length(20),
-            IssueColumn::Assignees => Constraint::Length(20),
-            IssueColumn::Labels => Constraint::Fill(1),
-            IssueColumn::Prs => Constraint::Length(16),
+            // Narrower than Author: a long second login may be cut.
+            IssueColumn::Assignees => Constraint::Length(16),
+            IssueColumn::Labels => Constraint::Fill(1), // elastic, 1 share of the rest
+            // `#12345` and `3 PRs` fit; a rare `owner/name#12` is cut.
+            IssueColumn::Prs => Constraint::Length(10),
             IssueColumn::Created => Constraint::Length(10),
         }
     }
@@ -992,6 +995,30 @@ mod tests {
     fn a_config_written_before_the_issues_tab_gets_the_default_issue_layout() {
         let columns = Columns::from_json(r#"{"prs":{"entries":[]}}"#);
         assert_eq!(columns.issues, ColumnLayout::<IssueColumn>::default());
+    }
+
+    /// At 120 columns the title must stay readable: the fixed-width columns
+    /// may not eat the room it needs.
+    #[test]
+    fn the_issue_title_keeps_room_at_120_columns() {
+        use ratatui::layout::{Layout, Rect};
+
+        let visible: Vec<IssueColumn> = ColumnLayout::<IssueColumn>::default().visible().collect();
+        let widths: Vec<Constraint> = visible.iter().map(|c| c.width()).collect();
+        // 120 minus the table's two borders and its "▌ " highlight symbol;
+        // one space between columns, as the table puts.
+        let areas = Layout::horizontal(widths)
+            .spacing(1)
+            .split(Rect::new(0, 0, 116, 1));
+        let title = visible
+            .iter()
+            .position(|c| *c == IssueColumn::Title)
+            .unwrap();
+        assert!(
+            areas[title].width >= 20,
+            "the title gets {} columns",
+            areas[title].width
+        );
     }
 
     /// A column the saved layout does not mention is appended as it would
