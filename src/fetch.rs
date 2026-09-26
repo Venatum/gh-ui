@@ -71,6 +71,77 @@ impl Job {
     }
 }
 
+/// What `fan_out` needs from a row: somewhere to write the folder it came
+/// from. `gh` does not return it — it only knows the repo it ran in — so the
+/// loader stamps every row itself.
+pub trait FromRepo {
+    fn set_repo(&mut self, repo: &str);
+}
+
+impl FromRepo for Pr {
+    fn set_repo(&mut self, repo: &str) {
+        self.repo = repo.to_string();
+    }
+}
+
+impl FromRepo for Run {
+    fn set_repo(&mut self, repo: &str) {
+        self.repo = repo.to_string();
+    }
+}
+
+/// The repos a load queries: all of them, or only the selected one.
+fn repos_to_scan<'a>(all: &'a [String], selected: Option<&str>) -> Vec<&'a String> {
+    match selected {
+        Some(sel) => all.iter().filter(|r| r.as_str() == sel).collect(),
+        None => all.iter().collect(),
+    }
+}
+
+/// Runs `fetch` in every repo of `repos` AT ONCE (one scoped thread each), so
+/// the total wait is that of the slowest repo rather than their sum. Returns
+/// the rows in the repos' order, each stamped with its repo, plus how many
+/// repos failed (`gh` error or panicked thread): one bad repo never hides the
+/// others.
+///
+/// Generic over the row type `T`, so the PRs, the runs and the issues share
+/// this one loop. `F: Sync` because every thread borrows the same `fetch`;
+/// `T: Send` because each thread hands its rows back to this one.
+fn fan_out<T, F>(root: &Path, repos: &[&String], fetch: F) -> (Vec<T>, usize)
+where
+    T: FromRepo + Send,
+    F: Fn(&Path) -> anyhow::Result<Vec<T>> + Sync,
+{
+    // A reference is `Copy`: each `move` closure below takes its own copy of
+    // it instead of trying to move `fetch` itself into several threads.
+    let fetch = &fetch;
+    let joined = thread::scope(|scope| {
+        let handles: Vec<_> = repos
+            .iter()
+            .map(|&repo| scope.spawn(move || (repo, fetch(&root.join(repo)))))
+            .collect();
+        // `join()` waits for each thread; the handles' order = the repos'
+        // order, so the result stays deterministic (rows grouped by repo).
+        handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
+    });
+
+    let mut rows = Vec::new();
+    let mut errors = 0;
+    for result in joined {
+        match result {
+            Ok((repo, Ok(mut list))) => {
+                for row in &mut list {
+                    row.set_repo(repo);
+                }
+                rows.extend(list);
+            }
+            // `gh` failed for this repo, or the thread panicked.
+            Ok((_, Err(_))) | Err(_) => errors += 1,
+        }
+    }
+    (rows, errors)
+}
+
 /// Resolves the authenticated user in its own one-shot thread. It rides the
 /// loads' channel so the app keeps a single place to poll, and it is never
 /// re-run: the account cannot change while gh-ui is open.
@@ -155,46 +226,8 @@ pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
 /// ≈ that of the slowest repo, instead of their sum.
 fn load_prs(root: &Path, filters: &Filters) -> FetchResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
-
-    // Which repos to scan? All of them, or only the selected one.
-    let to_scan: Vec<&String> = match &filters.repo {
-        Some(sel) => all_repos.iter().filter(|r| *r == sel).collect(),
-        None => all_repos.iter().collect(),
-    };
-
-    // `thread::scope`: "scoped" threads that can BORROW `root` and `filters`
-    // (the scope guarantees they finish before it ends, so there's no need to
-    // clone everything). We spawn one thread per repo, then join them.
-    let joined = thread::scope(|scope| {
-        let handles: Vec<_> = to_scan
-            .iter()
-            .map(|&repo| {
-                scope.spawn(move || {
-                    let dir = root.join(repo);
-                    (repo.clone(), gh::fetch_prs(&dir, filters))
-                })
-            })
-            .collect();
-        // `join()` waits for each thread; the handles' order = the repos' order,
-        // so the result stays deterministic (PRs grouped by repo).
-        handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
-    });
-
-    let mut prs = Vec::new();
-    let mut errors = 0;
-    for result in joined {
-        match result {
-            Ok((repo, Ok(mut list))) => {
-                for pr in &mut list {
-                    pr.repo = repo.clone();
-                }
-                prs.extend(list);
-            }
-            // `gh` failed for this repo, or the thread panicked.
-            Ok((_, Err(_))) | Err(_) => errors += 1,
-        }
-    }
-
+    let to_scan = repos_to_scan(&all_repos, filters.repo.as_deref());
+    let (prs, errors) = fan_out(root, &to_scan, |dir| gh::fetch_prs(dir, filters));
     FetchResult {
         prs,
         scanned: to_scan.len(),
@@ -207,38 +240,76 @@ fn load_prs(root: &Path, filters: &Filters) -> FetchResult {
 /// also restricts the repos scanned here, for consistency with the PRs tab.
 fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
-
-    let to_scan: Vec<&String> = match &filters.repo {
-        Some(sel) => all_repos.iter().filter(|r| *r == sel).collect(),
-        None => all_repos.iter().collect(),
-    };
-
-    let joined = thread::scope(|scope| {
-        let handles: Vec<_> = to_scan
-            .iter()
-            .map(|&repo| scope.spawn(move || (repo.clone(), gh::fetch_runs(&root.join(repo)))))
-            .collect();
-        handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
-    });
-
-    let mut runs = Vec::new();
-    let mut errors = 0;
-    for result in joined {
-        match result {
-            Ok((repo, Ok(mut list))) => {
-                for run in &mut list {
-                    run.repo = repo.clone();
-                }
-                runs.extend(list);
-            }
-            Ok((_, Err(_))) | Err(_) => errors += 1,
-        }
-    }
-
+    let to_scan = repos_to_scan(&all_repos, filters.repo.as_deref());
+    let (runs, errors) = fan_out(root, &to_scan, gh::fetch_runs);
     RunsResult {
         runs,
         scanned: to_scan.len(),
         errors,
         all_repos,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row type of our own: the fan-out must not care what it carries.
+    #[derive(Debug)]
+    struct Row {
+        name: String,
+        repo: String,
+    }
+
+    impl FromRepo for Row {
+        fn set_repo(&mut self, repo: &str) {
+            self.repo = repo.to_string();
+        }
+    }
+
+    #[test]
+    fn fan_out_keeps_the_repo_order_stamps_each_row_and_counts_failures() {
+        let all = ["api".to_string(), "broken".to_string(), "web".to_string()];
+        let repos: Vec<&String> = all.iter().collect();
+        let (rows, errors) = fan_out(Path::new("/root"), &repos, |dir| {
+            let name = dir.file_name().unwrap().to_string_lossy().to_string();
+            if name == "broken" {
+                anyhow::bail!("issues are disabled");
+            }
+            Ok(vec![
+                Row {
+                    name: format!("{name}#1"),
+                    repo: String::new(),
+                },
+                Row {
+                    name: format!("{name}#2"),
+                    repo: String::new(),
+                },
+            ])
+        });
+
+        // One bad repo is counted, and hides nothing of the others.
+        assert_eq!(errors, 1);
+        let got: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.repo.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("api#1", "api"),
+                ("api#2", "api"),
+                ("web#1", "web"),
+                ("web#2", "web")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_selected_repo_narrows_the_scan_to_itself() {
+        let all = ["api".to_string(), "web".to_string()];
+        assert_eq!(repos_to_scan(&all, None), [&all[0], &all[1]]);
+        assert_eq!(repos_to_scan(&all, Some("web")), [&all[1]]);
+        assert!(repos_to_scan(&all, Some("ghost")).is_empty());
     }
 }
