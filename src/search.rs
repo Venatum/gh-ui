@@ -1,6 +1,7 @@
 //! Free-text search over the rows already fetched. Purely client-side: it
 //! narrows what is on screen, it never re-runs `gh`.
 
+use crate::issues::Issue;
 use crate::model::{Pr, Run};
 use crate::repos::Repo;
 
@@ -76,9 +77,41 @@ pub fn keep_repos<'a>(repos: Vec<&'a Repo>, query: &str) -> Vec<&'a Repo> {
         .collect()
 }
 
+/// The text an issue is searched on — a fixed set of fields, whatever the
+/// columns panel shows, as for the PRs.
+#[allow(dead_code)]
+pub fn issue_haystack(issue: &Issue) -> String {
+    let assignees = issue
+        .assignees
+        .iter()
+        .map(|a| a.login.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let labels = issue
+        .labels
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{} #{} {} {} {} {}",
+        issue.repo, issue.number, issue.title, issue.author.login, assignees, labels
+    )
+}
+
+/// The issues matching `query`, in the order they were loaded.
+#[allow(dead_code)]
+pub fn keep_issues<'a>(issues: &'a [Issue], query: &str) -> Vec<&'a Issue> {
+    issues
+        .iter()
+        .filter(|issue| matches(query, &issue_haystack(issue)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::issues::sample_issue;
     use crate::model::{Author, Label, Pr, Run};
 
     /// A PR with the fields the search looks at, and plausible filler for the
@@ -223,5 +256,35 @@ mod tests {
         assert_eq!(keep_repos(all.clone(), "BILLING").len(), 1);
         assert_eq!(keep_repos(all.clone(), "corp/web").len(), 1);
         assert_eq!(keep_repos(all, "").len(), 2);
+    }
+
+    #[test]
+    fn an_issue_is_found_by_number_title_author_assignee_or_label() {
+        let mut issue = sample_issue("api", 7, "2026-09-20T00:00:00Z");
+        issue.title = "Crash on start".to_string();
+        issue.assignees = vec![Author {
+            login: "bob".to_string(),
+        }];
+        issue.labels = vec![Label {
+            name: "bug".to_string(),
+        }];
+        let issues = [issue, sample_issue("web", 8, "2026-09-19T00:00:00Z")];
+
+        for query in ["#7", "crash", "alice", "bob", "bug", "api"] {
+            let found: Vec<u64> = keep_issues(&issues, query)
+                .iter()
+                .map(|i| i.number)
+                .collect();
+            assert!(
+                found.contains(&7),
+                "{query:?} should find #7, got {found:?}"
+            );
+        }
+        assert_eq!(keep_issues(&issues, "bob").len(), 1);
+        assert_eq!(
+            keep_issues(&issues, "  ").len(),
+            2,
+            "a blank query keeps all"
+        );
     }
 }

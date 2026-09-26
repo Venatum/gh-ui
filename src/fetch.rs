@@ -3,6 +3,7 @@
 
 use crate::filters::Filters;
 use crate::gh;
+use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
 use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,15 @@ pub struct FetchResult {
 /// Mirror of `FetchResult`, but for the runs.
 pub struct RunsResult {
     pub runs: Vec<Run>,
+    pub all_repos: Vec<String>,
+    pub scanned: usize,
+    pub errors: usize,
+}
+
+/// Mirror of `FetchResult`, for the issues.
+#[allow(dead_code)]
+pub struct IssuesResult {
+    pub issues: Vec<Issue>,
     pub all_repos: Vec<String>,
     pub scanned: usize,
     pub errors: usize,
@@ -85,6 +95,12 @@ impl FromRepo for Pr {
 }
 
 impl FromRepo for Run {
+    fn set_repo(&mut self, repo: &str) {
+        self.repo = repo.to_string();
+    }
+}
+
+impl FromRepo for Issue {
     fn set_repo(&mut self, repo: &str) {
         self.repo = repo.to_string();
     }
@@ -244,6 +260,20 @@ fn load_runs(root: &Path, filters: &Filters) -> RunsResult {
     let (runs, errors) = fan_out(root, &to_scan, gh::fetch_runs);
     RunsResult {
         runs,
+        scanned: to_scan.len(),
+        errors,
+        all_repos,
+    }
+}
+
+/// Like `load_prs`, for the issues, with the Issues tab's own repo filter.
+#[allow(dead_code)]
+fn load_issues(root: &Path, filters: &IssueFilters) -> IssuesResult {
+    let all_repos = gh::discover_repos(root).unwrap_or_default();
+    let to_scan = repos_to_scan(&all_repos, filters.repo.as_deref());
+    let (issues, errors) = fan_out(root, &to_scan, |dir| gh::fetch_issues(dir, filters));
+    IssuesResult {
+        issues,
         scanned: to_scan.len(),
         errors,
         all_repos,

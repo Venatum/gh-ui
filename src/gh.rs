@@ -2,6 +2,7 @@
 //! running `gh` (and `git`) to fetch the PRs, runs and repos, or to clone.
 
 use crate::filters::Filters;
+use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
 use crate::repos::{LocalRepo, Repo, RepoFilters, parse_origin};
 use anyhow::{Context, Result};
@@ -134,6 +135,58 @@ pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
     let runs: Vec<Run> = serde_json::from_slice(&output.stdout)
         .context("parsing the JSON returned by `gh run list`")?;
     Ok(runs)
+}
+
+/// Maximum number of open issues fetched per repo, as `PR_LIMIT` for PRs.
+#[allow(dead_code)]
+const ISSUE_LIMIT: &str = "50";
+
+/// JSON fields requested from `gh` for each issue. Deliberately without
+/// `comments`: `gh` has no comment count, and that field brings every
+/// comment's body — about forty times the payload, three times the wait.
+#[allow(dead_code)]
+const ISSUE_JSON_FIELDS: &str =
+    "number,title,author,assignees,labels,createdAt,updatedAt,url,closedByPullRequestsReferences";
+
+/// The `gh issue list` command line for `filters`: open issues only, the
+/// filter arguments last. Split out of `fetch_issues` so a test can read it
+/// without running `gh`.
+#[allow(dead_code)]
+fn issue_list_args(filters: &IssueFilters) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        ISSUE_LIMIT,
+        "--json",
+        ISSUE_JSON_FIELDS,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.extend(filters.to_gh_args());
+    args
+}
+
+/// Runs `gh issue list` (with the filters) in `repo_dir` and parses the JSON.
+/// A repo with issues disabled makes `gh` fail: the caller counts it as a
+/// failed repo, the others still show.
+#[allow(dead_code)]
+pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue>> {
+    let output = Command::new("gh")
+        .args(issue_list_args(filters))
+        .current_dir(repo_dir)
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh issue list` failed: {}", stderr.trim());
+    }
+
+    serde_json::from_slice(&output.stdout).context("parsing the JSON returned by `gh issue list`")
 }
 
 /// The login of the authenticated user, shown in the header. Asked of `gh`
@@ -296,6 +349,7 @@ fn last_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::issues::{AssigneeFilter, IssueFilters};
 
     /// The fetch window and the displayed slice are two different numbers, and
     /// the gap between them is the whole point: `App::visible_runs` drops the
@@ -383,5 +437,35 @@ mod tests {
         };
         assert_eq!(env("SSH_ASKPASS_REQUIRE").as_deref(), Some("force"));
         assert_eq!(env("SSH_ASKPASS").as_deref(), Some("/usr/bin/false"));
+    }
+
+    #[test]
+    fn issue_list_asks_for_open_issues_then_the_filters() {
+        let f = IssueFilters {
+            assignee: AssigneeFilter::Me,
+            ..Default::default()
+        };
+        assert_eq!(
+            issue_list_args(&f),
+            [
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "50",
+                "--json",
+                "number,title,author,assignees,labels,createdAt,updatedAt,url,closedByPullRequestsReferences",
+                "--assignee",
+                "@me",
+            ]
+        );
+    }
+
+    /// `comments` would bring every comment's body: 177 KB and 2.2 s instead
+    /// of 4.6 KB and 0.6 s for 50 issues, only to print a count.
+    #[test]
+    fn issue_list_never_asks_for_the_comments() {
+        assert!(!ISSUE_JSON_FIELDS.split(',').any(|f| f == "comments"));
     }
 }

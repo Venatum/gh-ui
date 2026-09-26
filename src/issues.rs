@@ -3,6 +3,8 @@
 //! `fetch.rs` carries the result, this module decides what it means — so
 //! every rule here is unit-tested without running `gh`.
 
+#![allow(dead_code)]
+
 use crate::config;
 use crate::filters::{self, AuthorFilter, ME, Since};
 use crate::model::{Author, Label};
