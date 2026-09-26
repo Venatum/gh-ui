@@ -315,7 +315,7 @@ const HINTS: [(&str, &str); 10] = [
     // the one key on this row that is not reachable from a panel.
     ("/", "search"),
     ("enter", "open"),
-    ("tab/1/2/3", "tab"),
+    ("tab/1-4", "tab"),
     ("f", "filters"),
     ("m", "mine"),
     ("c", "columns"),
@@ -663,8 +663,8 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("r / q", "reload now / quit"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
-        help_row("tab/1/2/3", "switch tab (PRs / Actions / Repos)"),
-        help_row("m", "my PRs / their runs (f: status/event/workflow)"),
+        help_row("tab/1-4", "switch tab (PRs / Actions / Issues / Repos)"),
+        help_row("m", "mine: PRs / their runs / issues assigned to me"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
         help_row("↑/↓", "choose a filter"),
@@ -862,17 +862,16 @@ mod tests {
         );
     }
 
-    /// The `m` row names both of its meanings (my PRs on the PRs tab, their
-    /// runs on Actions) and the three Actions filters that only live in the
-    /// panel: nothing else in the UI tells you `status`, `event` and
-    /// `workflow` are behind `f`. Rendered for real, since `Paragraph` would clip the tail —
-    /// the part that carries the information — without a word.
+    /// The `m` row names all three of its meanings (my PRs on the PRs tab,
+    /// their runs on Actions, the issues assigned to me on Issues). Rendered
+    /// for real, since `Paragraph` would clip the tail — the part that
+    /// carries the information — without a word.
     #[test]
-    fn the_m_help_row_names_both_tabs_and_the_panel_filters() {
+    fn the_m_help_row_names_all_three_tabs() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
 
         assert!(
-            text.contains("my PRs / their runs (f: status/event/workflow)"),
+            text.contains("mine: PRs / their runs / issues assigned to me"),
             "the `m` help row must fit HELP_WIDTH without being cut"
         );
     }
@@ -1099,9 +1098,9 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_help_row_names_the_three_tabs() {
+    fn the_tab_help_row_names_the_four_tabs() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
-        assert!(text.contains("switch tab (PRs / Actions / Repos)"));
+        assert!(text.contains("switch tab (PRs / Actions / Issues / Repos)"));
     }
 
     #[test]

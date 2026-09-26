@@ -1452,7 +1452,8 @@ impl App {
     /// The `m` shortcut, "mine" on either tab, which is why it lives here as
     /// well as in the panel. On Actions: the runs of my PRs' branches (no
     /// re-fetch, local filtering). On PRs: the `me` mode, which does go
-    /// through `gh` again, exactly like changing it from the panel.
+    /// through `gh` again, exactly like changing it from the panel. On
+    /// Issues: the issues assigned to me.
     pub fn toggle_mine(&mut self) {
         match self.active_tab {
             Tab::Runs => {
@@ -1466,8 +1467,11 @@ impl App {
             }
             // Nothing is "mine" in a list of repos to clone.
             Tab::Repos => {}
-            // Task 6 wires the Issues tab's own "mine".
-            Tab::Issues => {}
+            // My issues: `assignee:@me`, through `gh` again like the panel.
+            Tab::Issues => {
+                self.issue_tab.filters.toggle_mine();
+                self.apply_issue_filter_change();
+            }
         }
     }
 }
@@ -1621,6 +1625,18 @@ mod tests {
 
         assert_eq!(app.run_filters.only_pr_runs, !before);
         assert_eq!(app.filters, prs_filters, "the PR filters must not move");
+    }
+
+    #[test]
+    fn m_on_the_issues_tab_toggles_my_issues_and_reloads_them() {
+        let mut app = issues_app();
+        app.toggle_mine();
+        assert_eq!(app.issue_tab.filters.assignee, AssigneeFilter::Me);
+        assert!(app.issue_tab.pending);
+        assert_eq!(app.filters.author, AuthorFilter::Any, "the PR filters stay");
+
+        app.toggle_mine();
+        assert_eq!(app.issue_tab.filters.assignee, AssigneeFilter::Any);
     }
 
     #[test]

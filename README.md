@@ -85,6 +85,18 @@ Actions tabs. Quitting while a batch runs asks first. Archived repos and forks
 are hidden unless their box is ticked; `hide cloned` keeps only what is left to
 clone. Started in a folder that holds no git repo, gh-ui opens on this tab.
 
+The **Issues** tab lists the open issues of every repo in the folder, newest
+update first. It has its own filters, saved apart from the PR ones (in
+`~/.config/gh-ui/issuefilters.json`): `repo`, `author`, `assignee` (`any`,
+`@me`, or `nobody` for the unassigned ones), `since` and `label(s)`. `m` shows
+the issues assigned to you, and pressing it again shows everyone's. The `PRs`
+column shows the pull requests linked to the issue (GitHub's "Development"
+section, or a `closes #N` in the PR): `#12` in the same repo,
+`owner/name#12` elsewhere, `3 PRs` when there are several. There is no
+comments column on purpose: `gh` only gives the comments with their full
+text, which would make every load several times slower. `Created` is there
+but hidden; show it from the columns panel (`c`).
+
 ## Shortcuts
 
 ### List
@@ -96,10 +108,10 @@ clone. Started in a folder that holds no git repo, gh-ui opens on this tab.
 | `Home/End`   | jump to the first / last row                 |
 | `enter`      | open the selected PR, run or repo in the browser (Repos: on the clone button, clone the ticked repos) |
 | `space`      | Repos tab: tick / untick the repo                                 |
-| `tab`, `1/2/3` | switch tab (PRs / Actions / Repos)                              |
+| `tab`, `1-4` | switch tab (PRs / Actions / Issues / Repos)                     |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
-| `m`          | my PRs on/off (Actions tab: their runs)      |
+| `m`          | my PRs on/off (Actions tab: their runs · Issues tab: assigned to me) |
 | `r`          | reload now                                    |
 | `a`          | cycle auto-refresh (off, 1mn … 1h)           |
 | `A`          | turn auto-refresh off                        |
@@ -128,6 +140,9 @@ On the **Actions** tab: `repo` (the one filter shared by both tabs), plus
 
 On the **Repos** tab: `owner` (cycles through your account and your orgs),
 `archived`, `forks` and `hide cloned`.
+
+On the **Issues** tab: `repo`, `author`, `assignee`, `since` and `label(s)` —
+the issue filters, independent of the PR ones.
 
 Auto-refresh cycles through `off → 1mn → 5mn → 10mn → 30mn → 1h → off`. It
 starts **off** the first time, and the pace you leave it on is remembered
@@ -209,6 +224,7 @@ cargo build --release
 | `app.rs`       | application state and its logic                             |
 | `model.rs`     | data structures (`Pr`, deserialization of `gh` JSON)        |
 | `filters.rs`   | filter state, `gh` args, persistence                        |
+| `issues.rs`    | the Issues tab: issue model, filters, linked PRs            |
 | `search.rs`    | the `/` search: what a row matches on                       |
 | `columns.rs`   | table columns: registry, order/visibility, persistence      |
 | `gh.rs`        | repo discovery + launching `gh pr list`                     |
