@@ -2,6 +2,7 @@
 //! narrows what is on screen, it never re-runs `gh`.
 
 use crate::model::{Pr, Run};
+use crate::repos::Repo;
 
 /// Does `haystack` contain `query`, ignoring case? A blank query matches
 /// everything: emptying the prompt must show the whole list again, not none
@@ -54,6 +55,24 @@ pub fn run_haystack(run: &Run) -> String {
 pub fn keep_runs<'a>(runs: Vec<&'a Run>, query: &str) -> Vec<&'a Run> {
     runs.into_iter()
         .filter(|run| matches(query, &run_haystack(run)))
+        .collect()
+}
+
+/// The text a repo is searched on: `owner/name` and the description.
+pub fn repo_haystack(repo: &Repo) -> String {
+    format!(
+        "{} {}",
+        repo.name_with_owner,
+        repo.description.as_deref().unwrap_or("")
+    )
+}
+
+/// The repos matching `query`. Takes the list the Repos tab has already
+/// built (its `hide cloned` box runs first), like `keep_runs`.
+pub fn keep_repos<'a>(repos: Vec<&'a Repo>, query: &str) -> Vec<&'a Repo> {
+    repos
+        .into_iter()
+        .filter(|repo| matches(query, &repo_haystack(repo)))
         .collect()
 }
 
@@ -191,5 +210,18 @@ mod tests {
         assert_eq!(keep_runs(view.clone(), "release").len(), 1);
         assert_eq!(keep_runs(view.clone(), "").len(), 2);
         assert!(keep_runs(view, "zzz").is_empty());
+    }
+
+    #[test]
+    fn a_repo_is_found_by_owner_name_or_description() {
+        let mut api = crate::repos::sample_repo("acme/api");
+        api.description = Some("The billing backend".to_string());
+        let web = crate::repos::sample_repo("corp/web");
+        let all = vec![&api, &web];
+
+        assert_eq!(keep_repos(all.clone(), "acme").len(), 1);
+        assert_eq!(keep_repos(all.clone(), "BILLING").len(), 1);
+        assert_eq!(keep_repos(all.clone(), "corp/web").len(), 1);
+        assert_eq!(keep_repos(all, "").len(), 2);
     }
 }
