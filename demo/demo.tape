@@ -17,7 +17,7 @@ Type `export PATH="$DEMO_PATH" HOME="$DEMO_HOME" PS1="$ " && cd "$DEMO_WORKSPACE
 Enter
 Show
 
-Type "gh-ui"
+Type "gh ui"
 Sleep 400ms
 Enter
 Sleep 2.5s

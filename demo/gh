@@ -11,6 +11,12 @@ me="Venatum"
 # `@me` is gh's word for the logged-in user.
 who() { [[ "$1" == "@me" ]] && echo "$me" || echo "$1"; }
 
+# `gh ui`: what the real gh does for an installed extension, run `gh-ui`.
+if [[ "${1:-}" == "ui" ]]; then
+  shift
+  exec gh-ui "$@"
+fi
+
 case "${1:-} ${2:-}" in
   "auth status") echo "$me"; exit 0 ;;
   "org list") echo "acme"; exit 0 ;;
