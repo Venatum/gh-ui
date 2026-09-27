@@ -376,7 +376,12 @@ impl App {
     pub fn refresh(&mut self) {
         match self.active_tab {
             Tab::Repos => self.refresh_repos(),
-            Tab::Issues => self.refresh_issues(),
+            // The auto-refresh reloads the issues too, so this reload counts
+            // as a tick: the countdown restarts, as `refresh_job` does it.
+            Tab::Issues => {
+                self.last_refresh = Instant::now();
+                self.refresh_issues();
+            }
             _ => self.refresh_job(self.active_job()),
         }
     }
@@ -1710,6 +1715,22 @@ mod tests {
             left > Duration::from_secs(59) && left <= Duration::from_secs(60),
             "expected about a minute left, got {left:?}"
         );
+    }
+
+    /// The auto-refresh reloads the issues too: `r` there is a reload, so
+    /// the next one is a full interval away, as after `r` on the PRs.
+    #[test]
+    fn r_on_the_issues_tab_restarts_the_countdown() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Issues;
+        app.issue_tab.loading = true; // queue the reload instead of running `gh`
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now() - Duration::from_secs(50);
+
+        app.refresh();
+
+        assert!(app.issue_tab.pending);
+        assert!(app.time_to_refresh().unwrap() > Duration::from_secs(59));
     }
 
     /// A reload held back (input mode) or still in flight leaves the interval
