@@ -30,12 +30,14 @@ pub struct Repo {
     pub url: String,
 }
 
-/// A git repo found in the scanned folder: its folder name, and the
-/// `owner/name` its `origin` remote points to (`None`: no origin, or not a
-/// GitHub URL).
+/// An entry of the scanned folder: its name, whether it is a git repo, and
+/// the `owner/name` its `origin` remote points to (`None`: not a repo, no
+/// origin, or not a GitHub URL). Plain folders count: a clone cannot land
+/// on them either.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalRepo {
     pub folder: String,
+    pub is_git: bool,
     pub origin: Option<String>,
 }
 
@@ -51,6 +53,9 @@ pub enum RepoState {
     /// `None` when it has none. Not clonable — `gh repo clone` would refuse
     /// an existing destination.
     NameTaken(Option<String>),
+    /// Something of that name that is not a git repo (a plain folder, a
+    /// file): not clonable either.
+    FolderTaken,
     Queued,
     Cloning,
     /// The clone failed; carries `gh`'s message.
@@ -90,6 +95,7 @@ pub fn parse_origin(url: &str) -> Option<String> {
 pub fn local_state(repo: &Repo, locals: &[LocalRepo]) -> RepoState {
     match locals.iter().find(|local| local.folder == repo.name) {
         None => RepoState::Clonable,
+        Some(local) if !local.is_git => RepoState::FolderTaken,
         Some(local) => match &local.origin {
             Some(origin) if origin.eq_ignore_ascii_case(&repo.name_with_owner) => RepoState::Cloned,
             other => RepoState::NameTaken(other.clone()),
@@ -326,7 +332,9 @@ impl ReposTab {
                 Ok(())
             }
             RepoState::Cloned => Err(format!("{name_with_owner} is already cloned")),
-            RepoState::NameTaken(_) => Err(format!("folder {folder}/ is taken")),
+            RepoState::NameTaken(_) | RepoState::FolderTaken => {
+                Err(format!("folder {folder}/ is taken"))
+            }
             RepoState::Queued | RepoState::Cloning => {
                 Err(format!("{name_with_owner} is being cloned"))
             }
@@ -455,7 +463,17 @@ mod tests {
     fn local(folder: &str, origin: Option<&str>) -> LocalRepo {
         LocalRepo {
             folder: folder.to_string(),
+            is_git: true,
             origin: origin.map(str::to_string),
+        }
+    }
+
+    /// A folder (or file) of the scanned folder that is not a git repo.
+    fn plain(folder: &str) -> LocalRepo {
+        LocalRepo {
+            folder: folder.to_string(),
+            is_git: false,
+            origin: None,
         }
     }
 
@@ -535,6 +553,20 @@ mod tests {
         assert_eq!(
             local_state(&repo, &[local("api", None)]),
             RepoState::NameTaken(None)
+        );
+    }
+
+    /// `gh repo clone` refuses to write into it: not clonable, and not a
+    /// repo either, so no origin to name.
+    #[test]
+    fn a_plain_folder_of_that_name_is_taken() {
+        let mut tab = ReposTab::default();
+        tab.apply_load(vec![sample_repo("acme/api")], vec![plain("api")]);
+
+        assert_eq!(tab.state_of(&tab.repos[0]), RepoState::FolderTaken);
+        assert_eq!(
+            tab.toggle_tick("acme/api"),
+            Err("folder api/ is taken".to_string())
         );
     }
 

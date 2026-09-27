@@ -342,6 +342,10 @@ fn repo_state_look(state: &RepoState) -> (String, Style) {
             format!("name taken → {}", origin.as_deref().unwrap_or("?")),
             Style::new().fg(Color::Yellow),
         ),
+        RepoState::FolderTaken => (
+            "folder taken (not a repo)".to_string(),
+            Style::new().fg(Color::Yellow),
+        ),
         RepoState::Queued => ("queued".to_string(), Style::new().fg(Color::Gray)),
         RepoState::Cloning => ("cloning…".to_string(), Style::new().fg(Color::Yellow)),
         RepoState::Failed(_) => ("✗ failed".to_string(), Style::new().fg(Color::Red)),
@@ -1160,6 +1164,10 @@ mod tests {
         assert_eq!(
             repo_state_look(&RepoState::NameTaken(None)).0,
             "name taken → ?"
+        );
+        assert_eq!(
+            repo_state_look(&RepoState::FolderTaken).0,
+            "folder taken (not a repo)"
         );
         assert_eq!(repo_state_look(&RepoState::Queued).0, "queued");
         assert_eq!(repo_state_look(&RepoState::Cloning).0, "cloning…");

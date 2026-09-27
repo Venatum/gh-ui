@@ -2083,6 +2083,7 @@ mod tests {
             vec![sample_repo("acme/api"), sample_repo("acme/web")],
             vec![LocalRepo {
                 folder: "web".to_string(),
+                is_git: true,
                 origin: Some("acme/web".to_string()),
             }],
         );
@@ -2302,6 +2303,7 @@ mod tests {
             repos: Ok(repos.iter().map(|r| sample_repo(r)).collect()),
             locals: vec![LocalRepo {
                 folder: "api".to_string(),
+                is_git: true,
                 origin: Some("acme/api".to_string()),
             }],
         })

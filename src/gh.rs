@@ -281,12 +281,27 @@ fn parse_org_list(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// The scanned folder's repos with the `owner/name` of their `origin`
-/// remote, asked of `git` itself: local, instant, no network. A folder
-/// whose origin is missing or not on GitHub gets `None`.
+/// Every entry of the scanned folder, with the `owner/name` of the
+/// `origin` remote of the git repos, asked of `git` itself: local, instant,
+/// no network. A repo whose origin is missing or not on GitHub gets `None`,
+/// and so does anything that is not a repo — it still blocks a clone.
 pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
-    discover_repos(root)
-        .unwrap_or_default()
+    let repos = discover_repos(root).unwrap_or_default();
+    // Two `flatten`s: the folder may be unreadable (a `Result`), then each
+    // entry may be (another `Result`); either way it is simply skipped.
+    let others: Vec<LocalRepo> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| !repos.contains(name))
+        .map(|folder| LocalRepo {
+            folder,
+            is_git: false,
+            origin: None,
+        })
+        .collect();
+    repos
         .into_iter()
         .map(|folder| {
             let origin = Command::new("git")
@@ -297,8 +312,13 @@ pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
                 .ok()
                 .filter(|output| output.status.success())
                 .and_then(|output| parse_origin(&String::from_utf8_lossy(&output.stdout)));
-            LocalRepo { folder, origin }
+            LocalRepo {
+                folder,
+                is_git: true,
+                origin,
+            }
         })
+        .chain(others)
         .collect()
 }
 
@@ -346,6 +366,24 @@ fn last_line(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::issues::{AssigneeFilter, IssueFilters};
+
+    #[test]
+    fn the_local_entries_include_what_is_not_a_repo() {
+        let root = std::env::temp_dir().join(format!("gh-ui-locals-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+
+        let mut locals = local_origins(&root);
+        locals.sort_by(|a, b| a.folder.cmp(&b.folder));
+        std::fs::remove_dir_all(&root).ok();
+
+        let seen: Vec<(&str, bool)> = locals
+            .iter()
+            .map(|l| (l.folder.as_str(), l.is_git))
+            .collect();
+        assert_eq!(seen, [("api", false), ("web", true)]);
+    }
 
     /// The fetch window and the displayed slice are two different numbers, and
     /// the gap between them is the whole point: `App::visible_runs` drops the
