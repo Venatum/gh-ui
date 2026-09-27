@@ -130,6 +130,7 @@ mod tests {
             deletions: 0,
             labels: vec![Label {
                 name: "bug".to_string(),
+                color: String::new(),
             }],
             head_ref_name: branch.to_string(),
             repo: repo.to_string(),
@@ -265,6 +266,7 @@ mod tests {
         }];
         issue.labels = vec![Label {
             name: "bug".to_string(),
+            color: String::new(),
         }];
         let issues = [issue, sample_issue("web", 8, "2026-09-19T00:00:00Z")];
 

@@ -14,6 +14,10 @@ pub struct Author {
 #[derive(Debug, Deserialize)]
 pub struct Label {
     pub name: String,
+    /// Hex without the `#`, e.g. "d73a4a". Defaulted so a label written
+    /// without one (in the tests) still parses.
+    #[serde(default)]
+    pub color: String,
 }
 
 // The `gh` JSON uses camelCase (reviewDecision, isDraft...).

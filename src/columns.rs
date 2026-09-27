@@ -113,15 +113,46 @@ fn review_look(decision: &str) -> (&'static str, Style) {
     }
 }
 
-/// Labels as `#bug #api`, grayed and truncated to the column width: the PRs
-/// and issues tables show them alike.
+/// `"d73a4a"` → `(0xd7, 0x3a, 0x4a)`; `None` for anything else. `get`
+/// rather than `[..]`: slicing a non-ASCII string mid-character panics.
+fn hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    if hex.len() != 6 {
+        return None;
+    }
+    let byte = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// A label chip as github.com draws it: its color as the background, black
+/// or white text by luminance so it reads on a light or a dark terminal.
+fn label_style(hex: &str) -> Style {
+    let Some((r, g, b)) = hex_rgb(hex) else {
+        return Style::new().fg(Color::DarkGray);
+    };
+    // Perceived brightness (ITU-R 601 weights), out of 255.
+    let luma = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
+    let text = if luma > 150.0 {
+        Color::Black
+    } else {
+        Color::White
+    };
+    Style::new().fg(text).bg(Color::Rgb(r, g, b))
+}
+
+/// Labels as colored chips, one space apart and truncated to the column
+/// width: the PRs and issues tables show them alike.
 fn labels_cell(labels: &[Label]) -> Cell<'static> {
-    let text = labels
-        .iter()
-        .map(|l| format!("#{}", l.name))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Cell::from(Span::styled(text, Style::new().fg(Color::DarkGray)))
+    let mut spans = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled(
+            format!(" {} ", label.name),
+            label_style(&label.color),
+        ));
+    }
+    Cell::from(Line::from(spans))
 }
 
 impl PrColumn {
@@ -655,6 +686,58 @@ mod tests {
         assert_eq!(
             cell,
             Cell::from("[D] fixes a bug".to_string()).style(Style::new().fg(Color::DarkGray))
+        );
+    }
+
+    fn label(name: &str, color: &str) -> Label {
+        Label {
+            name: name.to_string(),
+            color: color.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_light_label_color_gets_dark_text() {
+        assert_eq!(
+            label_style("fbca04"),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Rgb(0xfb, 0xca, 0x04))
+        );
+    }
+
+    #[test]
+    fn a_dark_label_color_gets_light_text() {
+        assert_eq!(
+            label_style("d73a4a"),
+            Style::new()
+                .fg(Color::White)
+                .bg(Color::Rgb(0xd7, 0x3a, 0x4a))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_label_color_falls_back_to_gray() {
+        for color in ["", "zzzzzz", "fff", "é1b2c3"] {
+            assert_eq!(
+                label_style(color),
+                Style::new().fg(Color::DarkGray),
+                "{color:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn labels_render_as_chips_one_space_apart() {
+        let labels = [label("bug", "d73a4a"), label("api", "fbca04")];
+
+        assert_eq!(
+            labels_cell(&labels),
+            Cell::from(Line::from(vec![
+                Span::styled(" bug ", label_style("d73a4a")),
+                Span::raw(" "),
+                Span::styled(" api ", label_style("fbca04")),
+            ]))
         );
     }
 
