@@ -1386,10 +1386,11 @@ impl App {
             let leaving = std::mem::take(&mut self.status);
             *self.lines.slot(self.active_tab) = leaving;
             self.status = std::mem::take(self.lines.slot(tab));
+            // Another tab, another panel: the row the cursor was on means
+            // nothing there (and may not exist), so it starts at the top.
+            self.filter_cursor = 0;
         }
         self.active_tab = tab;
-        // The panels differ in length: keep the cursor inside the new slice.
-        self.filter_cursor = self.filter_cursor.min(fields_for(tab).len() - 1);
         // The tabs hold different column counts: back to the top.
         self.column_cursor = 0;
         // A stale grab from the previous tab would move the new tab's
@@ -1597,15 +1598,20 @@ mod tests {
         assert_eq!(section_of(Tab::Runs, FilterField::RunWorkflow), "Actions");
     }
 
+    /// The panels hold different rows: the one the cursor was on means
+    /// nothing on another tab, so it starts over at the top. That also keeps
+    /// it inside the new panel, which may be shorter.
     #[test]
-    fn switching_tab_clamps_the_filter_cursor() {
+    fn switching_tab_puts_the_filter_cursor_on_the_first_row() {
         let mut app = App::new(PathBuf::from("."));
-        // Last row of the PRs panel (7 fields) …
+        app.prs_loaded = true;
         app.filter_cursor = fields_for(Tab::Prs).len() - 1;
-        // … then switch to Actions, which only has 2. Without clamping the next
-        // indexing of the fields array would panic.
+
+        app.set_tab(Tab::Prs); // `1` on the PRs tab: no switch
+        assert_eq!(app.filter_cursor, fields_for(Tab::Prs).len() - 1);
+
         app.set_tab(Tab::Runs);
-        assert!(app.filter_cursor < fields_for(Tab::Runs).len());
+        assert_eq!(app.filter_cursor, 0);
     }
 
     #[test]

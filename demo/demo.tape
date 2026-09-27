@@ -58,10 +58,7 @@ Sleep 2s
 Type "4"
 Sleep 2.5s
 Type "f"
-Sleep 400ms
-# The panel keeps its row across tabs: back up to `owner` first.
-Up 3
-Sleep 600ms
+Sleep 800ms
 Right
 Sleep 1.2s
 Down
