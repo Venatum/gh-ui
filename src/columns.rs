@@ -326,6 +326,28 @@ fn repo_state_look(state: &RepoState) -> (String, Style) {
     }
 }
 
+/// An archived or forked repo is rarely the one wanted: its whole row fades.
+/// `dim` rather than a gray: the cells keep their own colors, only softer.
+pub fn repo_row_style(repo: &Repo) -> Style {
+    if repo.is_archived || repo.is_fork {
+        Style::new().dim()
+    } else {
+        Style::new()
+    }
+}
+
+/// `public` green, `private` yellow, `internal` cyan (not blue: the ANSI
+/// blue barely reads on a black background).
+fn visibility_look(visibility: &str) -> (String, Style) {
+    let color = match visibility {
+        "PUBLIC" => Color::Green,
+        "PRIVATE" => Color::Yellow,
+        "INTERNAL" => Color::Cyan,
+        _ => Color::Reset,
+    };
+    (visibility.to_lowercase(), Style::new().fg(color))
+}
+
 impl RepoColumn {
     /// `state` and `ticked` come from the tab, not from the repo: the same
     /// repo reads differently depending on the folder and the batch.
@@ -337,12 +359,21 @@ impl RepoColumn {
                 }
                 _ => Cell::from(""),
             },
-            RepoColumn::Repo => Cell::from(repo.name_with_owner.clone()),
+            // Marked like a draft PR's `[D]`: the dimmed row says "less
+            // relevant", the suffix says why.
+            RepoColumn::Repo => Cell::from(match (repo.is_archived, repo.is_fork) {
+                (true, _) => format!("{} [A]", repo.name_with_owner),
+                (_, true) => format!("{} [F]", repo.name_with_owner),
+                _ => repo.name_with_owner.clone(),
+            }),
             RepoColumn::State => {
                 let (label, style) = repo_state_look(state);
                 Cell::from(Span::styled(label, style))
             }
-            RepoColumn::Visibility => Cell::from(repo.visibility.to_lowercase()),
+            RepoColumn::Visibility => {
+                let (label, style) = visibility_look(&repo.visibility);
+                Cell::from(Span::styled(label, style))
+            }
             RepoColumn::Pushed => Cell::from(
                 repo.pushed_at
                     .as_deref()
@@ -987,12 +1018,47 @@ mod tests {
         );
         assert_eq!(
             RepoColumn::Visibility.cell(&repo, &state, false),
-            Cell::from("private".to_string())
+            Cell::from(Span::styled("private", Style::new().fg(Color::Yellow)))
         );
         assert_eq!(
             RepoColumn::Pushed.cell(&repo, &state, false),
             Cell::from("2026-09-20".to_string())
         );
+    }
+
+    #[test]
+    fn each_visibility_has_its_color() {
+        let mut repo = crate::repos::sample_repo("acme/api");
+        for (visibility, color) in [
+            ("PUBLIC", Color::Green),
+            ("PRIVATE", Color::Yellow),
+            ("INTERNAL", Color::Cyan),
+        ] {
+            repo.visibility = visibility.to_string();
+            assert_eq!(
+                RepoColumn::Visibility.cell(&repo, &RepoState::Clonable, false),
+                Cell::from(Span::styled(
+                    visibility.to_lowercase(),
+                    Style::new().fg(color)
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn an_archived_or_forked_repo_is_marked_and_dimmed() {
+        let plain = crate::repos::sample_repo("acme/api");
+        let mut archived = crate::repos::sample_repo("acme/old");
+        archived.is_archived = true;
+        let mut fork = crate::repos::sample_repo("acme/copy");
+        fork.is_fork = true;
+        let name = |repo: &Repo| RepoColumn::Repo.cell(repo, &RepoState::Clonable, false);
+
+        assert_eq!(name(&archived), Cell::from("acme/old [A]".to_string()));
+        assert_eq!(name(&fork), Cell::from("acme/copy [F]".to_string()));
+        assert_eq!(repo_row_style(&plain), Style::new());
+        assert_eq!(repo_row_style(&archived), Style::new().dim());
+        assert_eq!(repo_row_style(&fork), Style::new().dim());
     }
 
     #[test]

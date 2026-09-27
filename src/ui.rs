@@ -2,7 +2,9 @@
 //! decides nothing, it only draws what `App` holds.
 
 use crate::app::{App, Confirm, FilterField, InputKind, Tab, section_of};
-use crate::columns::{Column, ColumnLayout, IssueColumn, PrColumn, RepoColumn, RunColumn};
+use crate::columns::{
+    Column, ColumnLayout, IssueColumn, PrColumn, RepoColumn, RunColumn, repo_row_style,
+};
 use crate::filters::{AuthorFilter, Filters};
 use crate::issues::IssueFilters;
 use crate::refresh::{self, AutoRefresh};
@@ -273,6 +275,7 @@ fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
                     .map(|c| c.cell(repo, &state, ticked))
                     .collect::<Vec<_>>(),
             )
+            .style(repo_row_style(repo))
         })
         .collect();
 
