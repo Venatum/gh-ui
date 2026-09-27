@@ -479,6 +479,8 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         let marker = if focused { "▸ " } else { "  " };
         let value = if app.active_tab == Tab::Issues {
             issue_field_value(field, &app.issue_tab.filters)
+        } else if field == FilterField::Owner && app.repo_tab.cloning {
+            locked_owner_value(app.repo_tab.filters.owner.as_deref())
         } else {
             field_value(field, f, &app.run_filters, &app.repo_tab.filters)
         };
@@ -607,6 +609,12 @@ fn field_name(field: FilterField) -> &'static str {
 }
 
 /// The displayed value of a field: cycle "◂ x ▸", box "[x]", or text.
+/// The Owner row while a clone batch runs: the owner cannot change until
+/// it ends (see `App::filter_change`), so no arrows, and the reason.
+fn locked_owner_value(owner: Option<&str>) -> String {
+    format!("{}  (locked while cloning)", owner.unwrap_or("…"))
+}
+
 fn field_value(field: FilterField, f: &Filters, rf: &RunFilters, rpf: &RepoFilters) -> String {
     match field {
         FilterField::OnlyPrRuns => toggle_box(rf.only_pr_runs),
@@ -1115,6 +1123,16 @@ mod tests {
         assert_eq!(
             field_value(FilterField::Owner, &f, &rf, &RepoFilters::default()),
             "◂ … ▸"
+        );
+    }
+
+    /// No arrows while a batch runs: `←/→` would not switch it, and the
+    /// status line saying so is overwritten by the batch's next step.
+    #[test]
+    fn the_owner_reads_locked_during_a_clone_batch() {
+        assert_eq!(
+            locked_owner_value(Some("acme")),
+            "acme  (locked while cloning)"
         );
     }
 
