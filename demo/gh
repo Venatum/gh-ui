@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# A stand-in for `gh`, for the README recording only (see record.sh): canned
+# data from fixtures/, no network, no real account. It answers the handful of
+# commands gh-ui runs and honors the filters that change what shows on
+# screen; the others are ignored.
+set -euo pipefail
+
+fixtures="$(cd "$(dirname "$0")" && pwd)/fixtures"
+me="Venatum"
+
+# `@me` is gh's word for the logged-in user.
+who() { [[ "$1" == "@me" ]] && echo "$me" || echo "$1"; }
+
+case "${1:-} ${2:-}" in
+  "auth status") echo "$me"; exit 0 ;;
+  "org list") echo "acme"; exit 0 ;;
+  "pr list") file="$fixtures/prs/$(basename "$PWD").json" ;;
+  "run list") file="$fixtures/runs/$(basename "$PWD").json" ;;
+  "issue list") file="$fixtures/issues/$(basename "$PWD").json" ;;
+  "repo list") file="$fixtures/repos/$3.json"; shift ;;
+  *) echo "demo gh: \`$*\` is not part of the demo" >&2; exit 1 ;;
+esac
+shift 2
+
+# Relative dates first: "@ago:2" is two days ago, so today stays today
+# whenever the GIF is recorded.
+jq_filter='walk(if type == "string" and startswith("@ago:")
+  then (now - (.[5:] | tonumber) * 86400 | floor | todate) else . end) | .[]'
+while (($#)); do
+  case "$1" in
+    --author) jq_filter+=" | select(.author.login == \"$(who "$2")\")"; shift ;;
+    --assignee) jq_filter+=" | select(any(.assignees[]; .login == \"$(who "$2")\"))"; shift ;;
+    --label) jq_filter+=" | select(any(.labels[]; .name == \"$2\"))"; shift ;;
+    --no-archived) jq_filter+=" | select(.isArchived | not)" ;;
+    --source) jq_filter+=" | select(.isFork | not)" ;;
+    --search)
+      for term in $2; do
+        case "$term" in
+          draft:false) jq_filter+=" | select(.isDraft | not)" ;;
+          no:assignee) jq_filter+=" | select(.assignees == [])" ;;
+          updated:\>=*) jq_filter+=" | select(.updatedAt >= \"${term#updated:>=}\")" ;;
+          -author:*) jq_filter+=" | select(.author.login != \"$(who "${term#-author:}")\")" ;;
+        esac
+      done
+      shift ;;
+    --state | --limit | --json) shift ;; # the fixtures are already that
+  esac
+  shift
+done
+
+[[ -f "$file" ]] || { echo "[]"; exit 0; }
+jq "[$jq_filter]" "$file"

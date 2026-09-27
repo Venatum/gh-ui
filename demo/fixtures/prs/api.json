@@ -1,0 +1,101 @@
+[
+  {
+    "number": 412,
+    "title": "Add rate limiting to the public endpoints",
+    "author": {
+      "login": "alice"
+    },
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "url": "https://github.com/acme/api/pull/412",
+    "updatedAt": "@ago:0.1",
+    "additions": 248,
+    "deletions": 31,
+    "labels": [
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      }
+    ],
+    "headRefName": "feat/rate-limit"
+  },
+  {
+    "number": 409,
+    "title": "Fix the token refresh race on concurrent requests",
+    "author": {
+      "login": "Venatum"
+    },
+    "reviewDecision": "REVIEW_REQUIRED",
+    "isDraft": false,
+    "url": "https://github.com/acme/api/pull/409",
+    "updatedAt": "@ago:0.3",
+    "additions": 57,
+    "deletions": 12,
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "headRefName": "fix/token-refresh"
+  },
+  {
+    "number": 405,
+    "title": "Bump serde from 1.0.210 to 1.0.215",
+    "author": {
+      "login": "app/dependabot"
+    },
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "url": "https://github.com/acme/api/pull/405",
+    "updatedAt": "@ago:2",
+    "additions": 3,
+    "deletions": 3,
+    "labels": [
+      {
+        "name": "dependencies",
+        "color": "0366d6"
+      }
+    ],
+    "headRefName": "dependabot/cargo/serde-1.0.215"
+  },
+  {
+    "number": 398,
+    "title": "Paginate the audit log export",
+    "author": {
+      "login": "bob"
+    },
+    "reviewDecision": "CHANGES_REQUESTED",
+    "isDraft": false,
+    "url": "https://github.com/acme/api/pull/398",
+    "updatedAt": "@ago:4",
+    "additions": 190,
+    "deletions": 44,
+    "labels": [
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      },
+      {
+        "name": "performance",
+        "color": "fbca04"
+      }
+    ],
+    "headRefName": "feat/audit-pagination"
+  },
+  {
+    "number": 377,
+    "title": "GraphQL gateway",
+    "author": {
+      "login": "carol"
+    },
+    "reviewDecision": "",
+    "isDraft": true,
+    "url": "https://github.com/acme/api/pull/377",
+    "updatedAt": "@ago:12",
+    "additions": 1204,
+    "deletions": 87,
+    "labels": [],
+    "headRefName": "spike/graphql"
+  }
+]

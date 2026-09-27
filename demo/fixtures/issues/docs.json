@@ -1,0 +1,107 @@
+[
+  {
+    "number": 60,
+    "title": "Getting started skips the auth step",
+    "author": {
+      "login": "alice"
+    },
+    "assignees": [
+      {
+        "login": "dave"
+      }
+    ],
+    "labels": [
+      {
+        "name": "documentation",
+        "color": "0075ca"
+      }
+    ],
+    "createdAt": "@ago:6",
+    "updatedAt": "@ago:1",
+    "url": "https://github.com/acme/docs/issues/60",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 57,
+        "repository": {
+          "name": "docs",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 58,
+    "title": "Explain the webhook retry backoff",
+    "author": {
+      "login": "carol"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "documentation",
+        "color": "0075ca"
+      },
+      {
+        "name": "question",
+        "color": "d876e3"
+      }
+    ],
+    "createdAt": "@ago:12",
+    "updatedAt": "@ago:5",
+    "url": "https://github.com/acme/docs/issues/58",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 55,
+        "repository": {
+          "name": "docs",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      },
+      {
+        "number": 409,
+        "repository": {
+          "name": "api",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 49,
+    "title": "Broken links in the CLI reference",
+    "author": {
+      "login": "dave"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "documentation",
+        "color": "0075ca"
+      },
+      {
+        "name": "good first issue",
+        "color": "7057ff"
+      }
+    ],
+    "createdAt": "@ago:31",
+    "updatedAt": "@ago:31",
+    "url": "https://github.com/acme/docs/issues/49",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 88,
+        "repository": {
+          "name": "cli",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  }
+]

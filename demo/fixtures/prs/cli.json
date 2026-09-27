@@ -1,0 +1,57 @@
+[
+  {
+    "number": 88,
+    "title": "Shell completions for zsh and fish",
+    "author": {
+      "login": "Venatum"
+    },
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "url": "https://github.com/acme/cli/pull/88",
+    "updatedAt": "@ago:0.5",
+    "additions": 410,
+    "deletions": 2,
+    "labels": [
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      }
+    ],
+    "headRefName": "feat/completions"
+  },
+  {
+    "number": 86,
+    "title": "Respect NO_COLOR",
+    "author": {
+      "login": "alice"
+    },
+    "reviewDecision": "REVIEW_REQUIRED",
+    "isDraft": false,
+    "url": "https://github.com/acme/cli/pull/86",
+    "updatedAt": "@ago:2",
+    "additions": 18,
+    "deletions": 4,
+    "labels": [
+      {
+        "name": "good first issue",
+        "color": "7057ff"
+      }
+    ],
+    "headRefName": "fix/no-color"
+  },
+  {
+    "number": 81,
+    "title": "Config file migration to v2",
+    "author": {
+      "login": "bob"
+    },
+    "reviewDecision": "",
+    "isDraft": true,
+    "url": "https://github.com/acme/cli/pull/81",
+    "updatedAt": "@ago:20",
+    "additions": 530,
+    "deletions": 210,
+    "labels": [],
+    "headRefName": "feat/config-v2"
+  }
+]

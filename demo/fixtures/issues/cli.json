@@ -1,0 +1,88 @@
+[
+  {
+    "number": 91,
+    "title": "Completions for PowerShell",
+    "author": {
+      "login": "dave"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      },
+      {
+        "name": "good first issue",
+        "color": "7057ff"
+      }
+    ],
+    "createdAt": "@ago:2",
+    "updatedAt": "@ago:2",
+    "url": "https://github.com/acme/cli/issues/91",
+    "closedByPullRequestsReferences": []
+  },
+  {
+    "number": 84,
+    "title": "Colors leak into piped output",
+    "author": {
+      "login": "Venatum"
+    },
+    "assignees": [
+      {
+        "login": "alice"
+      }
+    ],
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "createdAt": "@ago:8",
+    "updatedAt": "@ago:2",
+    "url": "https://github.com/acme/cli/issues/84",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 86,
+        "repository": {
+          "name": "cli",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 70,
+    "title": "Config migration loses custom aliases",
+    "author": {
+      "login": "bob"
+    },
+    "assignees": [
+      {
+        "login": "Venatum"
+      }
+    ],
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "createdAt": "@ago:40",
+    "updatedAt": "@ago:20",
+    "url": "https://github.com/acme/cli/issues/70",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 81,
+        "repository": {
+          "name": "cli",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  }
+]

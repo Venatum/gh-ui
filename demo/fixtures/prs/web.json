@@ -1,0 +1,90 @@
+[
+  {
+    "number": 233,
+    "title": "Dark mode for the settings page",
+    "author": {
+      "login": "carol"
+    },
+    "reviewDecision": "APPROVED",
+    "isDraft": false,
+    "url": "https://github.com/acme/web/pull/233",
+    "updatedAt": "@ago:0.2",
+    "additions": 312,
+    "deletions": 120,
+    "labels": [
+      {
+        "name": "ui",
+        "color": "c5def5"
+      },
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      }
+    ],
+    "headRefName": "feat/dark-settings"
+  },
+  {
+    "number": 230,
+    "title": "Keyboard navigation in the data grid",
+    "author": {
+      "login": "Venatum"
+    },
+    "reviewDecision": "",
+    "isDraft": false,
+    "url": "https://github.com/acme/web/pull/230",
+    "updatedAt": "@ago:1",
+    "additions": 145,
+    "deletions": 9,
+    "labels": [
+      {
+        "name": "ui",
+        "color": "c5def5"
+      }
+    ],
+    "headRefName": "feat/grid-keys"
+  },
+  {
+    "number": 228,
+    "title": "Fix the date picker in Safari",
+    "author": {
+      "login": "dave"
+    },
+    "reviewDecision": "REVIEW_REQUIRED",
+    "isDraft": false,
+    "url": "https://github.com/acme/web/pull/228",
+    "updatedAt": "@ago:3",
+    "additions": 22,
+    "deletions": 8,
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "headRefName": "fix/safari-datepicker"
+  },
+  {
+    "number": 219,
+    "title": "Bump vite from 5.4.8 to 5.4.11",
+    "author": {
+      "login": "app/dependabot"
+    },
+    "reviewDecision": "",
+    "isDraft": false,
+    "url": "https://github.com/acme/web/pull/219",
+    "updatedAt": "@ago:6",
+    "additions": 12,
+    "deletions": 12,
+    "labels": [
+      {
+        "name": "dependencies",
+        "color": "0366d6"
+      },
+      {
+        "name": "security",
+        "color": "ee0701"
+      }
+    ],
+    "headRefName": "dependabot/npm/vite-5.4.11"
+  }
+]

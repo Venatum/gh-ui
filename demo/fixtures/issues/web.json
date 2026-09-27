@@ -1,0 +1,120 @@
+[
+  {
+    "number": 240,
+    "title": "Settings page ignores the system theme",
+    "author": {
+      "login": "Venatum"
+    },
+    "assignees": [
+      {
+        "login": "carol"
+      }
+    ],
+    "labels": [
+      {
+        "name": "ui",
+        "color": "c5def5"
+      }
+    ],
+    "createdAt": "@ago:5",
+    "updatedAt": "@ago:0.2",
+    "url": "https://github.com/acme/web/issues/240",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 233,
+        "repository": {
+          "name": "web",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 236,
+    "title": "The data grid cannot be used with a keyboard",
+    "author": {
+      "login": "alice"
+    },
+    "assignees": [
+      {
+        "login": "Venatum"
+      }
+    ],
+    "labels": [
+      {
+        "name": "ui",
+        "color": "c5def5"
+      },
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      }
+    ],
+    "createdAt": "@ago:9",
+    "updatedAt": "@ago:1",
+    "url": "https://github.com/acme/web/issues/236",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 230,
+        "repository": {
+          "name": "web",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 221,
+    "title": "Date picker opens off-screen in Safari",
+    "author": {
+      "login": "bob"
+    },
+    "assignees": [
+      {
+        "login": "dave"
+      }
+    ],
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "createdAt": "@ago:15",
+    "updatedAt": "@ago:3",
+    "url": "https://github.com/acme/web/issues/221",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 228,
+        "repository": {
+          "name": "web",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 199,
+    "title": "Upgrade to React 19",
+    "author": {
+      "login": "carol"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "dependencies",
+        "color": "0366d6"
+      }
+    ],
+    "createdAt": "@ago:70",
+    "updatedAt": "@ago:45",
+    "url": "https://github.com/acme/web/issues/199",
+    "closedByPullRequestsReferences": []
+  }
+]

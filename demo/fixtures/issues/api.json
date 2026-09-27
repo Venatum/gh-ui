@@ -1,0 +1,106 @@
+[
+  {
+    "number": 415,
+    "title": "Rate limit headers missing on 429 responses",
+    "author": {
+      "login": "bob"
+    },
+    "assignees": [
+      {
+        "login": "alice"
+      }
+    ],
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "createdAt": "@ago:3",
+    "updatedAt": "@ago:0.1",
+    "url": "https://github.com/acme/api/issues/415",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 412,
+        "repository": {
+          "name": "api",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 402,
+    "title": "Token refresh fails under load",
+    "author": {
+      "login": "carol"
+    },
+    "assignees": [
+      {
+        "login": "Venatum"
+      }
+    ],
+    "labels": [
+      {
+        "name": "bug",
+        "color": "d73a4a"
+      }
+    ],
+    "createdAt": "@ago:10",
+    "updatedAt": "@ago:0.3",
+    "url": "https://github.com/acme/api/issues/402",
+    "closedByPullRequestsReferences": [
+      {
+        "number": 409,
+        "repository": {
+          "name": "api",
+          "owner": {
+            "login": "acme"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "number": 390,
+    "title": "Audit log export times out for large tenants",
+    "author": {
+      "login": "dave"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "performance",
+        "color": "fbca04"
+      }
+    ],
+    "createdAt": "@ago:25",
+    "updatedAt": "@ago:4",
+    "url": "https://github.com/acme/api/issues/390",
+    "closedByPullRequestsReferences": []
+  },
+  {
+    "number": 350,
+    "title": "API keys scoped to a single project",
+    "author": {
+      "login": "alice"
+    },
+    "assignees": [],
+    "labels": [
+      {
+        "name": "enhancement",
+        "color": "a2eeef"
+      },
+      {
+        "name": "help wanted",
+        "color": "008672"
+      }
+    ],
+    "createdAt": "@ago:60",
+    "updatedAt": "@ago:40",
+    "url": "https://github.com/acme/api/issues/350",
+    "closedByPullRequestsReferences": []
+  }
+]

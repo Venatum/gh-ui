@@ -1,0 +1,35 @@
+[
+  {
+    "workflowName": "CI",
+    "displayTitle": "Shell completions for zsh and fish",
+    "headBranch": "feat/completions",
+    "status": "completed",
+    "conclusion": "success",
+    "event": "pull_request",
+    "createdAt": "@ago:0.5",
+    "number": 311,
+    "url": "https://github.com/acme/cli/actions/runs/9000311"
+  },
+  {
+    "workflowName": "Release",
+    "displayTitle": "Merge pull request #401 from acme/feat/metrics",
+    "headBranch": "main",
+    "status": "completed",
+    "conclusion": "success",
+    "event": "push",
+    "createdAt": "@ago:1",
+    "number": 310,
+    "url": "https://github.com/acme/cli/actions/runs/9000310"
+  },
+  {
+    "workflowName": "CI",
+    "displayTitle": "Respect NO_COLOR",
+    "headBranch": "fix/no-color",
+    "status": "completed",
+    "conclusion": "failure",
+    "event": "pull_request",
+    "createdAt": "@ago:2",
+    "number": 305,
+    "url": "https://github.com/acme/cli/actions/runs/9000305"
+  }
+]

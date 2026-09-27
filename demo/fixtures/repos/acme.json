@@ -1,0 +1,112 @@
+[
+  {
+    "nameWithOwner": "acme/api",
+    "name": "api",
+    "description": "Public REST API and webhooks",
+    "visibility": "PRIVATE",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:0.1",
+    "url": "https://github.com/acme/api"
+  },
+  {
+    "nameWithOwner": "acme/web",
+    "name": "web",
+    "description": "Customer dashboard",
+    "visibility": "PRIVATE",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:0.2",
+    "url": "https://github.com/acme/web"
+  },
+  {
+    "nameWithOwner": "acme/cli",
+    "name": "cli",
+    "description": "Command-line client",
+    "visibility": "PUBLIC",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:0.5",
+    "url": "https://github.com/acme/cli"
+  },
+  {
+    "nameWithOwner": "acme/docs",
+    "name": "docs",
+    "description": "Documentation site",
+    "visibility": "PUBLIC",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:1",
+    "url": "https://github.com/acme/docs"
+  },
+  {
+    "nameWithOwner": "acme/infra",
+    "name": "infra",
+    "description": "Terraform for every environment",
+    "visibility": "INTERNAL",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:2",
+    "url": "https://github.com/acme/infra"
+  },
+  {
+    "nameWithOwner": "acme/design-system",
+    "name": "design-system",
+    "description": "Shared UI components",
+    "visibility": "INTERNAL",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:6",
+    "url": "https://github.com/acme/design-system"
+  },
+  {
+    "nameWithOwner": "acme/mobile",
+    "name": "mobile",
+    "description": "iOS and Android app",
+    "visibility": "PRIVATE",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:9",
+    "url": "https://github.com/acme/mobile"
+  },
+  {
+    "nameWithOwner": "acme/billing",
+    "name": "billing",
+    "description": "Invoices and payments",
+    "visibility": "PRIVATE",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:14",
+    "url": "https://github.com/acme/billing"
+  },
+  {
+    "nameWithOwner": "acme/status-page",
+    "name": "status-page",
+    "description": "Public status page",
+    "visibility": "PUBLIC",
+    "isArchived": false,
+    "isFork": false,
+    "pushedAt": "@ago:35",
+    "url": "https://github.com/acme/status-page"
+  },
+  {
+    "nameWithOwner": "acme/ratatui",
+    "name": "ratatui",
+    "description": "A Rust crate for cooking up terminal user interfaces",
+    "visibility": "PUBLIC",
+    "isArchived": false,
+    "isFork": true,
+    "pushedAt": "@ago:50",
+    "url": "https://github.com/acme/ratatui"
+  },
+  {
+    "nameWithOwner": "acme/legacy-portal",
+    "name": "legacy-portal",
+    "description": "The old customer portal, read-only",
+    "visibility": "PRIVATE",
+    "isArchived": true,
+    "isFork": false,
+    "pushedAt": "@ago:400",
+    "url": "https://github.com/acme/legacy-portal"
+  }
+]
