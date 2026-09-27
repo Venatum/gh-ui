@@ -210,7 +210,10 @@ pub fn spawn_clones(root: PathBuf, batch: Vec<(String, String)>, tx: Sender<Load
             let _ = tx.send(Loaded::Clone(CloneEvent::Started(name_with_owner.clone())));
             let event = match gh::clone_repo(&root, &name_with_owner, &name) {
                 Ok(()) => CloneEvent::Done(name_with_owner),
-                Err(e) => CloneEvent::Failed(name_with_owner, e.to_string()),
+                Err(e) => CloneEvent::Failed {
+                    repo: name_with_owner,
+                    message: e.to_string(),
+                },
             };
             let _ = tx.send(Loaded::Clone(event));
         }

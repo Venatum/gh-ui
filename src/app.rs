@@ -7,7 +7,7 @@ use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::issues::{Issue, IssueFilters, IssuesTab};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
-use crate::repos::{self, CloneEvent, Repo, RepoFilters, RepoSettings, ReposTab};
+use crate::repos::{self, CloneEvent, Repo, RepoSettings, ReposTab};
 use crate::runfilters::{self, RunFilters};
 use crate::search;
 use ratatui::widgets::TableState;
@@ -323,13 +323,6 @@ pub struct App {
 impl App {
     pub fn new(root: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
-        // Field by field: `ReposTab` keeps private counters, so it cannot be
-        // built with `..Default::default()` from outside its module.
-        let mut repo_tab = ReposTab::default();
-        repo_tab.filters = RepoFilters {
-            owner: RepoSettings::load().owner,
-            ..Default::default()
-        };
         Self {
             root,
             prs: Vec::new(),
@@ -363,7 +356,7 @@ impl App {
             run_filters: RunFilters::default(),
             runs_loaded: false,
             prs_loaded: false,
-            repo_tab,
+            repo_tab: ReposTab::with_owner(RepoSettings::load().owner),
             repo_table_state: TableState::default(),
             issue_tab: IssuesTab {
                 filters: IssueFilters::load(),
@@ -1551,7 +1544,7 @@ mod tests {
     use super::*;
     use crate::filters::AuthorFilter;
     use crate::issues::{AssigneeFilter, sample_issue};
-    use crate::repos::{CloneEvent, LocalRepo, sample_repo};
+    use crate::repos::{CloneEvent, LocalRepo, RepoFilters, sample_repo};
 
     #[test]
     fn the_header_stays_empty_until_the_login_answers() {
@@ -2053,7 +2046,10 @@ mod tests {
 
     #[test]
     fn an_empty_folder_opens_on_the_repos_tab() {
-        let root = std::env::temp_dir().join("gh-ui-initial-tab");
+        // Unique per run, and cleared first: a fixed name is shared by two
+        // `cargo test` running at once, and by the leftovers of a failed one.
+        let root = std::env::temp_dir().join(format!("gh-ui-initial-tab-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(&root).unwrap();
         assert_eq!(initial_tab(&root), Tab::Repos);
 

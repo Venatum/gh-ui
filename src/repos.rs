@@ -239,8 +239,11 @@ impl RepoSettings {
 pub enum CloneEvent {
     Started(String),
     Done(String),
-    /// The repo, and `gh`'s message.
-    Failed(String, String),
+    /// Named fields: two `String`s side by side read either way round.
+    Failed {
+        repo: String,
+        message: String,
+    },
     /// The whole batch is over.
     Finished,
 }
@@ -272,6 +275,19 @@ pub struct ReposTab {
 }
 
 impl ReposTab {
+    /// A tab listing `owner`'s repos (the saved one, or `None` until the
+    /// account is known), everything else at its start. Built here, where
+    /// the private counters are reachable.
+    pub fn with_owner(owner: Option<String>) -> Self {
+        Self {
+            filters: RepoFilters {
+                owner,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     /// The state a row shows: the batch's if it holds one, the folder's
     /// otherwise.
     pub fn state_of(&self, repo: &Repo) -> RepoState {
@@ -381,10 +397,10 @@ impl ReposTab {
                 self.progress.insert(name, RepoState::Cloned);
                 line
             }
-            CloneEvent::Failed(name, message) => {
+            CloneEvent::Failed { repo, message } => {
                 self.batch_failed += 1;
-                let line = format!("✗ {name}: {message}");
-                self.progress.insert(name, RepoState::Failed(message));
+                let line = format!("✗ {repo}: {message}");
+                self.progress.insert(repo, RepoState::Failed(message));
                 line
             }
             CloneEvent::Finished => {
@@ -554,6 +570,15 @@ mod tests {
             local_state(&repo, &[local("api", None)]),
             RepoState::NameTaken(None)
         );
+    }
+
+    #[test]
+    fn a_new_tab_knows_its_owner_and_nothing_else() {
+        let tab = ReposTab::with_owner(Some("acme".to_string()));
+
+        assert_eq!(tab.filters.owner.as_deref(), Some("acme"));
+        assert!(!tab.filters.archived && !tab.filters.forks);
+        assert!(!tab.loaded && tab.repos.is_empty() && !tab.cloning);
     }
 
     /// `gh repo clone` refuses to write into it: not clonable, and not a
@@ -767,10 +792,10 @@ mod tests {
 
         t.apply_event(CloneEvent::Started("acme/web".to_string()));
         assert_eq!(
-            t.apply_event(CloneEvent::Failed(
-                "acme/web".to_string(),
-                "denied".to_string()
-            )),
+            t.apply_event(CloneEvent::Failed {
+                repo: "acme/web".to_string(),
+                message: "denied".to_string(),
+            }),
             "✗ acme/web: denied"
         );
         assert_eq!(
