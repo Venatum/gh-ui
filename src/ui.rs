@@ -327,6 +327,20 @@ const HINTS: [(&str, &str); 10] = [
     ("q", "quit"),
 ];
 
+/// The footer of `tab`. `m` does nothing on the Repos tab, and `space`
+/// ticks there: same slot, so both drop at the same width.
+fn hints_for(tab: Tab) -> [(&'static str, &'static str); 10] {
+    let mut hints = HINTS;
+    if tab == Tab::Repos {
+        for hint in &mut hints {
+            if *hint == ("m", "mine") {
+                *hint = ("space", "tick");
+            }
+        }
+    }
+    hints
+}
+
 /// Always rendered, always last.
 const HELP_HINT: (&str, &str) = ("?", "help");
 
@@ -341,17 +355,20 @@ fn hint_width((key, label): (&str, &str)) -> usize {
 /// silently clipped mid-word — and what fell off the end was `enter`, `?` and
 /// `q`, the three a lost user needs most. Now we drop whole hints from the
 /// tail, mark the cut with `…`, and always keep `?`.
-fn fitting_hints(width: usize) -> (Vec<(&'static str, &'static str)>, bool) {
+fn fitting_hints(
+    hints: &[(&'static str, &'static str)],
+    width: usize,
+) -> (Vec<(&'static str, &'static str)>, bool) {
     let help = hint_width(HELP_HINT);
-    if HINTS.iter().copied().map(hint_width).sum::<usize>() + help <= width {
-        return (HINTS.to_vec(), false);
+    if hints.iter().copied().map(hint_width).sum::<usize>() + help <= width {
+        return (hints.to_vec(), false);
     }
 
     // "… " sits between the kept hints and `?`, so it is part of the budget.
     let budget = width.saturating_sub(help + 2);
     let mut kept = Vec::new();
     let mut used = 0;
-    for hint in HINTS {
+    for &hint in hints {
         let w = hint_width(hint);
         if used + w > budget {
             break;
@@ -397,7 +414,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Otherwise, a compact footer; the full detail is in the help (?).
-    let (hints, cut) = fitting_hints(area.width as usize);
+    let (hints, cut) = fitting_hints(&hints_for(app.active_tab), area.width as usize);
     let mut spans = Vec::new();
     for (key, label) in hints {
         spans.push(Span::styled(
@@ -793,14 +810,14 @@ mod tests {
 
     #[test]
     fn a_wide_terminal_keeps_every_footer_hint() {
-        let (hints, cut) = fitting_hints(200);
+        let (hints, cut) = fitting_hints(&HINTS, 200);
         assert_eq!(hints.len(), HINTS.len());
         assert!(!cut);
     }
 
     #[test]
     fn an_80_column_footer_drops_hints_instead_of_clipping_them() {
-        let (hints, cut) = fitting_hints(80);
+        let (hints, cut) = fitting_hints(&HINTS, 80);
 
         assert!(cut, "the full row is 127 columns, it cannot fit 80");
         // Whole hints are dropped, and what is kept is the head of the list.
@@ -813,10 +830,21 @@ mod tests {
     }
 
     #[test]
+    fn the_repos_footer_offers_tick_where_the_others_offer_mine() {
+        let repos = hints_for(Tab::Repos);
+        assert!(repos.contains(&("space", "tick")));
+        assert!(!repos.contains(&("m", "mine")), "m does nothing there");
+
+        for tab in [Tab::Prs, Tab::Runs, Tab::Issues] {
+            assert_eq!(hints_for(tab), HINTS, "{tab:?}");
+        }
+    }
+
+    #[test]
     fn help_survives_a_terminal_too_narrow_for_anything_else() {
         // `?` is appended unconditionally, so a tiny width keeps no hint at
         // all rather than panicking on the budget subtraction.
-        let (hints, cut) = fitting_hints(4);
+        let (hints, cut) = fitting_hints(&HINTS, 4);
         assert!(hints.is_empty());
         assert!(cut);
     }
