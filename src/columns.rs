@@ -153,34 +153,26 @@ fn hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     Some((byte(0)?, byte(2)?, byte(4)?))
 }
 
-/// A label chip as github.com draws it: its color as the background, black
-/// or white text by luminance so it reads on a light or a dark terminal.
-fn label_style(hex: &str) -> Style {
-    let Some((r, g, b)) = hex_rgb(hex) else {
-        return Style::new().fg(Color::DarkGray);
-    };
-    // Perceived brightness (ITU-R 601 weights), out of 255.
-    let luma = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
-    let text = if luma > 150.0 {
-        Color::Black
-    } else {
-        Color::White
-    };
-    Style::new().fg(text).bg(Color::Rgb(r, g, b))
+/// The dot before a label, in the label's GitHub color. Only the dot: a
+/// whole name in a dark color would vanish on a dark terminal (and a light
+/// one on a light terminal), and full chips read too loud in a long list.
+fn label_dot_style(hex: &str) -> Style {
+    match hex_rgb(hex) {
+        Some((r, g, b)) => Style::new().fg(Color::Rgb(r, g, b)),
+        None => Style::new().fg(Color::DarkGray),
+    }
 }
 
-/// Labels as colored chips, one space apart and truncated to the column
-/// width: the PRs and issues tables show them alike.
+/// Labels as `● bug ● api`, truncated to the column width: the PRs and
+/// issues tables show them alike.
 fn labels_cell(labels: &[Label]) -> Cell<'static> {
     let mut spans = Vec::new();
     for (i, label) in labels.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled(
-            format!(" {} ", label.name),
-            label_style(&label.color),
-        ));
+        spans.push(Span::styled("●", label_dot_style(&label.color)));
+        spans.push(Span::raw(format!(" {}", label.name)));
     }
     Cell::from(Line::from(spans))
 }
@@ -819,22 +811,10 @@ mod tests {
     }
 
     #[test]
-    fn a_light_label_color_gets_dark_text() {
+    fn a_label_dot_takes_the_label_color() {
         assert_eq!(
-            label_style("fbca04"),
-            Style::new()
-                .fg(Color::Black)
-                .bg(Color::Rgb(0xfb, 0xca, 0x04))
-        );
-    }
-
-    #[test]
-    fn a_dark_label_color_gets_light_text() {
-        assert_eq!(
-            label_style("d73a4a"),
-            Style::new()
-                .fg(Color::White)
-                .bg(Color::Rgb(0xd7, 0x3a, 0x4a))
+            label_dot_style("d73a4a"),
+            Style::new().fg(Color::Rgb(0xd7, 0x3a, 0x4a))
         );
     }
 
@@ -842,7 +822,7 @@ mod tests {
     fn an_unreadable_label_color_falls_back_to_gray() {
         for color in ["", "zzzzzz", "fff", "é1b2c3"] {
             assert_eq!(
-                label_style(color),
+                label_dot_style(color),
                 Style::new().fg(Color::DarkGray),
                 "{color:?}"
             );
@@ -850,15 +830,17 @@ mod tests {
     }
 
     #[test]
-    fn labels_render_as_chips_one_space_apart() {
+    fn a_label_is_a_colored_dot_then_its_plain_name() {
         let labels = [label("bug", "d73a4a"), label("api", "fbca04")];
 
         assert_eq!(
             labels_cell(&labels),
             Cell::from(Line::from(vec![
-                Span::styled(" bug ", label_style("d73a4a")),
+                Span::styled("●", label_dot_style("d73a4a")),
+                Span::raw(" bug"),
                 Span::raw(" "),
-                Span::styled(" api ", label_style("fbca04")),
+                Span::styled("●", label_dot_style("fbca04")),
+                Span::raw(" api"),
             ]))
         );
     }
