@@ -1717,6 +1717,48 @@ mod tests {
         );
     }
 
+    /// An empty temp folder of this test's own. Unique per run (the PID) and
+    /// cleared first: a fixed name is shared by two `cargo test` running at
+    /// once, and by the leftovers of a failed one.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gh-ui-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The tick itself, not `refresh`: once the interval is over, the PRs
+    /// reload, and so do the issues once they have been loaded.
+    #[test]
+    fn an_overdue_tick_reloads_the_prs_and_the_loaded_issues() {
+        let root = scratch_dir("overdue-tick"); // no repo: nothing reaches `gh`
+        let mut app = App::new(root.clone());
+        app.issue_tab.loaded = true;
+        app.issue_tab.loading = true; // queue the issues reload
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now() - Duration::from_secs(90);
+
+        app.on_tick();
+
+        assert!(app.loading, "the PRs reload");
+        assert!(app.issue_tab.pending, "the issues reload too");
+        assert!(app.time_to_refresh().unwrap() > Duration::from_secs(59));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn coming_back_from_repos_gives_the_prs_their_own_line() {
+        let mut app = App::new(PathBuf::from("."));
+        app.prs_loaded = true; // no reload on the way back
+        app.status = "14 PR(s) — 4 repo(s)".to_string();
+
+        app.set_tab(Tab::Repos);
+        assert_ne!(app.status, "14 PR(s) — 4 repo(s)");
+        app.set_tab(Tab::Prs);
+
+        assert_eq!(app.status, "14 PR(s) — 4 repo(s)");
+    }
+
     /// The auto-refresh reloads the issues too: `r` there is a reload, so
     /// the next one is a full interval away, as after `r` on the PRs.
     #[test]
@@ -1749,7 +1791,7 @@ mod tests {
     /// named `ghost`, so the filter has to go — and say so.
     #[test]
     fn reconciling_drops_a_repo_the_folder_does_not_hold() {
-        let root = std::env::temp_dir().join("gh-ui-reconcile-drops");
+        let root = scratch_dir("reconcile-drops");
         std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
 
         let mut app = App::new(root.clone());
@@ -1773,7 +1815,7 @@ mod tests {
 
     #[test]
     fn reconciling_keeps_a_repo_the_folder_holds() {
-        let root = std::env::temp_dir().join("gh-ui-reconcile-keeps");
+        let root = scratch_dir("reconcile-keeps");
         std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
 
         let mut app = App::new(root.clone());
@@ -2067,11 +2109,7 @@ mod tests {
 
     #[test]
     fn an_empty_folder_opens_on_the_repos_tab() {
-        // Unique per run, and cleared first: a fixed name is shared by two
-        // `cargo test` running at once, and by the leftovers of a failed one.
-        let root = std::env::temp_dir().join(format!("gh-ui-initial-tab-{}", std::process::id()));
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::create_dir_all(&root).unwrap();
+        let root = scratch_dir("initial-tab");
         assert_eq!(initial_tab(&root), Tab::Repos);
 
         std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
@@ -2651,7 +2689,7 @@ mod tests {
     /// elsewhere is dropped before the load, and the Issues line says so.
     #[test]
     fn reconciling_drops_an_issue_repo_the_folder_does_not_hold() {
-        let root = std::env::temp_dir().join("gh-ui-reconcile-issues");
+        let root = scratch_dir("reconcile-issues");
         std::fs::create_dir_all(root.join("web").join(".git")).unwrap();
 
         let mut app = App::new(root.clone());
