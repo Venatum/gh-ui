@@ -5,6 +5,7 @@ use crate::config;
 use crate::issues::{Issue, linked_prs_label};
 use crate::model::{Label, Pr, Run};
 use crate::repos::{Repo, RepoState};
+use chrono::NaiveDate;
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -113,6 +114,35 @@ fn review_look(decision: &str) -> (&'static str, Style) {
     }
 }
 
+/// How loud a date reads: bold today, plain within 30 days, gray beyond. No
+/// white nor light gray: they vanish on a light terminal. An unparsable
+/// date stays plain.
+fn age_style(timestamp: &str, today: NaiveDate) -> Style {
+    let Some(date) = timestamp
+        .get(..10)
+        .and_then(|d| d.parse::<NaiveDate>().ok())
+    else {
+        return Style::new();
+    };
+    match (today - date).num_days() {
+        ..=0 => Style::new().bold(),
+        1..=30 => Style::new(),
+        _ => Style::new().fg(Color::DarkGray),
+    }
+}
+
+/// The day part of a `gh` timestamp, in its age style. `today` is a
+/// parameter so the tests pin it.
+fn date_cell_on(timestamp: &str, today: NaiveDate) -> Cell<'static> {
+    let day = timestamp.get(..10).unwrap_or("").to_string();
+    Cell::from(Span::styled(day, age_style(timestamp, today)))
+}
+
+/// Every date column of every table goes through here.
+fn date_cell(timestamp: &str) -> Cell<'static> {
+    date_cell_on(timestamp, chrono::Local::now().date_naive())
+}
+
 /// `"d73a4a"` → `(0xd7, 0x3a, 0x4a)`; `None` for anything else. `get`
 /// rather than `[..]`: slicing a non-ASCII string mid-character panics.
 fn hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
@@ -161,7 +191,7 @@ impl PrColumn {
     pub fn cell(self, pr: &Pr) -> Cell<'static> {
         match self {
             PrColumn::Repo => Cell::from(pr.repo.clone()),
-            PrColumn::Updated => Cell::from(pr.updated_at.get(..10).unwrap_or("").to_string()),
+            PrColumn::Updated => date_cell(&pr.updated_at),
             PrColumn::Number => Cell::from(format!("#{}", pr.number)),
             // Prefixed with "[D]" and grayed out if it is a draft.
             PrColumn::Title => {
@@ -247,7 +277,7 @@ impl RunColumn {
     pub fn cell(self, run: &Run) -> Cell<'static> {
         match self {
             RunColumn::Repo => Cell::from(run.repo.clone()),
-            RunColumn::Created => Cell::from(run.created_at.get(..10).unwrap_or("").to_string()),
+            RunColumn::Created => date_cell(&run.created_at),
             RunColumn::Number => Cell::from(format!("#{}", run.number)),
             RunColumn::Workflow => Cell::from(run.workflow_name.clone()),
             RunColumn::Branch => Cell::from(run.head_branch.clone()),
@@ -374,13 +404,11 @@ impl RepoColumn {
                 let (label, style) = visibility_look(&repo.visibility);
                 Cell::from(Span::styled(label, style))
             }
-            RepoColumn::Pushed => Cell::from(
-                repo.pushed_at
-                    .as_deref()
-                    .and_then(|at| at.get(..10))
-                    .unwrap_or("")
-                    .to_string(),
-            ),
+            // Never pushed to: blank.
+            RepoColumn::Pushed => repo
+                .pushed_at
+                .as_deref()
+                .map_or_else(|| Cell::from(String::new()), date_cell),
             RepoColumn::Description => match state {
                 // Why the clone failed. The status line says it too, but the
                 // next step of the batch overwrites it within the same tick:
@@ -474,9 +502,7 @@ impl IssueColumn {
         match self {
             IssueColumn::Repo => Cell::from(issue.repo.clone()),
             IssueColumn::Number => Cell::from(format!("#{}", issue.number)),
-            IssueColumn::Updated => {
-                Cell::from(issue.updated_at.get(..10).unwrap_or("").to_string())
-            }
+            IssueColumn::Updated => date_cell(&issue.updated_at),
             IssueColumn::Title => Cell::from(issue.title.clone()),
             IssueColumn::Author => Cell::from(format!("@{}", issue.author.login)),
             // Nobody on it: a gray `-`, as a PR's missing review decision.
@@ -497,9 +523,7 @@ impl IssueColumn {
                 label if label.is_empty() => Cell::from(label),
                 label => Cell::from(Span::styled(label, Style::new().fg(Color::Green))),
             },
-            IssueColumn::Created => {
-                Cell::from(issue.created_at.get(..10).unwrap_or("").to_string())
-            }
+            IssueColumn::Created => date_cell(&issue.created_at),
         }
     }
 }
@@ -709,10 +733,7 @@ mod tests {
         assert_eq!(PrColumn::Number.cell(&pr), Cell::from("#42".to_string()));
         assert_eq!(PrColumn::Author.cell(&pr), Cell::from("@moi".to_string()));
         // Only the date part of the timestamp.
-        assert_eq!(
-            PrColumn::Updated.cell(&pr),
-            Cell::from("2026-01-02".to_string())
-        );
+        assert_eq!(PrColumn::Updated.cell(&pr), date_cell(&pr.updated_at));
     }
 
     #[test]
@@ -726,6 +747,68 @@ mod tests {
             cell,
             Cell::from("[D] fixes a bug".to_string()).style(Style::new().fg(Color::DarkGray))
         );
+    }
+
+    fn day(date: &str) -> NaiveDate {
+        date.parse().unwrap()
+    }
+
+    #[test]
+    fn a_date_fades_with_age() {
+        let today = day("2026-09-27");
+        let style = |at: &str| age_style(at, today);
+
+        assert_eq!(style("2026-09-27T08:00:00Z"), Style::new().bold());
+        assert_eq!(style("2026-09-26T23:00:00Z"), Style::new());
+        assert_eq!(style("2026-08-28T00:00:00Z"), Style::new()); // 30 days
+        assert_eq!(
+            style("2026-08-27T00:00:00Z"),
+            Style::new().fg(Color::DarkGray)
+        );
+        assert_eq!(style("not a date"), Style::new());
+    }
+
+    #[test]
+    fn a_date_cell_shows_the_day_in_its_age_style() {
+        let today = day("2026-09-27");
+
+        assert_eq!(
+            date_cell_on("2026-01-02T03:04:05Z", today),
+            Cell::from(Span::styled("2026-01-02", Style::new().fg(Color::DarkGray)))
+        );
+    }
+
+    #[test]
+    fn every_date_column_goes_through_the_age_style() {
+        // Old dates only: they read gray whatever today is. A recent one
+        // reads plain, and a plain span equals an unstyled cell, so a column
+        // that skipped `date_cell` would still pass.
+        let old = "2020-01-02T03:04:05Z";
+        let gray = Cell::from(Span::styled("2020-01-02", Style::new().fg(Color::DarkGray)));
+        let mut pr = sample_pr();
+        pr.updated_at = old.to_string();
+        let mut run: Run = serde_json::from_str(
+            r#"{
+                "workflowName": "CI", "displayTitle": "t", "headBranch": "b",
+                "status": "queued", "event": "push",
+                "createdAt": "", "number": 7, "url": "u"
+            }"#,
+        )
+        .unwrap();
+        run.created_at = old.to_string();
+        let mut repo = crate::repos::sample_repo("acme/api");
+        repo.pushed_at = Some(old.to_string());
+        let mut issue = crate::issues::sample_issue("api", 7, old);
+        issue.created_at = old.to_string();
+
+        assert_eq!(PrColumn::Updated.cell(&pr), gray);
+        assert_eq!(RunColumn::Created.cell(&run), gray);
+        assert_eq!(
+            RepoColumn::Pushed.cell(&repo, &RepoState::Clonable, false),
+            gray
+        );
+        assert_eq!(IssueColumn::Updated.cell(&issue), gray);
+        assert_eq!(IssueColumn::Created.cell(&issue), gray);
     }
 
     fn label(name: &str, color: &str) -> Label {
@@ -1030,7 +1113,7 @@ mod tests {
         );
         assert_eq!(
             RepoColumn::Pushed.cell(&repo, &state, false),
-            Cell::from("2026-09-20".to_string())
+            date_cell("2026-09-20T10:00:00Z")
         );
     }
 
@@ -1232,7 +1315,7 @@ mod tests {
         );
         assert_eq!(
             IssueColumn::Updated.cell(&issue),
-            Cell::from("2026-09-20".to_string())
+            date_cell(&issue.updated_at)
         );
         assert_eq!(
             IssueColumn::Prs.cell(&issue),
