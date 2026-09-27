@@ -828,11 +828,13 @@ impl App {
             auto_refresh: self.auto_refresh,
         }
         .save();
-        // Leaving `Off` refreshes right away, to start clean. Moving from one
-        // pace to another only changes the tempo: `last_refresh` is untouched,
-        // so shortening the interval can make the next tick fire immediately.
+        // Leaving `Off` refreshes right away, to start clean — what the ticks
+        // will keep fresh, so not the Repos list even from its tab. Moving
+        // from one pace to another only changes the tempo: `last_refresh` is
+        // untouched, so shortening the interval can make the next tick fire
+        // immediately.
         if was_off && self.auto_refresh != AutoRefresh::Off {
-            self.refresh();
+            self.background_reload();
         }
     }
 
@@ -2253,6 +2255,21 @@ mod tests {
         assert!(!app.repo_tab.cloning);
         assert_eq!(app.pending_job, Some(Job::Prs));
         assert!(app.repos_pending);
+    }
+
+    /// What the auto-refresh keeps fresh is the PRs (and runs, issues), not
+    /// the repo list: turning it on from the Repos tab starts with those.
+    #[test]
+    fn leaving_off_on_the_repos_tab_reloads_the_prs_not_the_list() {
+        let mut app = repos_app();
+        app.repos_loading = false;
+        app.loading = true; // queue the PR reload instead of running `gh`
+        app.auto_refresh = AutoRefresh::Off;
+
+        app.cycle_auto_refresh();
+
+        assert_eq!(app.pending_job, Some(Job::Prs));
+        assert!(!app.repos_loading && !app.repos_pending);
     }
 
     #[test]
