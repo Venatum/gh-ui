@@ -743,7 +743,8 @@ impl App {
             }
             Err(message) => {
                 self.repo_tab.apply_load(Vec::new(), result.locals);
-                self.set_line(Tab::Repos, format!("gh repo list failed: {message}"));
+                // It already names the command (`gh repo list` failed: …).
+                self.set_line(Tab::Repos, message);
             }
         }
         self.reset_repo_selection();

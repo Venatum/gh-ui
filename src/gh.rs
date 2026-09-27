@@ -6,8 +6,9 @@ use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
 use crate::repos::{LocalRepo, Repo, RepoFilters, parse_origin};
 use anyhow::{Context, Result};
+use serde::de::DeserializeOwned;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 /// Maximum number of PRs fetched per repo (like the script's `--limit`).
 const PR_LIMIT: &str = "50";
@@ -62,6 +63,40 @@ pub fn discover_repos(root: &Path) -> Result<Vec<String>> {
     Ok(repos)
 }
 
+/// Runs `gh <args>` — in `dir` when given, where `gh` reads which repo it
+/// is — and parses what it prints into `T`, whatever list that is. Generic
+/// over `S` so both `["run", "list"]` and a built `Vec<String>` fit.
+fn run_gh_json<T, S>(args: &[S], dir: Option<&Path>) -> Result<T>
+where
+    T: DeserializeOwned,
+    S: AsRef<str>,
+{
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    let mut cmd = Command::new("gh");
+    cmd.args(&args);
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+    // The first two words name the command: `gh pr list`, `gh repo list`…
+    let what = format!("gh {}", args[..args.len().min(2)].join(" "));
+    parse_gh_output(&what, &output)
+}
+
+/// What `gh` answered, as `T`: its JSON when it succeeded, otherwise its
+/// own message. Apart from `run_gh_json` so a test can feed it an `Output`
+/// without running `gh`.
+fn parse_gh_output<T: DeserializeOwned>(what: &str, output: &Output) -> Result<T> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`{what}` failed: {}", stderr.trim());
+    }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parsing the JSON returned by `{what}`"))
+}
+
 /// Runs `gh pr list` (with the filters) in `repo_dir` and parses the JSON.
 pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
     // The fields we request from gh, exactly as in the script.
@@ -78,26 +113,8 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
         JSON_FIELDS.to_string(),
     ];
     args.extend(filters.to_gh_args());
-
-    // Runs the command with the repo's directory as the current directory.
-    let output = Command::new("gh")
-        .args(&args)
-        .current_dir(repo_dir)
-        .output()
-        .context("launching `gh` (is it installed and in the PATH?)")?;
-
-    // `output.status` = return code. If it failed, we surface stderr.
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`gh` failed: {}", stderr.trim());
-    }
-
-    // `output.stdout` is a Vec<u8> (raw bytes). serde_json can parse it directly
-    // into a list of Pr thanks to the `Deserialize` derived on `Pr`.
-    let prs: Vec<Pr> =
-        serde_json::from_slice(&output.stdout).context("parsing the JSON returned by gh")?;
-
-    Ok(prs)
+    // In the repo's folder: `gh` reads which repo it is from there.
+    run_gh_json(&args, Some(repo_dir))
 }
 
 /// Runs `gh run list` in `repo_dir` and parses the JSON into `Vec<Run>`.
@@ -114,27 +131,15 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
 /// open PR, would be exact but would cost one request per PR per repo on every
 /// auto-refresh.
 pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
-    let output = Command::new("gh")
-        .args([
-            "run",
-            "list",
-            "--limit",
-            RUN_LIMIT,
-            "--json",
-            RUN_JSON_FIELDS,
-        ])
-        .current_dir(repo_dir)
-        .output()
-        .context("launching `gh` (is it installed and in the PATH?)")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`gh run list` failed: {}", stderr.trim());
-    }
-
-    let runs: Vec<Run> = serde_json::from_slice(&output.stdout)
-        .context("parsing the JSON returned by `gh run list`")?;
-    Ok(runs)
+    let args = [
+        "run",
+        "list",
+        "--limit",
+        RUN_LIMIT,
+        "--json",
+        RUN_JSON_FIELDS,
+    ];
+    run_gh_json(&args, Some(repo_dir))
 }
 
 /// Maximum number of open issues fetched per repo, as `PR_LIMIT` for PRs.
@@ -171,18 +176,7 @@ fn issue_list_args(filters: &IssueFilters) -> Vec<String> {
 /// A repo with issues disabled makes `gh` fail: the caller counts it as a
 /// failed repo, the others still show.
 pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue>> {
-    let output = Command::new("gh")
-        .args(issue_list_args(filters))
-        .current_dir(repo_dir)
-        .output()
-        .context("launching `gh` (is it installed and in the PATH?)")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`gh issue list` failed: {}", stderr.trim());
-    }
-
-    serde_json::from_slice(&output.stdout).context("parsing the JSON returned by `gh issue list`")
+    run_gh_json(&issue_list_args(filters), Some(repo_dir))
 }
 
 /// The login of the authenticated user, shown in the header. Asked of `gh`
@@ -243,17 +237,7 @@ pub fn repo_list_args(owner: &str, filters: &RepoFilters) -> Vec<String> {
 
 /// Runs `gh repo list` for `owner` and parses the JSON into `Vec<Repo>`.
 pub fn fetch_repos(owner: &str, filters: &RepoFilters) -> Result<Vec<Repo>> {
-    let output = Command::new("gh")
-        .args(repo_list_args(owner, filters))
-        .output()
-        .context("launching `gh` (is it installed and in the PATH?)")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`gh repo list` failed: {}", stderr.trim());
-    }
-
-    serde_json::from_slice(&output.stdout).context("parsing the JSON returned by `gh repo list`")
+    run_gh_json(&repo_list_args(owner, filters), None)
 }
 
 /// The orgs of the authenticated account, for the owner picker.
@@ -366,6 +350,43 @@ fn last_line(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::issues::{AssigneeFilter, IssueFilters};
+
+    /// What `gh` printed and how it exited, without running it. The raw
+    /// status is the `wait()` encoding: the exit code sits in the high byte.
+    #[cfg(unix)]
+    fn gh_output(code: i32, stdout: &str, stderr: &str) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_successful_gh_gives_its_json() {
+        let numbers: Vec<u64> = parse_gh_output("gh pr list", &gh_output(0, "[1, 2]", "")).unwrap();
+        assert_eq!(numbers, [1, 2]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_gh_says_which_command_and_why() {
+        let err =
+            parse_gh_output::<Vec<u64>>("gh pr list", &gh_output(1, "", "HTTP 404\n")).unwrap_err();
+        assert_eq!(err.to_string(), "`gh pr list` failed: HTTP 404");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unexpected_json_names_the_command_it_came_from() {
+        let err = parse_gh_output::<Vec<u64>>("gh run list", &gh_output(0, "{}", "")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "parsing the JSON returned by `gh run list`"
+        );
+    }
 
     #[test]
     fn the_local_entries_include_what_is_not_a_repo() {
