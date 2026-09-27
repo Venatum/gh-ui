@@ -474,7 +474,7 @@ impl App {
 
     /// Is anything loading? Drives the header's spinner.
     pub fn is_busy(&self) -> bool {
-        self.loading || self.repos_loading || self.issue_tab.loading
+        self.loading || self.repos_loading || self.issue_tab.loading || self.repo_tab.cloning
     }
 
     /// Reloads the Repos tab's list — or queues it behind the one in flight,
@@ -727,6 +727,7 @@ impl App {
         match result.repos {
             Ok(list) => {
                 self.repo_tab.apply_load(list, result.locals);
+                self.sync_clone_prompt();
                 let failed = self.repo_tab.failed_count();
                 self.set_line(
                     Tab::Repos,
@@ -748,6 +749,19 @@ impl App {
             }
         }
         self.reset_repo_selection();
+    }
+
+    /// A reload drops the ticks the folder no longer allows (a repo cloned
+    /// by hand meanwhile): an open clone prompt counts what is left, and
+    /// closes when nothing is.
+    fn sync_clone_prompt(&mut self) {
+        let left = self.repo_tab.ticked.len();
+        if let Some(Confirm::Clone { count, .. }) = &mut self.confirm {
+            *count = left;
+        }
+        if left == 0 && matches!(self.confirm, Some(Confirm::Clone { .. })) {
+            self.confirm = None;
+        }
     }
 
     /// Writes `tab`'s status line: on screen now if `tab` is, put away for
@@ -786,6 +800,10 @@ impl App {
         let line = self.repo_tab.apply_event(event);
         self.set_line(Tab::Repos, line);
         if finished {
+            // "Clones in progress, quit anyway?" is no longer true.
+            if self.confirm == Some(Confirm::Quit) {
+                self.confirm = None;
+            }
             self.refresh_job(if self.runs_loaded {
                 Job::Both
             } else {
@@ -903,6 +921,15 @@ impl App {
                 return;
             }
             FilterField::Owner => {
+                // The batch's rows belong to this owner: switching would
+                // wipe them while the clones still run.
+                if self.repo_tab.cloning {
+                    self.set_line(
+                        Tab::Repos,
+                        "Wait for the clone batch to finish to switch owner".to_string(),
+                    );
+                    return;
+                }
                 let current = self.repo_tab.filters.owner.clone();
                 if let Some(owner) = repos::cycle_owner(&self.owners(), current.as_deref(), forward)
                     && current.as_deref() != Some(owner.as_str())
@@ -2195,6 +2222,80 @@ mod tests {
         assert!(!app.repo_tab.cloning);
         assert_eq!(app.pending_job, Some(Job::Prs));
         assert!(app.repos_pending);
+    }
+
+    #[test]
+    fn the_owner_stays_put_during_a_clone_batch() {
+        let mut app = repos_app_on(FilterField::Owner);
+        app.repo_tab.cloning = true;
+
+        app.filter_change(true);
+
+        assert_eq!(app.repo_tab.filters.owner.as_deref(), Some("acme"));
+        assert!(!app.repos_pending);
+        assert!(app.status.contains("clone batch"), "got {:?}", app.status);
+    }
+
+    #[test]
+    fn a_clone_batch_keeps_the_spinner_on() {
+        let mut app = App::new(PathBuf::from("."));
+        assert!(!app.is_busy());
+
+        app.repo_tab.cloning = true;
+
+        assert!(app.is_busy());
+    }
+
+    /// The list, reloaded while the clone prompt is open, with `api` now in
+    /// the folder: its tick drops.
+    fn api_cloned_answer(repos: &[&str]) -> Loaded {
+        Loaded::Repos(ReposResult {
+            owner: "acme".to_string(),
+            repos: Ok(repos.iter().map(|r| sample_repo(r)).collect()),
+            locals: vec![LocalRepo {
+                folder: "api".to_string(),
+                origin: Some("acme/api".to_string()),
+            }],
+        })
+    }
+
+    #[test]
+    fn the_clone_prompt_counts_the_ticks_a_reload_leaves() {
+        let mut app = tick_app();
+        app.repo_tab
+            .ticked
+            .extend(["acme/api".to_string(), "acme/new".to_string()]);
+        app.confirm = Some(Confirm::Clone {
+            count: 2,
+            into: "/ws".to_string(),
+        });
+
+        app.tx
+            .send(api_cloned_answer(&["acme/api", "acme/new"]))
+            .unwrap();
+        app.on_tick();
+        assert!(matches!(app.confirm, Some(Confirm::Clone { count: 1, .. })));
+
+        app.repos_loading = true;
+        app.repo_tab.ticked.remove("acme/new");
+        app.tx.send(api_cloned_answer(&["acme/api"])).unwrap();
+        app.on_tick();
+        assert_eq!(app.confirm, None, "nothing left to clone");
+    }
+
+    #[test]
+    fn the_quit_prompt_closes_when_the_batch_ends() {
+        let mut app = tick_app();
+        app.loading = true; // queue the PR reload instead of running `gh`
+        app.repo_tab.cloning = true;
+        app.request_quit();
+        assert_eq!(app.confirm, Some(Confirm::Quit));
+
+        app.tx.send(Loaded::Clone(CloneEvent::Finished)).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.confirm, None);
+        assert!(!app.should_quit, "closing the question is not quitting");
     }
 
     #[test]
