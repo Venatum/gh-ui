@@ -479,6 +479,10 @@ impl IssueColumn {
             }
             IssueColumn::Title => Cell::from(issue.title.clone()),
             IssueColumn::Author => Cell::from(format!("@{}", issue.author.login)),
+            // Nobody on it: a gray `-`, as a PR's missing review decision.
+            IssueColumn::Assignees if issue.assignees.is_empty() => {
+                Cell::from(Span::styled("-", Style::new().fg(Color::DarkGray)))
+            }
             IssueColumn::Assignees => Cell::from(
                 issue
                     .assignees
@@ -488,7 +492,11 @@ impl IssueColumn {
                     .join(", "),
             ),
             IssueColumn::Labels => labels_cell(&issue.labels),
-            IssueColumn::Prs => Cell::from(linked_prs_label(issue)),
+            // Green when a PR is on the way: the issue is being worked on.
+            IssueColumn::Prs => match linked_prs_label(issue) {
+                label if label.is_empty() => Cell::from(label),
+                label => Cell::from(Span::styled(label, Style::new().fg(Color::Green))),
+            },
             IssueColumn::Created => {
                 Cell::from(issue.created_at.get(..10).unwrap_or("").to_string())
             }
@@ -1226,6 +1234,21 @@ mod tests {
             IssueColumn::Updated.cell(&issue),
             Cell::from("2026-09-20".to_string())
         );
-        assert_eq!(IssueColumn::Prs.cell(&issue), Cell::from("#12".to_string()));
+        assert_eq!(
+            IssueColumn::Prs.cell(&issue),
+            Cell::from(Span::styled("#12", Style::new().fg(Color::Green)))
+        );
+    }
+
+    #[test]
+    fn an_issue_nobody_works_on_reads_as_a_gray_dash_and_no_pr() {
+        // `sample_issue` has no assignee and no linked PR.
+        let issue = crate::issues::sample_issue("api", 7, "2026-09-20T10:00:00Z");
+
+        assert_eq!(
+            IssueColumn::Assignees.cell(&issue),
+            Cell::from(Span::styled("-", Style::new().fg(Color::DarkGray)))
+        );
+        assert_eq!(IssueColumn::Prs.cell(&issue), Cell::from(String::new()));
     }
 }
