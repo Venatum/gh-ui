@@ -100,8 +100,9 @@ The repositories of an owner — your account, or one of your orgs, picked
 with `owner` in the filters panel. Each row says where it stands against the
 scanned folder, judged by the folder's `origin` remote rather than its name:
 `✓ cloned`, `name taken → other/api` when a folder of that name holds
-another repo (not clonable: `gh repo clone` would refuse it), or blank when
-it can be cloned. Archived repos and forks are hidden unless their box is
+another repo, `folder taken (not a repo)` when something else sits there
+(neither is clonable: `gh repo clone` would refuse an existing
+destination), or blank when it can be cloned. Archived repos and forks are hidden unless their box is
 ticked, and show dimmed with `[A]` / `[F]` when they are.
 
 `space` ticks clonable rows; a `[ Clone N repos ]` row then appears under the
@@ -109,7 +110,8 @@ list — go down to it and press `enter`, confirm with `y`, and gh-ui clones
 them one after the other into the scanned folder, each row showing `queued`,
 `cloning…`, then `✓ cloned` or `✗ failed` (tick a failed row again to
 retry). When the batch is over, the new repos show up in the other tabs.
-Quitting while a batch runs asks first. Started in a folder that holds no
+The owner stays put while a batch runs, and quitting asks first. Started
+in a folder that holds no
 git repo, gh-ui opens on this tab.
 
 ## Shortcuts
