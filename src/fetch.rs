@@ -39,7 +39,9 @@ pub struct IssuesResult {
 /// A repo-list load: for whom, what `gh` answered, and the folder's repos
 /// read in the same pass (the row states are derived from both).
 pub struct ReposResult {
-    pub owner: String,
+    /// What the list was asked with: an answer to filters since changed is
+    /// dropped.
+    pub filters: RepoFilters,
     /// `Err` carries `gh`'s message for the status line.
     pub repos: Result<Vec<Repo>, String>,
     pub locals: Vec<LocalRepo>,
@@ -185,7 +187,7 @@ pub fn spawn_repos(root: PathBuf, owner: String, filters: RepoFilters, tx: Sende
         let repos = gh::fetch_repos(&owner, &filters).map_err(|e| e.to_string());
         let locals = gh::local_origins(&root);
         let _ = tx.send(Loaded::Repos(ReposResult {
-            owner,
+            filters,
             repos,
             locals,
         }));

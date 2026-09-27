@@ -721,7 +721,7 @@ impl App {
     /// dropped: the reload queued by that change is on its way.
     fn apply_repos(&mut self, result: ReposResult) {
         self.repos_loading = false;
-        if self.repo_tab.filters.owner.as_deref() != Some(result.owner.as_str()) {
+        if !self.repo_tab.filters.asks_the_same(&result.filters) {
             return;
         }
         match result.repos {
@@ -1846,9 +1846,17 @@ mod tests {
         app
     }
 
+    /// The filters `repos_app` asks with, for `owner`.
+    fn asked_for(owner: &str) -> RepoFilters {
+        RepoFilters {
+            owner: Some(owner.to_string()),
+            ..Default::default()
+        }
+    }
+
     fn repos_answer(owner: &str, repos: &[&str]) -> Loaded {
         Loaded::Repos(ReposResult {
-            owner: owner.to_string(),
+            filters: asked_for(owner),
             repos: Ok(repos.iter().map(|r| sample_repo(r)).collect()),
             locals: Vec::new(),
         })
@@ -1909,12 +1917,35 @@ mod tests {
         );
     }
 
+    /// The same owner, but asked before `archived` was ticked: the reload
+    /// the box queued is the one to show, not this one.
+    #[test]
+    fn a_late_answer_for_other_boxes_is_dropped() {
+        let mut app = repos_app();
+        app.repo_tab.filters.archived = true;
+        app.tx.send(repos_answer("acme", &["acme/api"])).unwrap();
+        app.on_tick();
+
+        assert!(app.repo_tab.repos.is_empty());
+        assert!(!app.repos_loading);
+    }
+
+    #[test]
+    fn hide_cloned_does_not_outdate_an_answer() {
+        let mut app = repos_app();
+        app.repo_tab.filters.hide_cloned = true;
+        app.tx.send(repos_answer("acme", &["acme/api"])).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.repo_tab.repos.len(), 1, "it narrows in memory");
+    }
+
     #[test]
     fn a_failed_list_says_so() {
         let mut app = repos_app();
         app.tx
             .send(Loaded::Repos(ReposResult {
-                owner: "acme".to_string(),
+                filters: asked_for("acme"),
                 repos: Err("HTTP 404".to_string()),
                 locals: Vec::new(),
             }))
@@ -2250,7 +2281,7 @@ mod tests {
     /// the folder: its tick drops.
     fn api_cloned_answer(repos: &[&str]) -> Loaded {
         Loaded::Repos(ReposResult {
-            owner: "acme".to_string(),
+            filters: asked_for("acme"),
             repos: Ok(repos.iter().map(|r| sample_repo(r)).collect()),
             locals: vec![LocalRepo {
                 folder: "api".to_string(),

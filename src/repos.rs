@@ -125,6 +125,12 @@ impl RepoFilters {
         args
     }
 
+    /// Would `gh` answer both with the same list? `hide cloned` narrows
+    /// in memory, so it never outdates an answer.
+    pub fn asks_the_same(&self, other: &RepoFilters) -> bool {
+        self.owner == other.owner && self.archived == other.archived && self.forks == other.forks
+    }
+
     /// The header's summary: `owner:acme`, plus what departs from the
     /// defaults.
     pub fn summary(&self) -> String {
