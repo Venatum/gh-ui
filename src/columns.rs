@@ -475,8 +475,10 @@ impl Column for IssueColumn {
             IssueColumn::Updated => Constraint::Length(10),
             // The title is what an issue is read by: 3 shares of the rest.
             IssueColumn::Title => Constraint::Fill(3),
-            IssueColumn::Author => Constraint::Length(20),
-            // Narrower than Author: a long second login may be cut.
+            // 16, not the PRs' 20: logins rarely run longer, and the
+            // four columns go to the title and the labels.
+            IssueColumn::Author => Constraint::Length(16),
+            // As wide as Author: a long second login may be cut.
             IssueColumn::Assignees => Constraint::Length(16),
             IssueColumn::Labels => Constraint::Fill(1), // elastic, 1 share of the rest
             // `#12345` and `3 PRs` fit; a rare `owner/name#12` is cut.
@@ -1230,7 +1232,7 @@ mod tests {
     /// At 120 columns the title must stay readable: the fixed-width columns
     /// may not eat the room it needs.
     #[test]
-    fn the_issue_title_keeps_room_at_120_columns() {
+    fn the_issue_title_and_labels_keep_room_at_120_columns() {
         use ratatui::layout::{Layout, Rect};
 
         let visible: Vec<IssueColumn> = ColumnLayout::<IssueColumn>::default().visible().collect();
@@ -1245,9 +1247,19 @@ mod tests {
             .position(|c| *c == IssueColumn::Title)
             .unwrap();
         assert!(
-            areas[title].width >= 20,
+            areas[title].width >= 24,
             "the title gets {} columns",
             areas[title].width
+        );
+        // `● bug ● ui` needs 10; below 8 a single label is cut.
+        let labels = visible
+            .iter()
+            .position(|c| *c == IssueColumn::Labels)
+            .unwrap();
+        assert!(
+            areas[labels].width >= 8,
+            "the labels get {} columns",
+            areas[labels].width
         );
     }
 
