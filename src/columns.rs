@@ -3,7 +3,7 @@
 
 use crate::config;
 use crate::issues::{Issue, linked_prs_label};
-use crate::model::{Label, Pr, Run};
+use crate::model::{ChecksState, Label, Pr, Run};
 use crate::releases::RepoRelease;
 use crate::repos::{Repo, RepoState};
 use chrono::NaiveDate;
@@ -132,8 +132,12 @@ fn review_look(decision: &str) -> (&'static str, Style) {
 enum PrStatus {
     /// Dormant: the author says it is not ready, so it asks nothing of anyone.
     Draft,
-    /// Something is wrong and the author has work to do.
+    /// The branch no longer merges: the author must rebase.
+    Conflict,
+    /// Changes requested or a check failed: the author has work to do.
     Failing,
+    /// A check is queued or running: nothing to do yet but wait.
+    Running,
     /// Approved with nothing against it: merge it.
     Ready,
     /// Nothing to report — typically still waiting on a reviewer.
@@ -146,9 +150,21 @@ fn pr_status(pr: &Pr) -> PrStatus {
     if pr.is_draft {
         return PrStatus::Draft;
     }
-    if pr.review_decision == "CHANGES_REQUESTED" {
+    // A conflicting branch cannot merge whatever CI says. "UNKNOWN" (GitHub
+    // has not computed it yet) deliberately falls through.
+    if pr.mergeable == "CONFLICTING" {
+        return PrStatus::Conflict;
+    }
+    let checks = pr.checks_state();
+    // Before `Running`: with changes requested, "just wait" would be a lie.
+    if pr.review_decision == "CHANGES_REQUESTED" || checks == ChecksState::Failing {
         return PrStatus::Failing;
     }
+    if checks == ChecksState::Running {
+        return PrStatus::Running;
+    }
+    // Only reached once everything above is ruled out, so the tick really
+    // means "merge it".
     if pr.review_decision == "APPROVED" {
         return PrStatus::Ready;
     }
@@ -156,13 +172,16 @@ fn pr_status(pr: &Pr) -> PrStatus {
 }
 
 /// Glyph + color of a verdict, same shape as `review_look` and `run_look`.
-/// Every glyph is one gh-ui already draws (`·` in the panel hints, `✗` and
-/// `✓` in `run_look`), so a terminal that runs gh-ui today renders this
-/// column too.
+/// Every glyph is one gh-ui already draws (`·` in the panel hints, `✗` `●`
+/// `✓` in `run_look`, `!` is ASCII), so a terminal that runs gh-ui today
+/// renders this column too.
 fn status_look(status: PrStatus) -> (&'static str, Style) {
     match status {
         PrStatus::Draft => ("·", Style::new().fg(Color::DarkGray)),
+        PrStatus::Conflict => ("!", Style::new().fg(Color::Red)),
         PrStatus::Failing => ("✗", Style::new().fg(Color::Red)),
+        // The Actions tab's running run, glyph and color alike.
+        PrStatus::Running => ("●", Style::new().fg(Color::Yellow)),
         PrStatus::Ready => ("✓", Style::new().fg(Color::Green)),
         // Blank on purpose: waiting on a reviewer is the common case, and a
         // glyph on every row would say nothing.
@@ -873,16 +892,22 @@ mod tests {
         }
     }
 
-    fn sample_pr() -> Pr {
-        serde_json::from_str(
-            r#"{
-                "number": 42, "title": "fixes a bug", "author": {"login": "moi"},
+    /// A `Pr` built from JSON with `extra` spliced in as its last field, so
+    /// each test only spells out the part it is about.
+    fn pr_with(extra: &str) -> Pr {
+        serde_json::from_str(&format!(
+            r#"{{
+                "number": 42, "title": "fixes a bug", "author": {{"login": "moi"}},
                 "isDraft": false, "url": "u", "updatedAt": "2026-01-02T03:04:05Z",
-                "additions": 7, "deletions": 3, "labels": [{"name": "bug"}],
-                "headRefName": "feature/x"
-            }"#,
-        )
+                "additions": 7, "deletions": 3, "labels": [{{"name": "bug"}}],
+                "headRefName": "feature/x", {extra}
+            }}"#
+        ))
         .unwrap()
+    }
+
+    fn sample_pr() -> Pr {
+        pr_with(r#""mergeable": "MERGEABLE""#)
     }
 
     #[test]
@@ -1289,7 +1314,9 @@ mod tests {
     fn every_status_glyph_is_a_single_character() {
         for status in [
             PrStatus::Draft,
+            PrStatus::Conflict,
             PrStatus::Failing,
+            PrStatus::Running,
             PrStatus::Ready,
             PrStatus::Idle,
         ] {
@@ -1300,6 +1327,94 @@ mod tests {
                 "{status:?} draws {glyph:?}, which is not one character"
             );
         }
+    }
+
+    /// A conflicting branch cannot merge whatever CI says, and the work it
+    /// needs (a rebase) is not the work a red build needs. Red like a
+    /// failure: both are the author's to fix, the shape tells them apart.
+    #[test]
+    fn a_conflict_outranks_a_failing_build() {
+        let pr = pr_with(
+            r#""mergeable": "CONFLICTING",
+               "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]"#,
+        );
+
+        assert_eq!(pr_status(&pr), PrStatus::Conflict);
+        assert_eq!(
+            status_look(PrStatus::Conflict),
+            ("!", Style::new().fg(Color::Red))
+        );
+    }
+
+    /// GitHub computes mergeability lazily: "UNKNOWN" means "not yet",
+    /// never "broken".
+    #[test]
+    fn an_unknown_mergeability_is_not_a_conflict() {
+        let pr = pr_with(r#""mergeable": "UNKNOWN""#);
+
+        assert_eq!(pr_status(&pr), PrStatus::Idle);
+    }
+
+    #[test]
+    fn a_failing_build_reads_as_failing() {
+        let pr = pr_with(
+            r#""mergeable": "MERGEABLE",
+               "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]"#,
+        );
+
+        assert_eq!(pr_status(&pr), PrStatus::Failing);
+    }
+
+    /// The same glyph and color as a running workflow on the Actions tab,
+    /// so the two tabs speak one language.
+    #[test]
+    fn a_running_build_reads_as_running_like_on_the_actions_tab() {
+        let pr = pr_with(
+            r#""mergeable": "MERGEABLE",
+               "statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": ""}]"#,
+        );
+        let (run_label, run_style) = run_look("in_progress", "");
+
+        assert_eq!(pr_status(&pr), PrStatus::Running);
+        let (glyph, style) = status_look(PrStatus::Running);
+        assert!(run_label.starts_with(glyph), "{run_label:?} vs {glyph:?}");
+        assert_eq!(style, run_style);
+    }
+
+    /// "Just wait" would be a lie: the author already has work to do.
+    #[test]
+    fn changes_requested_beats_a_build_still_running() {
+        let pr = pr_with(
+            r#""reviewDecision": "CHANGES_REQUESTED",
+               "statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": ""}]"#,
+        );
+
+        assert_eq!(pr_status(&pr), PrStatus::Failing);
+    }
+
+    /// The tick only shows once nothing is failing nor running: it means
+    /// "merge it".
+    #[test]
+    fn an_approved_pr_waits_for_its_build_before_it_reads_ready() {
+        let running = pr_with(
+            r#""reviewDecision": "APPROVED",
+               "statusCheckRollup": [{"status": "QUEUED", "conclusion": ""}]"#,
+        );
+        let green = pr_with(
+            r#""reviewDecision": "APPROVED", "mergeable": "MERGEABLE",
+               "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}]"#,
+        );
+
+        assert_eq!(pr_status(&running), PrStatus::Running);
+        assert_eq!(pr_status(&green), PrStatus::Ready);
+    }
+
+    /// No checks at all is no reason to withhold the green tick.
+    #[test]
+    fn approved_in_a_repo_without_ci_is_still_ready() {
+        let pr = pr_with(r#""reviewDecision": "APPROVED""#);
+
+        assert_eq!(pr_status(&pr), PrStatus::Ready);
     }
 
     #[test]

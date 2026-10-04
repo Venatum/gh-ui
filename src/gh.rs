@@ -15,8 +15,11 @@ use std::process::{Command, Output, Stdio};
 /// Maximum number of PRs fetched per repo (like the script's `--limit`).
 const PR_LIMIT: &str = "50";
 
-/// JSON fields requested from `gh` for each PR.
-const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName";
+/// JSON fields requested from `gh` for each PR. A field more never costs a
+/// request more: `gh` builds one GraphQL query per repo whatever we ask for.
+/// `statusCheckRollup` is the heavy one (the full array of checks, no way to
+/// narrow it); it is what feeds the `St` column's ✗ and ● glyphs.
+const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName,mergeable,statusCheckRollup";
 
 /// Number of runs fetched per repo (most recent runs, all branches).
 /// 100 is the largest page GitHub serves, so it costs exactly the same single
@@ -438,6 +441,24 @@ mod tests {
             status: std::process::ExitStatus::from_raw(code << 8),
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// `model::Pr` reads `mergeable` and `statusCheckRollup` with serde
+    /// defaults: if the request stopped asking for them, every PR would
+    /// silently read "no conflict, no checks" instead of failing loudly.
+    #[test]
+    fn the_pr_request_asks_for_the_fields_the_status_column_needs() {
+        for field in [
+            "isDraft",
+            "reviewDecision",
+            "mergeable",
+            "statusCheckRollup",
+        ] {
+            assert!(
+                JSON_FIELDS.split(',').any(|f| f == field),
+                "JSON_FIELDS must request {field}"
+            );
         }
     }
 
