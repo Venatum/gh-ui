@@ -33,6 +33,22 @@ Enter
 Sleep 1s
 Escape
 Sleep 800ms
+
+# The PR under the cursor, read without leaving gh-ui: its sections, then
+# the reviews folded in Comments, unfolded with space.
+Enter
+Sleep 3s
+Right
+Sleep 1.5s
+Right
+Sleep 1.5s
+Right
+Sleep 2s
+Type " "
+Sleep 2s
+Escape
+Sleep 1s
+
 Type "m"
 Sleep 2s
 Type "m"
