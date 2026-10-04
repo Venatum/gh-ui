@@ -1,0 +1,18 @@
+[
+  {
+    "tagName": "v0.9.0-beta.2",
+    "name": "Shell completions",
+    "publishedAt": "@ago:9",
+    "isLatest": false,
+    "isDraft": false,
+    "isPrerelease": true
+  },
+  {
+    "tagName": "v0.9.0-beta.1",
+    "name": "First public beta",
+    "publishedAt": "@ago:27",
+    "isLatest": false,
+    "isDraft": false,
+    "isPrerelease": true
+  }
+]

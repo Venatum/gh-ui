@@ -1,0 +1,18 @@
+[
+  {
+    "tagName": "v1.8.0",
+    "name": "Dark mode",
+    "publishedAt": "@ago:96",
+    "isLatest": true,
+    "isDraft": false,
+    "isPrerelease": false
+  },
+  {
+    "tagName": "v1.7.2",
+    "name": "Login redirect fix",
+    "publishedAt": "@ago:130",
+    "isLatest": false,
+    "isDraft": false,
+    "isPrerelease": false
+  }
+]

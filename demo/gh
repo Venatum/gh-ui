@@ -23,6 +23,7 @@ case "${1:-} ${2:-}" in
   "pr list") file="$fixtures/prs/$(basename "$PWD").json" ;;
   "run list") file="$fixtures/runs/$(basename "$PWD").json" ;;
   "issue list") file="$fixtures/issues/$(basename "$PWD").json" ;;
+  "release list") file="$fixtures/releases/$(basename "$PWD").json" ;;
   "repo list") file="$fixtures/repos/$3.json"; shift ;;
   # `repo clone owner/name dest`: an empty repo pointing at it, after a
   # pause so the batch reads queued → cloning → cloned.

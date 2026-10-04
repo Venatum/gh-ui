@@ -1,0 +1,26 @@
+[
+  {
+    "tagName": "v2.4.0",
+    "name": "Rate limit headers on every response",
+    "publishedAt": "@ago:2",
+    "isLatest": true,
+    "isDraft": false,
+    "isPrerelease": false
+  },
+  {
+    "tagName": "v2.3.1",
+    "name": "Fix pagination cursor",
+    "publishedAt": "@ago:19",
+    "isLatest": false,
+    "isDraft": false,
+    "isPrerelease": false
+  },
+  {
+    "tagName": "v2.3.0",
+    "name": "Webhooks retry with backoff",
+    "publishedAt": "@ago:41",
+    "isLatest": false,
+    "isDraft": false,
+    "isPrerelease": false
+  }
+]
