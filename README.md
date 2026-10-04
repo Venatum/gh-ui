@@ -124,7 +124,9 @@ GitHub badges so, or — for a repo that only ever shipped pre-releases — the
 most recent one that is not a draft; a pre-release reads `[P]` after its
 tag. A repo that never released keeps its row, grayed, reading
 `no release`, at the bottom of the list. `enter` opens the release on
-GitHub, or the repo's releases page on a `no release` row.
+GitHub, or the repo's releases page on a `no release` row. The releases are
+those of the repo the folder's `origin` points to: in a fork, yours, even
+when `gh repo set-default` points the folder to the upstream.
 
 `Unreleased` counts the commits on the default branch since the release's
 tag — what the next release would ship. It is asked of your local clone
