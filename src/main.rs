@@ -7,6 +7,7 @@ mod gh;
 mod issues;
 mod model;
 mod refresh;
+mod releases;
 mod repos;
 mod runfilters;
 mod search;
