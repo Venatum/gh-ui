@@ -2914,6 +2914,35 @@ mod tests {
         })
     }
 
+    /// A reload asked for during a load is not lost: it starts on the tick
+    /// that brings the load in flight.
+    #[test]
+    fn a_queued_release_reload_starts_once_the_load_in_flight_is_over() {
+        let mut app = releases_app();
+        app.release_tab.pending = true;
+        app.tx.send(releases_answer(Vec::new())).unwrap();
+
+        app.on_tick();
+
+        assert!(app.release_tab.loading, "the queued reload runs");
+        assert!(!app.release_tab.pending);
+    }
+
+    /// The header's spinner turns while the releases load, whatever else
+    /// is idle.
+    #[test]
+    fn a_release_load_alone_keeps_the_app_busy() {
+        let mut app = releases_app();
+        app.loading = false;
+        app.repos_loading = false;
+        app.issue_tab.loading = false;
+        app.repo_tab.cloning = false;
+        assert!(app.is_busy());
+
+        app.release_tab.loading = false;
+        assert!(!app.is_busy());
+    }
+
     #[test]
     fn a_release_load_counts_the_released_repos_and_says_what_failed() {
         let mut app = releases_app();

@@ -703,6 +703,12 @@ mod tests {
         // A tag that was never fetched here: unknown, not zero.
         assert_eq!(unreleased_commits(&dir, "v9.9.9"), None);
 
+        // git resolves a bare name to `refs/<name>` before `refs/tags/<name>`:
+        // another ref of the tag's name, on the last commit, must not be
+        // what the count starts from.
+        git(&dir, &["update-ref", "refs/v1.0.0", "HEAD"]);
+        assert_eq!(unreleased_commits(&dir, "v1.0.0"), Some(2));
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
