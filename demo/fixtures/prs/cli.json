@@ -17,7 +17,30 @@
         "color": "a2eeef"
       }
     ],
-    "headRefName": "feat/completions"
+    "headRefName": "feat/completions",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/acme/cli/actions/runs/9100022740/job/27300068220",
+        "name": "build (ubuntu-latest)",
+        "startedAt": "@ago:0.5",
+        "status": "QUEUED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/acme/cli/actions/runs/9100023877/job/27300071631",
+        "name": "build (macos-latest)",
+        "startedAt": "@ago:0.5",
+        "status": "QUEUED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 86,
@@ -37,7 +60,30 @@
         "color": "7057ff"
       }
     ],
-    "headRefName": "fix/no-color"
+    "headRefName": "fix/no-color",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/cli/actions/runs/9100025014/job/27300075042",
+        "name": "build (ubuntu-latest)",
+        "startedAt": "@ago:2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/cli/actions/runs/9100026151/job/27300078453",
+        "name": "build (macos-latest)",
+        "startedAt": "@ago:2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 81,
@@ -52,6 +98,8 @@
     "additions": 530,
     "deletions": 210,
     "labels": [],
-    "headRefName": "feat/config-v2"
+    "headRefName": "feat/config-v2",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": null
   }
 ]

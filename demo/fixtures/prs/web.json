@@ -21,7 +21,37 @@
         "color": "a2eeef"
       }
     ],
-    "headRefName": "feat/dark-settings"
+    "headRefName": "feat/dark-settings",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100014781/job/27300044343",
+        "name": "build",
+        "startedAt": "@ago:0.2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100015918/job/27300047754",
+        "name": "e2e",
+        "startedAt": "@ago:0.2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "deploy/preview",
+        "startedAt": "@ago:0.2",
+        "state": "SUCCESS",
+        "targetUrl": "https://preview.acme.test/web/pr-233"
+      }
+    ]
   },
   {
     "number": 230,
@@ -41,7 +71,30 @@
         "color": "c5def5"
       }
     ],
-    "headRefName": "feat/grid-keys"
+    "headRefName": "feat/grid-keys",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100017055/job/27300051165",
+        "name": "build",
+        "startedAt": "@ago:1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:1",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100018192/job/27300054576",
+        "name": "e2e",
+        "startedAt": "@ago:1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 228,
@@ -61,7 +114,30 @@
         "color": "d73a4a"
       }
     ],
-    "headRefName": "fix/safari-datepicker"
+    "headRefName": "fix/safari-datepicker",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:3",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100019329/job/27300057987",
+        "name": "build",
+        "startedAt": "@ago:3",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:3",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100020466/job/27300061398",
+        "name": "e2e",
+        "startedAt": "@ago:3",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 219,
@@ -85,6 +161,26 @@
         "color": "ee0701"
       }
     ],
-    "headRefName": "dependabot/npm/vite-5.4.11"
+    "headRefName": "dependabot/npm/vite-5.4.11",
+    "mergeable": "UNKNOWN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:6",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/web/actions/runs/9100021603/job/27300064809",
+        "name": "build",
+        "startedAt": "@ago:6",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "deploy/preview",
+        "startedAt": "@ago:6",
+        "state": "PENDING",
+        "targetUrl": "https://preview.acme.test/web/pr-219"
+      }
+    ]
   }
 ]

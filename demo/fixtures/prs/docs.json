@@ -17,7 +17,9 @@
         "color": "0075ca"
       }
     ],
-    "headRefName": "docs/getting-started"
+    "headRefName": "docs/getting-started",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": []
   },
   {
     "number": 55,
@@ -37,6 +39,8 @@
         "color": "0075ca"
       }
     ],
-    "headRefName": "docs/webhooks"
+    "headRefName": "docs/webhooks",
+    "mergeable": "CONFLICTING",
+    "statusCheckRollup": []
   }
 ]

@@ -17,7 +17,40 @@
         "color": "a2eeef"
       }
     ],
-    "headRefName": "feat/rate-limit"
+    "headRefName": "feat/rate-limit",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100001137/job/27300003411",
+        "name": "build",
+        "startedAt": "@ago:0.1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100002274/job/27300006822",
+        "name": "test",
+        "startedAt": "@ago:0.1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100003411/job/27300010233",
+        "name": "lint",
+        "startedAt": "@ago:0.1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 409,
@@ -37,7 +70,40 @@
         "color": "d73a4a"
       }
     ],
-    "headRefName": "fix/token-refresh"
+    "headRefName": "fix/token-refresh",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100004548/job/27300013644",
+        "name": "lint",
+        "startedAt": "@ago:0.1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:0.1",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100005685/job/27300017055",
+        "name": "build",
+        "startedAt": "@ago:0.1",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "0001-01-01T00:00:00Z",
+        "conclusion": "",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100006822/job/27300020466",
+        "name": "test",
+        "startedAt": "@ago:0.1",
+        "status": "IN_PROGRESS",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 405,
@@ -57,7 +123,30 @@
         "color": "0366d6"
       }
     ],
-    "headRefName": "dependabot/cargo/serde-1.0.215"
+    "headRefName": "dependabot/cargo/serde-1.0.215",
+    "mergeable": "CONFLICTING",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100007959/job/27300023877",
+        "name": "build",
+        "startedAt": "@ago:2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:2",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100009096/job/27300027288",
+        "name": "test",
+        "startedAt": "@ago:2",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 398,
@@ -81,7 +170,30 @@
         "color": "fbca04"
       }
     ],
-    "headRefName": "feat/audit-pagination"
+    "headRefName": "feat/audit-pagination",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:4",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100010233/job/27300030699",
+        "name": "build",
+        "startedAt": "@ago:4",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:4",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100011370/job/27300034110",
+        "name": "test",
+        "startedAt": "@ago:4",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   },
   {
     "number": 377,
@@ -96,6 +208,29 @@
     "additions": 1204,
     "deletions": 87,
     "labels": [],
-    "headRefName": "spike/graphql"
+    "headRefName": "spike/graphql",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:12",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100012507/job/27300037521",
+        "name": "build",
+        "startedAt": "@ago:12",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@ago:12",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100013644/job/27300040932",
+        "name": "test",
+        "startedAt": "@ago:12",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
   }
 ]
