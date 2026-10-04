@@ -17,8 +17,11 @@ const PR_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each PR. A field more never costs a
 /// request more: `gh` builds one GraphQL query per repo whatever we ask for.
-/// `statusCheckRollup` is the heavy one (the full array of checks, no way to
-/// narrow it); it is what feeds the `State` column's ✗ and ● glyphs.
+/// It can cost time, though: `statusCheckRollup` (the full array of checks,
+/// every attempt, no way to narrow it) is by far the heaviest. Measured on
+/// `cli/cli`, 50 PRs: 0.65 s and 4 KB without it, 3.8 s and 259 KB with it,
+/// on every load and auto-refresh. It is what feeds the `State` column's ✗
+/// and ● glyphs; a normal repo, with a few PRs and checks, pays far less.
 const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName,mergeable,statusCheckRollup";
 
 /// Number of runs fetched per repo (most recent runs, all branches).
