@@ -189,6 +189,11 @@ fn status_look(status: PrStatus) -> (&'static str, Style) {
     }
 }
 
+/// The `St` column's legend, one line of the help popup. Next to
+/// `status_look` so the two cannot drift apart, and short enough to fit
+/// `HELP_WIDTH` after the 12 columns a help row spends on its key.
+pub const STATUS_LEGEND: &str = "· draft  ! conflict  ✗ failed  ● running  ✓ ready";
+
 /// How loud a date reads: bold today, plain within 30 days, gray beyond. No
 /// white nor light gray: they vanish on a light terminal. An unparsable
 /// date stays plain.
@@ -1415,6 +1420,25 @@ mod tests {
         let pr = pr_with(r#""reviewDecision": "APPROVED""#);
 
         assert_eq!(pr_status(&pr), PrStatus::Ready);
+    }
+
+    /// The legend and `status_look` sit side by side; this is what actually
+    /// holds them together. `Idle` draws a space: nothing to explain.
+    #[test]
+    fn the_legend_names_every_glyph_the_column_can_draw() {
+        for status in [
+            PrStatus::Draft,
+            PrStatus::Conflict,
+            PrStatus::Failing,
+            PrStatus::Running,
+            PrStatus::Ready,
+        ] {
+            let (glyph, _) = status_look(status);
+            assert!(
+                STATUS_LEGEND.contains(glyph),
+                "{status:?} draws {glyph:?}, which the legend does not name"
+            );
+        }
     }
 
     #[test]

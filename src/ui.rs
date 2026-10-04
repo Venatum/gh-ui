@@ -4,7 +4,7 @@
 use crate::app::{App, Confirm, FilterField, InputKind, Tab, section_of};
 use crate::columns::{
     Column, ColumnLayout, IssueColumn, PrColumn, ReleaseColumn, RepoColumn, RunColumn,
-    release_row_style, repo_row_style,
+    STATUS_LEGEND, release_row_style, repo_row_style,
 };
 use crate::filters::{AuthorFilter, Filters};
 use crate::issues::IssueFilters;
@@ -746,10 +746,15 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab/1-5", "switch tab (PRs/Actions/Issues/Repos/Releases)"),
         help_row("m", "mine: PRs / their runs / issues assigned to me"),
+        help_row("St column", STATUS_LEGEND),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
-        help_row("↑/↓", "choose a filter"),
-        help_row("←/→", "change its value (cycles, boxes)"),
+        // One row for both arrow pairs: it pays for the `St` legend's line,
+        // the popup already filling an 80x24 terminal.
+        help_row(
+            "↑/↓ ←/→",
+            "choose a filter, change its value (cycles, boxes)",
+        ),
         help_row("enter", "edit author/label · esc to close"),
         Line::from(""),
         Line::from(Span::styled("  In the columns panel", Style::new().bold())),
@@ -971,6 +976,30 @@ mod tests {
     /// The `/` row must be in the help AND fit `HELP_WIDTH` — `Paragraph`
     /// truncates instead of wrapping, so an over-long row loses its tail in
     /// silence. Same guard as `the_auto_refresh_help_row_is_not_truncated`.
+    /// The `St` column's legend is in the help, whole: `Paragraph` would
+    /// clip a longer legend (or a narrower `HELP_WIDTH`) without a word.
+    #[test]
+    fn the_status_legend_row_is_not_truncated() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains(STATUS_LEGEND),
+            "the status legend must fit HELP_WIDTH without being cut"
+        );
+    }
+
+    /// The legend's line is paid for by the filter panel's two arrow rows,
+    /// merged into one: the popup stays 24 rows high.
+    #[test]
+    fn the_merged_filter_panel_arrows_row_is_not_truncated() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+
+        assert!(
+            text.contains("choose a filter, change its value (cycles, boxes)"),
+            "the merged arrows row must fit HELP_WIDTH without being cut"
+        );
+    }
+
     #[test]
     fn the_search_help_row_is_not_truncated() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
