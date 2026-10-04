@@ -2,6 +2,7 @@
 //! plus the small nested types (author, label, check).
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 // `#[derive(...)]` asks the compiler to generate code for us.
 //   - `Deserialize`: serde will know how to build this type FROM JSON.
@@ -25,8 +26,9 @@ pub struct Label {
 /// `status` + `conclusion`) and a `StatusContext` (the older commit-status
 /// API: `state` alone). Rather than an untagged enum, all three fields are
 /// defaulted and we read whichever the entry carries; the ones we do not
-/// need (name, detailsUrl, timestamps...) are simply ignored by serde.
+/// need (detailsUrl, completedAt...) are simply ignored by serde.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Check {
     /// CheckRun: "QUEUED" | "IN_PROGRESS" | "COMPLETED"... ; "" on a
     /// StatusContext, which has no such field.
@@ -39,9 +41,42 @@ pub struct Check {
     /// "EXPECTED" ; "" on a CheckRun.
     #[serde(default)]
     pub state: String,
+    /// What tells the attempts of one check apart from another check: the
+    /// workflow and job names of a CheckRun, the context of a
+    /// StatusContext. `Option`s, so a `null` cannot fail the whole parse.
+    #[serde(default)]
+    pub workflow_name: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    /// When this attempt started; `null`, or year 1, while it waits for a
+    /// runner.
+    #[serde(default)]
+    pub started_at: Option<String>,
 }
 
 impl Check {
+    /// Which check this entry is an attempt of: GitHub lists every attempt,
+    /// so a job re-run after a failure appears twice under the same key.
+    fn key(&self) -> (&str, &str, &str) {
+        (
+            self.workflow_name.as_deref().unwrap_or_default(),
+            self.name.as_deref().unwrap_or_default(),
+            self.context.as_deref().unwrap_or_default(),
+        )
+    }
+
+    /// Orders the attempts of a check, newest last. One that has not
+    /// started yet (a queued re-run) is the newest of all: `true` sorts
+    /// after `false`, whatever the start times. ISO 8601 times sort as text.
+    fn recency(&self) -> (bool, &str) {
+        match self.started_at.as_deref() {
+            Some(at) if !at.is_empty() && !at.starts_with("0001-") => (false, at),
+            _ => (true, ""),
+        }
+    }
+
     /// A check that failed for a reason worth reporting. CANCELLED, SKIPPED,
     /// NEUTRAL and STALE are deliberately NOT failures.
     fn is_failing(&self) -> bool {
@@ -123,17 +158,35 @@ impl Pr {
     /// passing, so one failed job among twenty running ones still reads as
     /// a failure.
     pub fn checks_state(&self) -> ChecksState {
-        let checks = self.status_check_rollup.as_deref().unwrap_or_default();
+        let checks = latest_attempts(self.status_check_rollup.as_deref().unwrap_or_default());
         if checks.is_empty() {
             ChecksState::None
-        } else if checks.iter().any(Check::is_failing) {
+        } else if checks.iter().any(|check| check.is_failing()) {
             ChecksState::Failing
-        } else if checks.iter().any(Check::is_running) {
+        } else if checks.iter().any(|check| check.is_running()) {
             ChecksState::Running
         } else {
             ChecksState::Passing
         }
     }
+}
+
+/// The latest attempt of each check, as `gh pr checks` and GitHub's own
+/// checks tab count them: the earlier attempts of a re-run job no longer
+/// say anything about the PR.
+fn latest_attempts(checks: &[Check]) -> Vec<&Check> {
+    let mut latest: HashMap<(&str, &str, &str), &Check> = HashMap::new();
+    for check in checks {
+        latest
+            .entry(check.key())
+            .and_modify(|kept| {
+                if check.recency() > kept.recency() {
+                    *kept = check;
+                }
+            })
+            .or_insert(check);
+    }
+    latest.into_values().collect()
 }
 
 /// A GitHub Actions run, as `gh run list --json ...` returns it.
@@ -231,8 +284,8 @@ mod tests {
     fn one_failed_check_outweighs_the_ones_still_running() {
         let pr = pr_with(
             r#""statusCheckRollup": [
-                {"status": "IN_PROGRESS", "conclusion": ""},
-                {"status": "COMPLETED", "conclusion": "FAILURE"}
+                {"name": "build", "status": "IN_PROGRESS", "conclusion": ""},
+                {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}
             ]"#,
         );
 
@@ -243,8 +296,8 @@ mod tests {
     fn a_check_still_running_outweighs_the_ones_that_passed() {
         let pr = pr_with(
             r#""statusCheckRollup": [
-                {"status": "COMPLETED", "conclusion": "SUCCESS"},
-                {"status": "QUEUED", "conclusion": ""}
+                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "test", "status": "QUEUED", "conclusion": ""}
             ]"#,
         );
 
@@ -257,10 +310,10 @@ mod tests {
     fn skipped_cancelled_and_neutral_checks_are_not_failures() {
         let pr = pr_with(
             r#""statusCheckRollup": [
-                {"status": "COMPLETED", "conclusion": "SKIPPED"},
-                {"status": "COMPLETED", "conclusion": "CANCELLED"},
-                {"status": "COMPLETED", "conclusion": "NEUTRAL"},
-                {"status": "COMPLETED", "conclusion": "SUCCESS"}
+                {"name": "a", "status": "COMPLETED", "conclusion": "SKIPPED"},
+                {"name": "b", "status": "COMPLETED", "conclusion": "CANCELLED"},
+                {"name": "c", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+                {"name": "d", "status": "COMPLETED", "conclusion": "SUCCESS"}
             ]"#,
         );
 
@@ -279,6 +332,67 @@ mod tests {
         assert_eq!(failing.checks_state(), ChecksState::Failing);
         assert_eq!(pending.checks_state(), ChecksState::Running);
         assert_eq!(green.checks_state(), ChecksState::Passing);
+    }
+
+    /// GitHub keeps every attempt of a job: a failure re-run green must
+    /// read as green, whatever order the array lists the two in.
+    #[test]
+    fn a_job_re_run_green_after_a_failure_reads_as_passing() {
+        let pr = pr_with(
+            r#""statusCheckRollup": [
+                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"},
+                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"}
+            ]"#,
+        );
+
+        assert_eq!(pr.checks_state(), ChecksState::Passing);
+    }
+
+    /// A re-run waiting for a runner has not started: it is still the
+    /// newest attempt, and says "wait", not the failure it replaces.
+    #[test]
+    fn a_queued_re_run_hides_the_failure_it_replaces() {
+        let pr = pr_with(
+            r#""statusCheckRollup": [
+                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
+                {"workflowName": "CI", "name": "test", "status": "QUEUED",
+                 "conclusion": "", "startedAt": "0001-01-01T00:00:00Z"}
+            ]"#,
+        );
+
+        assert_eq!(pr.checks_state(), ChecksState::Running);
+    }
+
+    /// Two workflows may both have a `test` job: they are two checks.
+    #[test]
+    fn the_same_job_name_in_two_workflows_is_two_checks() {
+        let pr = pr_with(
+            r#""statusCheckRollup": [
+                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                 "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
+                {"workflowName": "Lint", "name": "test", "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"}
+            ]"#,
+        );
+
+        assert_eq!(pr.checks_state(), ChecksState::Failing);
+    }
+
+    /// A commit status posted again under the same context replaces the
+    /// earlier one too.
+    #[test]
+    fn a_status_context_posted_again_replaces_the_earlier_one() {
+        let pr = pr_with(
+            r#""statusCheckRollup": [
+                {"context": "ci/deploy", "state": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
+                {"context": "ci/deploy", "state": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"}
+            ]"#,
+        );
+
+        assert_eq!(pr.checks_state(), ChecksState::Passing);
     }
 
     #[test]

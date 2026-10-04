@@ -92,7 +92,9 @@ exactly one glyph, the first line of this table that matches:
 
 The same legend is in the help screen (`?`). Cancelled, skipped and neutral
 checks count as neither failing nor running: a job skipped by a path filter
-is a normal outcome, not a problem.
+is a normal outcome, not a problem. A job that was re-run counts by its
+latest attempt only, as on GitHub's checks tab: a failure re-run green is
+green, and a re-run still queued reads `●`.
 
 The two fields this needs, `mergeable` and `statusCheckRollup`, ride the one
 `gh pr list` call each repo already makes: no request per PR, so
