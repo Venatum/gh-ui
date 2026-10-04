@@ -285,9 +285,7 @@ fn latest_release(repo_dir: &Path, repo: Option<&str>) -> Result<Option<Release>
 /// a usable `origin`: `gh` then picks the repo itself, as in the other
 /// tabs.
 fn release_source(dir: &Path) -> Option<ReleaseSource> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let output = git_in(dir)
         .args(["remote", "get-url", "origin"])
         .output()
         .ok()
@@ -339,9 +337,7 @@ pub fn unreleased_commits(repo_dir: &Path, tag: &str) -> Option<u64> {
     // `refs/tags/` spelled out: a branch of the same name cannot be picked
     // instead, and a tag starting with `-` cannot pass for an option.
     let range = format!("refs/tags/{tag}..origin/HEAD");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
+    let output = git_in(repo_dir)
         .args(["rev-list", "--count", &range])
         .output()
         .ok()
@@ -471,12 +467,29 @@ pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
         .collect()
 }
 
+/// `git` run on the repo in `dir`, and on no other. `-C` alone is not
+/// enough: `GIT_DIR` and `GIT_WORK_TREE`, when set, win over it — `git
+/// rebase --exec` sets them for the command it runs, so a `cargo test`
+/// under it had the tests' scratch commits and tags land in the repo being
+/// rebased.
+fn git_in(dir: &Path) -> Command {
+    let mut git = Command::new("git");
+    git.arg("-C").arg(dir);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        git.env_remove(var);
+    }
+    git
+}
+
 /// The `owner/name` the `origin` remote of the repo in `dir` points to, or
 /// `None` without a GitHub origin. Local `git`, no network.
 fn origin_of(dir: &Path) -> Option<String> {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    git_in(dir)
         .args(["remote", "get-url", "origin"])
         .output()
         .ok()
@@ -800,9 +813,7 @@ mod tests {
     /// Runs `git` in `dir` for the test's setup. Signing and hooks off: the
     /// user's own git config must not decide whether the test passes.
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let status = git_in(dir)
             .args([
                 "-c",
                 "user.name=test",
