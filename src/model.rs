@@ -1,8 +1,15 @@
 //! The app's data structures: the shape of a PR as `gh` returns it in JSON,
 //! plus the small nested types (author, label, check).
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
+
+/// For a text field `gh` may send as `null`: read as "" like a missing
+/// key. `#[serde(default)]` alone covers the missing key only, and one
+/// `null` would fail the parse of the whole list.
+fn null_as_empty<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 // `#[derive(...)]` asks the compiler to generate code for us.
 //   - `Deserialize`: serde will know how to build this type FROM JSON.
@@ -32,14 +39,14 @@ pub struct Label {
 pub struct Check {
     /// CheckRun: "QUEUED" | "IN_PROGRESS" | "COMPLETED"... ; "" on a
     /// StatusContext, which has no such field.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub status: String,
     /// CheckRun: "SUCCESS" | "FAILURE" | "SKIPPED"... ; "" while it runs.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub conclusion: String,
     /// StatusContext: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" |
     /// "EXPECTED" ; "" on a CheckRun.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub state: String,
     /// What tells the attempts of one check apart from another check: the
     /// workflow and job names of a CheckRun, the context of a
@@ -118,7 +125,7 @@ pub struct Pr {
     // `gh` returns "" (empty string) when there is no decision yet.
     // `#[serde(default)]` = if the field is missing from the JSON, use the
     // default value (here an empty String) instead of crashing.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub review_decision: String,
 
     pub is_draft: bool,
@@ -137,7 +144,7 @@ pub struct Pr {
     /// "MERGEABLE" | "CONFLICTING" | "UNKNOWN". GitHub computes it lazily,
     /// so "UNKNOWN" is common right after a push: it must never read as a
     /// conflict.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub mergeable: String,
 
     /// The PR's checks. An `Option` so that both a missing key and a JSON
@@ -200,7 +207,7 @@ pub struct Run {
     /// "queued" | "in_progress" | "completed".
     pub status: String,
     /// "success" | "failure" | "cancelled" | "skipped"... ; "" if not finished.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub conclusion: String,
     /// "push" | "pull_request" | "schedule"...
     pub event: String,
@@ -392,6 +399,23 @@ mod tests {
             ]"#,
         );
 
+        assert_eq!(pr.checks_state(), ChecksState::Passing);
+    }
+
+    /// `#[serde(default)]` only covers a missing key: a `null` in one PR
+    /// would fail the parse of the whole repo's list. gh sends strings
+    /// today; this keeps a future `null` to a blank instead.
+    #[test]
+    fn a_null_text_field_reads_as_blank() {
+        let pr = pr_with(
+            r#""reviewDecision": null, "mergeable": null,
+               "statusCheckRollup": [
+                   {"name": "test", "status": null, "conclusion": null, "state": null}
+               ]"#,
+        );
+
+        assert_eq!(pr.review_decision, "");
+        assert_eq!(pr.mergeable, "");
         assert_eq!(pr.checks_state(), ChecksState::Passing);
     }
 
