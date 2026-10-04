@@ -1,0 +1,19 @@
+{
+  "body": "Bumps [vite](https://github.com/vitejs/vite/tree/HEAD/packages/vite) from 5.4.8 to 5.4.11.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a href=\"https://github.com/vitejs/vite/releases\">vite's releases</a>.</em></p>\n<blockquote>\n<h2>v5.4.11</h2>\n<p>Please refer to <a href=\"https://github.com/vitejs/vite/blob/v5.4.11/packages/vite/CHANGELOG.md\">CHANGELOG.md</a> for details.</p>\n<h2>v5.4.10</h2>\n<h3>Bug Fixes</h3>\n<ul>\n<li><strong>dev:</strong> keep the &lt;base&gt; path when serving <code>index.html</code> (<a href=\"https://github.com/vitejs/vite/issues/18418\">#18418</a>)</li>\n<li><strong>ssr:</strong> resolve <code>exports</code> &amp; <code>imports</code> in workers (<a href=\"https://github.com/vitejs/vite/issues/18422\">#18422</a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a href=\"https://github.com/vitejs/vite/blob/v5.4.11/packages/vite/CHANGELOG.md\">vite's changelog</a>.</em></p>\n<blockquote>\n<h2>5.4.11 (2024-11-11)</h2>\n<ul>\n<li>fix(deps): backport the <code>esbuild</code> bump (<a href=\"https://github.com/vitejs/vite/issues/18631\">#18631</a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a href=\"https://github.com/vitejs/vite/commit/3c257fd\"><code>3c257fd</code></a> release: v5.4.11</li>\n<li><a href=\"https://github.com/vitejs/vite/commit/8a1b2c0\"><code>8a1b2c0</code></a> fix(deps): backport the esbuild bump</li>\n<li>See full diff in <a href=\"https://github.com/vitejs/vite/commits/v5.4.11/packages/vite\">compare view</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=vite&package-manager=npm_and_yarn&previous-version=5.4.8&new-version=5.4.11)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't alter it yourself. You can also trigger a rebase manually by commenting `@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits that have been made to it\n- `@dependabot merge` will merge this PR after your CI passes on it\n- `@dependabot ignore this major version` will close this PR and stop Dependabot creating any more for this major version\n</details>",
+  "baseRefName": "main",
+  "changedFiles": 2,
+  "files": [
+    {
+      "path": "package.json",
+      "additions": 1,
+      "deletions": 1,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "package-lock.json",
+      "additions": 11,
+      "deletions": 11,
+      "changeType": "MODIFIED"
+    }
+  ]
+}

@@ -123,8 +123,15 @@ GitHub). `←/→` walk four sections:
   decision, what each reviewer said last and who is still waited on; the
   checks; the merge state and the labels), then the description. The
   markdown gets a light touch: headings, lists, quotes and code blocks stand
-  out, a PR template's `<!-- … -->` instructions are hidden as on GitHub, an
-  image reads `[image: its alt text]`. Bold, links and tables stay as typed.
+  out, bold, italic and struck text show as such, inline code in yellow
+  without its backticks, `:rocket:` codes as emoji (the common ones) and
+  task boxes as `☑`/`☐`; a PR template's `<!-- … -->` instructions are
+  hidden as on GitHub, an image reads `[image: its alt text]`, a link `its
+  text (https://…)` with the URL whole, for your terminal to open. A table lines its columns up, its links' URLs listed
+  under it (or reads row by row when it is wider than the view). The HTML a
+  body may carry (a Dependabot PR's release notes and commits) reads the
+  same way, and a `<details>` block folds to one gray `▸ summary` line until
+  `space`.
 - **Checks**: one line per check, failures first, with how long it took or
   how long it has been running. A job re-run counts by its latest attempt
   only, as in the `State` column, which reads the same checks the same way.
@@ -141,7 +148,8 @@ GitHub). `←/→` walk four sections:
   give them, `enter` opens them on GitHub.
 
 `enter` (or `o`) opens the matching page on GitHub (the PR, its Checks
-tab, its Files tab), `space` folds and unfolds the Comments' reviews, `r`
+tab, its Files tab), `space` folds and unfolds the Comments' reviews and
+the `<details>` blocks (`▾`, their content indented under them), `r`
 reloads the view, and `esc` goes back to the list with the cursor on that
 PR.
 
@@ -283,7 +291,7 @@ the repo's releases page.
 | `↑/↓`, `j/k`           | scroll a line (each section keeps its place)     |
 | `PgUp/PgDn`, `Home/End` | scroll a page / to either end                   |
 | `enter`, `o`           | open the section's page on GitHub                |
-| `space`                | fold / unfold: a PR's reviews, a run's steps     |
+| `space`                | fold / unfold: reviews, run steps, `<details>`   |
 | `r`                    | reload the view                                  |
 | `esc`                  | back to the list, on the same row                |
 | `?`, `q`               | help, quit                                       |

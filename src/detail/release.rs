@@ -61,10 +61,22 @@ impl ReleaseDetail {
     }
 }
 
-/// The Notes section: the facts, a rule `width` wide, the release notes.
-/// `offset` is the user's time zone, for the publication date.
-pub fn notes_lines(d: &ReleaseDetail, width: u16, offset: FixedOffset) -> Vec<Line<'static>> {
-    facts_then_body(facts_lines(d, offset), &d.body, width, "No release notes.")
+/// The Notes section: the facts, a rule `width` wide, the release notes,
+/// their `<details>` blocks open when `show_folded`. `offset` is the
+/// user's time zone, for the publication date.
+pub fn notes_lines(
+    d: &ReleaseDetail,
+    width: u16,
+    offset: FixedOffset,
+    show_folded: bool,
+) -> Vec<Line<'static>> {
+    facts_then_body(
+        facts_lines(d, offset),
+        &d.body,
+        width,
+        "No release notes.",
+        show_folded,
+    )
 }
 
 /// One line per question: what kind of release, which tag, by whom and
@@ -212,13 +224,13 @@ mod tests {
 
     #[test]
     fn the_notes_open_on_the_facts() {
-        let lines = texts(&notes_lines(&sample(), 20, utc()));
+        let lines = texts(&notes_lines(&sample(), 20, utc(), false));
         assert_eq!(lines[0], "● release · v2.4.0 · @alice · 2026-10-02 09:08");
         assert_eq!(lines[1], "target   main");
         assert_eq!(lines[2], "assets   2 files · 1301 downloads");
         assert_eq!(lines[3], "─".repeat(20));
         assert_eq!(lines[5], "▍What's changed");
-        assert_eq!(lines[7], "  • `X-RateLimit-*` headers on every response");
+        assert_eq!(lines[7], "  • X-RateLimit-* headers on every response");
     }
 
     #[test]
@@ -227,10 +239,25 @@ mod tests {
         d.is_prerelease = true;
         d.body.clear();
         d.assets.clear();
-        let lines = texts(&notes_lines(&d, 20, utc()));
+        let lines = texts(&notes_lines(&d, 20, utc(), false));
         assert!(lines[0].starts_with("● pre-release · v2.4.0"));
         assert_eq!(lines[2], "assets   none");
         assert_eq!(lines[5], "No release notes.");
+    }
+
+    /// Release notes carry `<details>` blocks too: folded until `space`.
+    #[test]
+    fn details_blocks_in_the_notes_fold_until_space() {
+        let mut d = sample();
+        d.body = "<details><summary>Full changelog</summary>\r\n\r\n- a fix\r\n</details>".into();
+        assert_eq!(
+            texts(&notes_lines(&d, 20, utc(), false))[5..],
+            ["▸ Full changelog"]
+        );
+        assert_eq!(
+            texts(&notes_lines(&d, 20, utc(), true))[5..],
+            ["▾ Full changelog", "", "    • a fix"]
+        );
     }
 
     /// Sizes read as a person would say them; the columns line up.

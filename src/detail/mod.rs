@@ -1,8 +1,9 @@
 //! The detail view (`enter` on a row): what `gh … view` returns, the
 //! view's state, and the lines it shows. This file holds what every kind
-//! of row shares — the view, its sections, the markdown pass, the
-//! conversation — and the PRs' own detail. Pure: `gh.rs` runs the command,
-//! `fetch.rs` carries the answer, `ui.rs` draws what this module builds.
+//! of row shares — the view, its sections, the conversation — and the PRs'
+//! own detail; `markdown.rs` turns the bodies into lines. Pure: `gh.rs`
+//! runs the command, `fetch.rs` carries the answer, `ui.rs` draws what this
+//! module builds.
 
 use crate::columns::label_spans;
 use crate::model::{Author, Bucket, Check, Label, latest_attempts};
@@ -12,12 +13,15 @@ use ratatui::text::{Line, Span};
 use serde::Deserialize;
 
 mod issue;
+mod markdown;
 mod release;
 mod run;
 
 pub use issue::IssueDetail;
 pub use release::ReleaseDetail;
 pub use run::RunDetail;
+
+use markdown::markdown_lines;
 
 /// One PR as `gh pr view --json …` returns it: only the fields the view
 /// shows (see `gh::PR_VIEW_FIELDS`, which asks for exactly these). The
@@ -318,8 +322,9 @@ impl Detail {
 }
 
 /// What the drawing needs besides the detail: the room, the clock, the
-/// time zone and whether folded entries are open. Gathered so a section's
-/// lines are one pure call, which tests pin.
+/// time zone and whether folded entries (reviews, steps, `<details>`
+/// blocks) are open. Gathered so a section's lines are one pure call,
+/// which tests pin.
 #[derive(Debug, Clone, Copy)]
 pub struct Context {
     pub width: u16,
@@ -334,12 +339,12 @@ pub fn section_lines(detail: &Detail, section: Section, cx: Context) -> Vec<Line
         Detail::Pr(d) => match section {
             Section::Checks => checks_lines(d, cx.now, cx.width),
             Section::Files => files_lines(d, cx.width),
-            Section::Comments => comments_lines(d, cx.offset, cx.show_folded),
-            _ => overview_lines(d, cx.width),
+            Section::Comments => comments_lines(d, cx.offset, cx.width, cx.show_folded),
+            _ => overview_lines(d, cx.width, cx.show_folded),
         },
         Detail::Issue(d) => match section {
-            Section::Comments => issue::comments_lines(d, cx.offset),
-            _ => issue::overview_lines(d, cx.width, cx.offset),
+            Section::Comments => issue::comments_lines(d, cx.offset, cx.width, cx.show_folded),
+            _ => issue::overview_lines(d, cx.width, cx.offset, cx.show_folded),
         },
         Detail::Run(d) => match section {
             Section::Jobs => run::jobs_lines(d, cx.now, cx.width, cx.show_folded),
@@ -347,7 +352,7 @@ pub fn section_lines(detail: &Detail, section: Section, cx: Context) -> Vec<Line
         },
         Detail::Release(d) => match section {
             Section::Assets => release::assets_lines(d, cx.width),
-            _ => release::notes_lines(d, cx.width, cx.offset),
+            _ => release::notes_lines(d, cx.width, cx.offset, cx.show_folded),
         },
     }
 }
@@ -377,7 +382,8 @@ pub struct DetailView {
     pub max_scroll: u16,
     /// How many rows the text shows at once: what PgUp/PgDn move by.
     pub page: u16,
-    /// `space`: the Comments section shows the folded reviews in full.
+    /// `space`: what folds shows in full — the Comments' reviews, a run's
+    /// steps, a body's `<details>` blocks.
     pub show_folded: bool,
 }
 
@@ -398,7 +404,7 @@ impl DetailView {
         }
     }
 
-    /// `space`: unfolds the folded reviews, or folds them back.
+    /// `space`: unfolds what is folded, or folds it back.
     pub fn toggle_folded(&mut self) {
         self.show_folded = !self.show_folded;
     }
@@ -607,27 +613,35 @@ fn merge_fact(d: &PrDetail) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The Overview section: the facts, a rule `width` wide, the body.
-pub fn overview_lines(d: &PrDetail, width: u16) -> Vec<Line<'static>> {
+/// The Overview section: the facts, a rule `width` wide, the body, its
+/// `<details>` blocks open when `show_folded`.
+pub fn overview_lines(d: &PrDetail, width: u16, show_folded: bool) -> Vec<Line<'static>> {
     // GitHub's own words for a PR without a description.
-    facts_then_body(facts_lines(d), &d.body, width, "No description provided.")
+    facts_then_body(
+        facts_lines(d),
+        &d.body,
+        width,
+        "No description provided.",
+        show_folded,
+    )
 }
 
 /// An overview's shape, whatever the row: `facts`, a rule `width` wide,
 /// then `body` through the markdown pass — or `empty`, in gray, when there
-/// is none.
+/// is none. `show_folded` opens the body's `<details>` blocks.
 fn facts_then_body(
     mut lines: Vec<Line<'static>>,
     body: &str,
     width: u16,
     empty: &'static str,
+    show_folded: bool,
 ) -> Vec<Line<'static>> {
     lines.push(Line::styled(
         "─".repeat(usize::from(width)),
         Style::new().fg(Color::DarkGray),
     ));
     lines.push(Line::default());
-    let body = markdown_lines(body);
+    let body = markdown_lines(body, width, show_folded);
     if body.is_empty() {
         lines.push(Line::styled(empty, Style::new().fg(Color::DarkGray)));
     }
@@ -1048,15 +1062,26 @@ fn local_time(at: &str, offset: FixedOffset) -> String {
 /// over its body, indented, through the same markdown pass as the PR's. A
 /// folded entry is its header alone, gray, behind `▸` — consecutive ones
 /// stay together — and `show_folded` (`space`) opens the ones with
-/// something to read, behind `▾`. `offset` is the user's time zone, a
-/// parameter so tests pin it.
-pub fn comments_lines(d: &PrDetail, offset: FixedOffset, show_folded: bool) -> Vec<Line<'static>> {
-    entries_lines(&timeline(d), offset, show_folded)
+/// something to read, behind `▾`, and the bodies' `<details>` blocks.
+/// `offset` is the user's time zone, a parameter so tests pin it; `width`
+/// the room the lines get, for the bodies' tables.
+pub fn comments_lines(
+    d: &PrDetail,
+    offset: FixedOffset,
+    width: u16,
+    show_folded: bool,
+) -> Vec<Line<'static>> {
+    entries_lines(&timeline(d), offset, width, show_folded)
 }
 
 /// A conversation's lines, whatever the row it belongs to (see
 /// `comments_lines`).
-fn entries_lines(entries: &[Entry], offset: FixedOffset, show_folded: bool) -> Vec<Line<'static>> {
+fn entries_lines(
+    entries: &[Entry],
+    offset: FixedOffset,
+    width: u16,
+    show_folded: bool,
+) -> Vec<Line<'static>> {
     if entries.is_empty() {
         return vec![Line::styled(
             "No comments yet.",
@@ -1113,7 +1138,8 @@ fn entries_lines(entries: &[Entry], offset: FixedOffset, show_folded: bool) -> V
             lines.push(Line::styled(format!("  {why}"), gray));
             continue;
         }
-        for line in markdown_lines(entry.body) {
+        // Two columns less: the body is indented under its header.
+        for line in markdown_lines(entry.body, width.saturating_sub(2), show_folded) {
             // Indented under its header; a blank line stays blank.
             if line.width() == 0 {
                 lines.push(line);
@@ -1125,232 +1151,6 @@ fn entries_lines(entries: &[Entry], offset: FixedOffset, show_folded: bool) -> V
         }
     }
     lines
-}
-
-// --- markdown, lightly ---
-
-/// Makes untrusted text safe and faithful to draw. ratatui already drops
-/// every control character (so no escape sequence reaches the terminal),
-/// but silently: a tab-indented code block would lose its indentation and
-/// a lone `\r` would glue two lines. So line ends are normalized and tabs
-/// expanded first. Bidirectional overrides are not control characters and
-/// would get through, reordering what a line shows ("trojan source"):
-/// they go too.
-fn sanitize(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\t', "    ")
-        .chars()
-        .filter(|&c| c == '\n' || !(c.is_control() || is_bidi_override(c)))
-        .collect()
-}
-
-/// The embeddings, overrides and isolates of Unicode's bidi algorithm.
-fn is_bidi_override(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
-/// A line that opens or closes a fenced code block.
-fn is_fence(line: &str) -> bool {
-    let line = line.trim_start();
-    line.starts_with("```") || line.starts_with("~~~")
-}
-
-/// Removes every `<!-- … -->`, even across lines, as GitHub hides them. A
-/// PR template is mostly such comments: without this pass the screen shows
-/// the template's instructions instead of the PR. An unterminated comment
-/// hides the rest, as on GitHub. Fenced code is left alone: a comment
-/// there is code.
-fn strip_html_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_comment = false;
-    let mut in_fence = false;
-    for (i, line) in text.split('\n').enumerate() {
-        // Inside a comment, the line break goes with the hidden text: the
-        // text before the comment and the text after it join on one line.
-        if i > 0 && !in_comment {
-            out.push('\n');
-        }
-        // A fence line, and everything between two of them, is kept as is.
-        if !in_comment && is_fence(line) {
-            in_fence = !in_fence;
-            out.push_str(line);
-            continue;
-        }
-        if in_fence {
-            out.push_str(line);
-            continue;
-        }
-        let mut rest = line;
-        loop {
-            if in_comment {
-                let Some(end) = rest.find("-->") else {
-                    break; // the whole rest of the line is hidden
-                };
-                rest = &rest[end + "-->".len()..];
-                in_comment = false;
-            } else if let Some(start) = rest.find("<!--") {
-                out.push_str(&rest[..start]);
-                rest = &rest[start + "<!--".len()..];
-                in_comment = true;
-            } else {
-                out.push_str(rest);
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// `![alt](url)` and `<img … alt="alt">` become `[image: alt]`: a long URL
-/// means nothing in a terminal.
-fn replace_images(line: &str) -> String {
-    let mut out = String::new();
-    let mut rest = line;
-    loop {
-        // Whichever of the two comes first, and what it would turn into.
-        let (at, image) = match (rest.find("!["), rest.find("<img")) {
-            (Some(md), Some(html)) if html < md => (html, html_image(&rest[html..])),
-            (Some(md), _) => (md, markdown_image(&rest[md..])),
-            (None, Some(html)) => (html, html_image(&rest[html..])),
-            (None, None) => break,
-        };
-        match image {
-            Some((alt, len)) => {
-                out.push_str(&rest[..at]);
-                out.push_str(&image_label(alt));
-                rest = &rest[at + len..];
-            }
-            // Not an image after all (`![b] c`): keep the opener as typed
-            // and look further.
-            None => {
-                out.push_str(&rest[..at + 2]);
-                rest = &rest[at + 2..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// `![alt](url)` at the start of `s`: its alt text and its length.
-fn markdown_image(s: &str) -> Option<(&str, usize)> {
-    let close = s.find("](")?;
-    let end = close + 2 + s[close + 2..].find(')')?;
-    Some((&s[2..close], end + 1))
-}
-
-/// `<img …>` at the start of `s`: its `alt="…"` (or nothing) and its length.
-fn html_image(s: &str) -> Option<(&str, usize)> {
-    let end = s.find('>')?;
-    let tag = &s[..end];
-    let alt = tag
-        .find("alt=\"")
-        .and_then(|at| {
-            let value = &tag[at + "alt=\"".len()..];
-            value.find('"').map(|close| &value[..close])
-        })
-        .unwrap_or_default();
-    Some((alt, end + 1))
-}
-
-fn image_label(alt: &str) -> String {
-    match alt.trim() {
-        "" => "[image]".to_string(),
-        alt => format!("[image: {alt}]"),
-    }
-}
-
-/// A PR body as lines to draw, lightly styled, one source line at a time:
-/// headings, list items, quotes, rules and fenced code read at a glance;
-/// inline markup (`**`, `` ` ``, links) stays as typed. Line breaks are
-/// kept, as GitHub shows them in a PR body: wrapping is the `Paragraph`'s
-/// job.
-pub fn markdown_lines(body: &str) -> Vec<Line<'static>> {
-    let text = strip_html_comments(&sanitize(body));
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut in_fence = false;
-    for line in text.lines() {
-        if is_fence(line) {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            lines.push(Line::styled(
-                format!("    {line}"),
-                Style::new().fg(Color::Yellow),
-            ));
-        } else if line.trim().is_empty() {
-            push_blank(&mut lines);
-        } else if let Some(title) = heading(line) {
-            // Air around a heading, as GitHub gives it.
-            push_blank(&mut lines);
-            lines.push(Line::styled(
-                format!("▍{title}"),
-                Style::new().bold().fg(Color::Cyan),
-            ));
-            push_blank(&mut lines);
-        } else {
-            lines.push(prose_line(line));
-        }
-    }
-    while lines.last().is_some_and(|line| line.width() == 0) {
-        lines.pop();
-    }
-    lines
-}
-
-/// A blank line, unless the text starts here or one is already there: runs
-/// of blank lines collapse to one.
-fn push_blank(lines: &mut Vec<Line<'static>>) {
-    if lines.last().is_some_and(|line| line.width() > 0) {
-        lines.push(Line::default());
-    }
-}
-
-/// The text of a `#` … `######` heading.
-fn heading(line: &str) -> Option<&str> {
-    let line = line.trim_start();
-    let level = line.chars().take_while(|&c| c == '#').count();
-    let title = line[level..].strip_prefix(' ')?;
-    (1..=6).contains(&level).then(|| title.trim())
-}
-
-/// `---`, `***` or `___` (three or more): a thematic break.
-fn is_rule(line: &str) -> bool {
-    let line = line.trim();
-    line.len() >= 3
-        && ['-', '*', '_']
-            .iter()
-            .any(|&mark| line.chars().all(|c| c == mark))
-}
-
-/// Any line outside a fence that is not blank nor a heading.
-fn prose_line(line: &str) -> Line<'static> {
-    let trimmed = line.trim_start();
-    let indent = line.len() - trimmed.len();
-    if is_rule(trimmed) {
-        return Line::styled("─".repeat(40), Style::new().fg(Color::DarkGray));
-    }
-    if let Some(item) = ["- ", "* ", "+ "]
-        .iter()
-        .find_map(|bullet| trimmed.strip_prefix(bullet))
-    {
-        // Two columns per nesting level, as the source indents them.
-        let pad = "  ".repeat(indent / 2 + 1);
-        let is_task = ["[ ] ", "[x] ", "[X] "]
-            .iter()
-            .any(|task| item.starts_with(task));
-        let bullet = if is_task { "" } else { "• " };
-        return Line::raw(format!("{pad}{bullet}{}", replace_images(item)));
-    }
-    if let Some(quoted) = trimmed.strip_prefix('>') {
-        return Line::styled(
-            format!("│ {}", replace_images(quoted.trim_start())),
-            Style::new().fg(Color::DarkGray),
-        );
-    }
-    Line::raw(replace_images(line))
 }
 
 /// A `PrDetail` from JSON, the way `gh` sends it, for the tests of every
@@ -1418,105 +1218,14 @@ mod tests {
         lines.iter().map(|l| l.to_string()).collect()
     }
 
-    #[test]
-    fn sanitize_normalizes_line_ends_expands_tabs_and_drops_bidi_overrides() {
-        // ratatui drops \t and \r itself (control characters), silently: a
-        // tab-indented code block would lose its indentation.
-        assert_eq!(sanitize("a\r\n\tb\rc"), "a\n    b\nc");
-        // U+202E reorders what a line shows ("trojan source"): gone.
-        assert_eq!(sanitize("x\u{202e}y\u{2066}z"), "xyz");
-        // Other control characters (an ESC sequence) go too.
-        assert_eq!(sanitize("\u{1b}[31mred"), "[31mred");
-    }
-
-    #[test]
-    fn html_comments_vanish_even_across_lines() {
-        assert_eq!(strip_html_comments("a<!-- x -->b"), "ab");
-        assert_eq!(strip_html_comments("a\n<!--\nfill\nthis\n-->\nb"), "a\n\nb");
-        assert_eq!(strip_html_comments("a<!-- 1 -->b<!-- 2 -->c"), "abc");
-        // Unterminated: GitHub hides the rest, so do we.
-        assert_eq!(strip_html_comments("a<!-- never closed\nb"), "a");
-    }
-
-    #[test]
-    fn a_comment_inside_a_fence_is_code_not_a_comment() {
-        assert_eq!(
-            strip_html_comments("```\n<!-- x -->\n```"),
-            "```\n<!-- x -->\n```"
-        );
-    }
-
-    #[test]
-    fn images_become_their_alt_text() {
-        assert_eq!(
-            replace_images("see ![the dashboard](https://x/y.png)."),
-            "see [image: the dashboard]."
-        );
-        assert_eq!(replace_images("![](https://x/y.png)"), "[image]");
-        assert_eq!(
-            replace_images(r#"<img src="https://x" alt="logo" width="40">"#),
-            "[image: logo]"
-        );
-        assert_eq!(replace_images(r#"<img src="https://x">"#), "[image]");
-        // Not an image after all: left as typed.
-        assert_eq!(replace_images("a ![b] c"), "a ![b] c");
-    }
-
-    /// A PR template is mostly comments: what is left is the PR.
-    #[test]
-    fn a_template_body_reads_as_its_headings_and_text() {
-        let body = "<!--\r\nThanks! Fill every section.\r\n-->\r\n\r\n## Summary\r\n\r\nAdds a limiter.\r\n\r\n\r\n\r\n## How to test\r\n<!-- paste commands -->\r\n```sh\r\ncargo test\r\n```\r\n";
-        assert_eq!(
-            texts(&markdown_lines(body)),
-            // The comment-only line leaves a blank, kept (runs collapse to one).
-            [
-                "▍Summary",
-                "",
-                "Adds a limiter.",
-                "",
-                "▍How to test",
-                "",
-                "    cargo test"
-            ]
-        );
-    }
-
-    #[test]
-    fn lists_quotes_and_rules_get_a_light_touch() {
-        let md = "- one\n  * nested\n- [x] done\n> quoted\n---";
-        assert_eq!(
-            texts(&markdown_lines(md)),
-            [
-                "  • one",
-                "    • nested",
-                "  [x] done",
-                "│ quoted",
-                &"─".repeat(40)
-            ]
-        );
-    }
-
-    #[test]
-    fn nothing_inside_a_fence_is_interpreted() {
-        let md = "```\n# not a heading\n<!-- kept -->\n\tindented\n```";
-        assert_eq!(
-            texts(&markdown_lines(md)),
-            [
-                "    # not a heading",
-                "    <!-- kept -->",
-                "        indented"
-            ]
-        );
-    }
-
     /// An untouched template is as empty as no body at all. Said in the
     /// Overview only: a comment's empty body just shows nothing.
     #[test]
     fn an_empty_body_says_so() {
-        assert!(markdown_lines("<!-- only the template -->\r\n").is_empty());
+        assert!(markdown_lines("<!-- only the template -->\r\n", 80, false).is_empty());
         let mut d = sample_detail();
         d.body.clear();
-        let overview = texts(&overview_lines(&d, 20));
+        let overview = texts(&overview_lines(&d, 20, false));
         assert_eq!(overview.last().unwrap(), "No description provided.");
     }
 
@@ -1594,13 +1303,35 @@ mod tests {
 
     #[test]
     fn the_overview_is_the_facts_a_rule_then_the_body() {
-        let lines = texts(&overview_lines(&sample_detail(), 20));
+        let lines = texts(&overview_lines(&sample_detail(), 20, false));
         let rule = lines
             .iter()
             .position(|l| l == &"─".repeat(20))
             .expect("a rule as wide as the view");
         assert_eq!(lines[rule + 1], "");
         assert_eq!(lines[rule + 2], "Adds a limiter.");
+    }
+
+    /// A Dependabot body is mostly `<details>` blocks: one line each until
+    /// `space`, the same key that unfolds the Comments' reviews.
+    #[test]
+    fn the_bodys_details_blocks_follow_space() {
+        let mut d = sample_detail();
+        d.body = "Bumps x.\r\n<details>\r\n<summary>Commits</summary>\r\n<ul><li>3c257fd</li></ul>\r\n</details>".into();
+        let folded = texts(&overview_lines(&d, 20, false));
+        assert_eq!(folded[folded.len() - 2..], ["Bumps x.", "▸ Commits"]);
+        let open = texts(&overview_lines(&d, 20, true));
+        assert_eq!(
+            open[open.len() - 3..],
+            ["Bumps x.", "▾ Commits", "    • 3c257fd"]
+        );
+
+        // A review's body too, once `space` opened the review itself.
+        d.reviews[0].body = "<details><summary>nits</summary>\r\nrename it\r\n</details>".into();
+        let lines = texts(&comments_lines(&d, utc(), 80, false));
+        assert_eq!(lines[1], "  ▸ nits");
+        let lines = texts(&comments_lines(&d, utc(), 80, true));
+        assert_eq!(lines[1..3], ["  ▾ nits", "    rename it"]);
     }
 
     /// A reload that fails must not blank a screen the user is reading.
@@ -2009,7 +1740,7 @@ mod tests {
             r#"{"author": {"login": "erin"}, "state": "COMMENTED", "body": "",
                 "submittedAt": "2026-10-04T08:30:00Z", "commit": {"oid": "c0ffee"}}"#,
         ));
-        let lines = texts(&comments_lines(&d, utc(), false));
+        let lines = texts(&comments_lines(&d, utc(), 80, false));
         let dave = lines.iter().position(|l| l.contains("@dave")).unwrap();
         assert_eq!(lines[dave], "▸ @dave · approved · 2026-10-04 08:00");
         assert_eq!(
@@ -2026,13 +1757,13 @@ mod tests {
         let mut d = conversation();
         d.reviews[1].commit = Some(ReviewCommit { oid: "0ld".into() });
 
-        let folded = texts(&comments_lines(&d, utc(), false));
+        let folded = texts(&comments_lines(&d, utc(), 80, false));
         assert!(
             folded.contains(&"▸ @carol · commented · 2026-10-03 10:05 · older commit".to_string())
         );
         assert!(!folded.iter().any(|l| l.contains("Per key or per org?")));
 
-        let unfolded = texts(&comments_lines(&d, utc(), true));
+        let unfolded = texts(&comments_lines(&d, utc(), 80, true));
         let carol = unfolded.iter().position(|l| l.contains("@carol")).unwrap();
         assert_eq!(
             unfolded[carol],
@@ -2045,7 +1776,7 @@ mod tests {
     fn a_dismissed_review_is_folded() {
         let mut d = conversation();
         d.reviews[0].state = "DISMISSED".into();
-        let lines = texts(&comments_lines(&d, utc(), false));
+        let lines = texts(&comments_lines(&d, utc(), 80, false));
         assert_eq!(lines[0], "▸ @bob · dismissed · 2026-10-02 16:40");
         assert!(!lines.iter().any(|l| l.contains("Nice and small.")));
     }
@@ -2068,7 +1799,7 @@ mod tests {
 
     #[test]
     fn a_comment_header_reads_who_what_and_when() {
-        let lines = texts(&comments_lines(&conversation(), utc(), false));
+        let lines = texts(&comments_lines(&conversation(), utc(), 80, false));
         assert_eq!(lines[0], "@bob · approved · 2026-10-02 16:40");
         assert_eq!(lines[1], "  Nice and small.");
         assert_eq!(lines[2], "");
@@ -2081,13 +1812,13 @@ mod tests {
     #[test]
     fn a_comment_time_is_local() {
         let paris = FixedOffset::east_opt(2 * 3600).unwrap();
-        let lines = texts(&comments_lines(&conversation(), paris, false));
+        let lines = texts(&comments_lines(&conversation(), paris, 80, false));
         assert_eq!(lines[0], "@bob · approved · 2026-10-02 18:40");
     }
 
     #[test]
     fn comment_bodies_go_through_the_same_markdown_pass() {
-        let lines = texts(&comments_lines(&conversation(), utc(), false));
+        let lines = texts(&comments_lines(&conversation(), utc(), 80, false));
         let bot = lines
             .iter()
             .position(|l| l.starts_with("@app/github-actions"))
@@ -2100,7 +1831,7 @@ mod tests {
         let mut d = conversation();
         d.comments[0].is_minimized = true;
         d.comments[0].minimized_reason = "OFF_TOPIC".into();
-        let lines = texts(&comments_lines(&d, utc(), false));
+        let lines = texts(&comments_lines(&d, utc(), 80, false));
         assert!(lines.contains(&"  (hidden: off topic)".to_string()));
         assert!(!lines.iter().any(|l| l.contains("Per key on purpose")));
     }
@@ -2110,7 +1841,7 @@ mod tests {
         let mut d = sample_detail();
         d.reviews.clear();
         assert_eq!(
-            texts(&comments_lines(&d, utc(), false)),
+            texts(&comments_lines(&d, utc(), 80, false)),
             ["No comments yet."]
         );
     }

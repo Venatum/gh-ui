@@ -45,14 +45,21 @@ pub struct IssueDetail {
     pub repo: String,
 }
 
-/// The Overview section: the facts, a rule `width` wide, the description.
-/// `offset` is the user's time zone, for the opening date.
-pub fn overview_lines(d: &IssueDetail, width: u16, offset: FixedOffset) -> Vec<Line<'static>> {
+/// The Overview section: the facts, a rule `width` wide, the description,
+/// its `<details>` blocks open when `show_folded`. `offset` is the user's
+/// time zone, for the opening date.
+pub fn overview_lines(
+    d: &IssueDetail,
+    width: u16,
+    offset: FixedOffset,
+    show_folded: bool,
+) -> Vec<Line<'static>> {
     facts_then_body(
         facts_lines(d, offset),
         &d.body,
         width,
         "No description provided.",
+        show_folded,
     )
 }
 
@@ -118,11 +125,17 @@ fn state_look(d: &IssueDetail) -> (String, Color) {
     }
 }
 
-/// The Comments section: the conversation, as a PR's reads.
-pub fn comments_lines(d: &IssueDetail, offset: FixedOffset) -> Vec<Line<'static>> {
+/// The Comments section: the conversation, as a PR's reads. No entry folds
+/// in an issue's conversation (no reviews there), but `show_folded` still
+/// opens the comments' `<details>` blocks.
+pub fn comments_lines(
+    d: &IssueDetail,
+    offset: FixedOffset,
+    width: u16,
+    show_folded: bool,
+) -> Vec<Line<'static>> {
     let entries: Vec<_> = d.comments.iter().map(comment_entry).collect();
-    // Nothing folds in an issue's conversation: no reviews there.
-    entries_lines(&entries, offset, false)
+    entries_lines(&entries, offset, width, show_folded)
 }
 
 #[cfg(test)]
@@ -164,7 +177,7 @@ mod tests {
 
     #[test]
     fn the_facts_say_state_author_date_assignees_linked_prs_and_labels() {
-        let lines = texts(&overview_lines(&sample(), 20, utc()));
+        let lines = texts(&overview_lines(&sample(), 20, utc(), false));
         assert_eq!(lines[0], "● open · @carol · opened 2026-09-28 09:15");
         assert_eq!(lines[1], "assigned @alice, @Venatum");
         // Same repo: `#412`; another one: `acme/web#12`, as the PRs column.
@@ -177,7 +190,7 @@ mod tests {
     /// template's HTML comment gone.
     #[test]
     fn the_description_follows_the_facts() {
-        let lines = texts(&overview_lines(&sample(), 20, utc()));
+        let lines = texts(&overview_lines(&sample(), 20, utc(), false));
         assert_eq!(lines[6..], ["Every route can be hammered."]);
     }
 
@@ -189,7 +202,7 @@ mod tests {
         d.assignees.clear();
         d.linked_prs.clear();
         d.labels.clear();
-        let lines = texts(&overview_lines(&d, 20, utc()));
+        let lines = texts(&overview_lines(&d, 20, utc(), false));
         assert_eq!(lines[1], "assigned nobody");
         assert_eq!(lines[2], "linked   no PR");
         assert_eq!(lines[3], "─".repeat(20));
@@ -202,23 +215,51 @@ mod tests {
         d.state = "CLOSED".into();
         d.state_reason = Some("NOT_PLANNED".into());
         assert!(
-            texts(&overview_lines(&d, 20, utc()))[0].starts_with("● closed · not planned · @carol")
+            texts(&overview_lines(&d, 20, utc(), false))[0]
+                .starts_with("● closed · not planned · @carol")
         );
         d.state_reason = Some("COMPLETED".into());
         assert!(
-            texts(&overview_lines(&d, 20, utc()))[0].starts_with("● closed · completed · @carol")
+            texts(&overview_lines(&d, 20, utc(), false))[0]
+                .starts_with("● closed · completed · @carol")
         );
     }
 
     #[test]
     fn the_comments_read_as_the_prs_conversation() {
         assert_eq!(
-            texts(&comments_lines(&sample(), utc())),
+            texts(&comments_lines(&sample(), utc(), 80, false)),
             ["@bob · 2026-09-29 10:00", "  Per key or per org?"]
         );
         let mut d = sample();
         d.comments.clear();
-        assert_eq!(texts(&comments_lines(&d, utc())), ["No comments yet."]);
+        assert_eq!(
+            texts(&comments_lines(&d, utc(), 80, false)),
+            ["No comments yet."]
+        );
+    }
+
+    /// A `<details>` block of the description or of a comment folds like
+    /// a PR's, and `space` opens both.
+    #[test]
+    fn details_blocks_fold_in_the_description_and_the_comments() {
+        let mut d = sample();
+        d.body =
+            "Logs:\r\n<details><summary>stack trace</summary>\r\nat main.rs:3\r\n</details>".into();
+        d.comments[0].body =
+            "<details><summary>repro</summary>\r\ncurl -i /v1\r\n</details>".into();
+        let overview = texts(&overview_lines(&d, 20, utc(), false));
+        assert_eq!(overview[6..], ["Logs:", "▸ stack trace"]);
+        let overview = texts(&overview_lines(&d, 20, utc(), true));
+        assert_eq!(overview[6..], ["Logs:", "▾ stack trace", "  at main.rs:3"]);
+        assert_eq!(
+            texts(&comments_lines(&d, utc(), 80, false)),
+            ["@bob · 2026-09-29 10:00", "  ▸ repro"]
+        );
+        assert_eq!(
+            texts(&comments_lines(&d, utc(), 80, true)),
+            ["@bob · 2026-09-29 10:00", "  ▾ repro", "    curl -i /v1"]
+        );
     }
 
     /// The section bar counts the comments; `enter` opens the issue.
