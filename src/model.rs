@@ -345,16 +345,68 @@ mod tests {
     /// read as green, whatever order the array lists the two in.
     #[test]
     fn a_job_re_run_green_after_a_failure_reads_as_passing() {
-        let pr = pr_with(
-            r#""statusCheckRollup": [
-                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
-                 "conclusion": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"},
-                {"workflowName": "CI", "name": "test", "status": "COMPLETED",
-                 "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"}
-            ]"#,
-        );
+        let failure = r#"{"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                          "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"}"#;
+        let success = r#"{"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                          "conclusion": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"}"#;
+        for rollup in [
+            format!(r#""statusCheckRollup": [{success}, {failure}]"#),
+            format!(r#""statusCheckRollup": [{failure}, {success}]"#),
+        ] {
+            assert_eq!(
+                pr_with(&rollup).checks_state(),
+                ChecksState::Passing,
+                "{rollup}"
+            );
+        }
+    }
 
-        assert_eq!(pr.checks_state(), ChecksState::Passing);
+    /// gh may also send no start at all (`null`, or the key missing) for an
+    /// attempt still waiting: it is the newest, as with year 1.
+    #[test]
+    fn a_re_run_without_a_start_time_is_the_newest() {
+        for waiting in [
+            r#"{"workflowName": "CI", "name": "test", "status": "QUEUED", "startedAt": null}"#,
+            r#"{"workflowName": "CI", "name": "test", "status": "QUEUED"}"#,
+        ] {
+            let pr = pr_with(&format!(
+                r#""statusCheckRollup": [
+                    {waiting},
+                    {{"workflowName": "CI", "name": "test", "status": "COMPLETED",
+                      "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"}}
+                ]"#
+            ));
+            assert_eq!(pr.checks_state(), ChecksState::Running, "{waiting}");
+        }
+    }
+
+    /// Every word of GitHub's vocabulary that means "failed" or "not done
+    /// yet", one check at a time.
+    #[test]
+    fn every_failing_and_running_word_is_read() {
+        for conclusion in ["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"] {
+            let pr = pr_with(&format!(
+                r#""statusCheckRollup": [{{"name": "t", "status": "COMPLETED", "conclusion": "{conclusion}"}}]"#
+            ));
+            assert_eq!(pr.checks_state(), ChecksState::Failing, "{conclusion}");
+        }
+        for status in ["QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED"] {
+            let pr = pr_with(&format!(
+                r#""statusCheckRollup": [{{"name": "t", "status": "{status}"}}]"#
+            ));
+            assert_eq!(pr.checks_state(), ChecksState::Running, "{status}");
+        }
+        for (state, expected) in [
+            ("FAILURE", ChecksState::Failing),
+            ("ERROR", ChecksState::Failing),
+            ("PENDING", ChecksState::Running),
+            ("EXPECTED", ChecksState::Running),
+        ] {
+            let pr = pr_with(&format!(
+                r#""statusCheckRollup": [{{"context": "c", "state": "{state}"}}]"#
+            ));
+            assert_eq!(pr.checks_state(), expected, "{state}");
+        }
     }
 
     /// A re-run waiting for a runner has not started: it is still the
