@@ -1,9 +1,11 @@
 //! Everything that talks to the outside world: finding the git repos, and
-//! running `gh` (and `git`) to fetch the PRs, runs and repos, or to clone.
+//! running `gh` (and `git`) to fetch the PRs, runs, issues, releases and
+//! repos, or to clone.
 
 use crate::filters::Filters;
 use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
+use crate::releases::{self, Release, RepoRelease};
 use crate::repos::{LocalRepo, Repo, RepoFilters, parse_origin};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -179,6 +181,42 @@ pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue
     run_gh_json(&issue_list_args(filters), Some(repo_dir))
 }
 
+/// Releases fetched per repo: the latest is almost always the first one,
+/// the rest is room for the pre-releases that may come before it.
+const RELEASE_LIMIT: &str = "10";
+
+/// JSON fields requested from `gh` for each release. There is no `url`
+/// among the fields `gh release list` offers: the page is built from the
+/// origin (see `RepoRelease::url`).
+const RELEASE_JSON_FIELDS: &str = "tagName,name,publishedAt,isLatest,isDraft,isPrerelease";
+
+/// The `gh release list` command line. A function rather than a constant
+/// array, like `issue_list_args`, so a test can read it.
+fn release_list_args() -> [&'static str; 7] {
+    [
+        "release",
+        "list",
+        "--exclude-drafts",
+        "--limit",
+        RELEASE_LIMIT,
+        "--json",
+        RELEASE_JSON_FIELDS,
+    ]
+}
+
+/// The Releases tab's row for `repo_dir`: its latest release (if any) and
+/// its origin. ONE row whatever `gh` lists, in a `Vec` so that it goes
+/// through `fan_out` like the other tabs' lists — a repo without a release
+/// still gets its row, and a failed `gh` still counts as a failed repo.
+pub fn fetch_release(repo_dir: &Path) -> Result<Vec<RepoRelease>> {
+    let list: Vec<Release> = run_gh_json(&release_list_args(), Some(repo_dir))?;
+    Ok(vec![RepoRelease {
+        repo: String::new(), // stamped by the loader
+        origin: origin_of(repo_dir),
+        release: releases::latest(list),
+    }])
+}
+
 /// The login of the authenticated user, shown in the header. Asked of `gh`
 /// itself rather than of the REST endpoint (`gh api user`): the whole app
 /// talks to `gh`, not to the API. `--active` picks the account currently in
@@ -287,23 +325,26 @@ pub fn local_origins(root: &Path) -> Vec<LocalRepo> {
         .collect();
     repos
         .into_iter()
-        .map(|folder| {
-            let origin = Command::new("git")
-                .arg("-C")
-                .arg(root.join(&folder))
-                .args(["remote", "get-url", "origin"])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .and_then(|output| parse_origin(&String::from_utf8_lossy(&output.stdout)));
-            LocalRepo {
-                folder,
-                is_git: true,
-                origin,
-            }
+        .map(|folder| LocalRepo {
+            origin: origin_of(&root.join(&folder)),
+            folder,
+            is_git: true,
         })
         .chain(others)
         .collect()
+}
+
+/// The `owner/name` the `origin` remote of the repo in `dir` points to, or
+/// `None` without a GitHub origin. Local `git`, no network.
+fn origin_of(dir: &Path) -> Option<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| parse_origin(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// The `gh repo clone` command for one repo, into `root/name`. Built apart
@@ -513,6 +554,24 @@ mod tests {
                 "number,title,author,assignees,labels,createdAt,updatedAt,url,closedByPullRequestsReferences",
                 "--assignee",
                 "@me",
+            ]
+        );
+    }
+
+    /// A few published releases are enough to find the latest one: drafts
+    /// are left to GitHub, so they cannot fill the window.
+    #[test]
+    fn release_list_asks_for_a_few_published_releases() {
+        assert_eq!(
+            release_list_args(),
+            [
+                "release",
+                "list",
+                "--exclude-drafts",
+                "--limit",
+                "10",
+                "--json",
+                "tagName,name,publishedAt,isLatest,isDraft,isPrerelease",
             ]
         );
     }
