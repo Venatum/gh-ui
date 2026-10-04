@@ -70,10 +70,38 @@ change costs a reload.
 
 ### PRs
 
-Every open PR of the scanned repos (at most 50 per repo): repo, number,
-title, author, review decision, `+/-` size and labels, repo by repo. A
-draft reads `[D]` and grayed. `m` shows only
+Every open PR of the scanned repos (at most 50 per repo): a status glyph,
+repo, number, title, author, review decision, `+/-` size and labels, repo by
+repo. A draft reads `[D]` and grayed. `m` shows only
 yours (`author:@me`), and pressing it again shows everyone's.
+
+#### The `St` column
+
+The first column sums a PR up in one glyph, so you can tell at a glance
+which rows need someone. A PR is often several things at once; it still gets
+exactly one glyph, the first line of this table that matches:
+
+| Glyph | Meaning                                    | Who acts            |
+|-------|--------------------------------------------|---------------------|
+| `·`   | draft                                      | nobody, it is dormant |
+| `!`   | the branch conflicts with its base         | the author: rebase  |
+| `✗`   | changes requested, or a check failed       | the author: fix     |
+| `●`   | a check is queued or running               | nobody: wait        |
+| `✓`   | approved, nothing failing nor running      | whoever merges      |
+|       | *(blank)* anything else, typically waiting on a reviewer | a reviewer |
+
+The same legend is in the help screen (`?`). Cancelled, skipped and neutral
+checks count as neither failing nor running: a job skipped by a path filter
+is a normal outcome, not a problem.
+
+The two fields this needs, `mergeable` and `statusCheckRollup`, ride the one
+`gh pr list` call each repo already makes: no request per PR, so
+auto-refresh asks GitHub exactly as often as before.
+
+If you already had a saved layout, `St` is appended to its **right** end
+rather than reshuffling it (see [Memory](#memory)). To bring it to the
+front: `c`, put the cursor on `St`, `space` to grab it, `↑` until it is on
+top, `space` to drop it. It is saved.
 
 ### Actions
 
