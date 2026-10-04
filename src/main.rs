@@ -264,6 +264,9 @@ fn open_selected(app: &App) {
 /// Opens a URL with the system's native opener. `#[cfg(...)]` selects the
 /// code compiled per OS: only one of these three lines exists in the binary.
 fn open_url(url: &str) {
+    if !is_web_page(url) {
+        return;
+    }
     // `let _ =`: we ignore the Result (if it fails, we don't break the TUI).
     #[cfg(target_os = "macos")]
     let _ = Command::new("open").arg(url).status();
@@ -271,6 +274,35 @@ fn open_url(url: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = Command::new("xdg-open").arg(url).status();
 
+    // Not `cmd /C start`: cmd reads `&`, `|` or `%VAR%` in its arguments as
+    // its own syntax, and a URL may hold them. rundll32 hands the URL to
+    // the default browser with no shell in between.
     #[cfg(target_os = "windows")]
-    let _ = Command::new("cmd").args(["/C", "start", "", url]).status();
+    let _ = Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .status();
+}
+
+/// A web page, the only thing gh-ui opens: the URLs come from GitHub, but
+/// another scheme handed to the opener (`file:`, a custom protocol) would
+/// run whatever the OS associates with it.
+fn is_web_page(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a web page reaches the system's opener: another scheme
+    /// (`file:`, a custom protocol) would run whatever the OS associates
+    /// with it.
+    #[test]
+    fn only_a_web_page_is_opened() {
+        assert!(is_web_page("https://github.com/acme/api/pull/12"));
+        assert!(is_web_page("http://ghe.corp/team/svc"));
+        assert!(!is_web_page("file:///etc/passwd"));
+        assert!(!is_web_page("javascript:alert(1)"));
+        assert!(!is_web_page(""));
+    }
 }
