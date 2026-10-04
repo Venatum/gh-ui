@@ -69,9 +69,9 @@ impl Column for PrColumn {
 
     fn header(self) -> &'static str {
         match self {
-            // Two letters, not "Status": the column is 2 cells wide, as wide
-            // as its glyph needs.
-            PrColumn::Status => "St",
+            // A word a first look can read, not `St`: three more cells than
+            // the glyph needs, taken from the elastic title.
+            PrColumn::Status => "State",
             PrColumn::Repo => "Repo",
             PrColumn::Updated => "Updated",
             PrColumn::Number => "#",
@@ -86,7 +86,7 @@ impl Column for PrColumn {
     /// The widths of the former literal array in `render_pr_table`, unchanged.
     fn width(self) -> Constraint {
         match self {
-            PrColumn::Status => Constraint::Length(2),
+            PrColumn::Status => Constraint::Length(5), // `State`
             PrColumn::Repo => Constraint::Length(16),
             PrColumn::Updated => Constraint::Length(10),
             PrColumn::Number => Constraint::Length(7),
@@ -124,7 +124,7 @@ fn review_look(decision: &str) -> (&'static str, Style) {
     }
 }
 
-/// A PR's one-glyph verdict, shown in the `St` column. The order of the
+/// A PR's one-glyph verdict, shown in the `State` column. The order of the
 /// variants IS the precedence `pr_status` applies: the first one that matches
 /// wins, so a PR that is several things at once still gets exactly one glyph
 /// and the column never jitters horizontally.
@@ -189,7 +189,7 @@ fn status_look(status: PrStatus) -> (&'static str, Style) {
     }
 }
 
-/// The `St` column's legend, one line of the help popup. Next to
+/// The `State` column's legend, one line of the help popup. Next to
 /// `status_look` so the two cannot drift apart, and short enough to fit
 /// `HELP_WIDTH` after the 12 columns a help row spends on its key.
 pub const STATUS_LEGEND: &str = "· draft  ! conflict  ✗ failed  ● running  ✓ ready";
@@ -1465,14 +1465,20 @@ mod tests {
     }
 
     /// A fresh install sees the verdict first, where GitHub's own PR list
-    /// puts it; the header stays within the column's 2 cells.
+    /// puts it.
     #[test]
     fn a_fresh_pr_layout_opens_on_the_status_column() {
         let layout = ColumnLayout::<PrColumn>::default();
-
         assert_eq!(layout.visible().next(), Some(PrColumn::Status));
-        assert_eq!(PrColumn::Status.width(), Constraint::Length(2));
-        assert!(PrColumn::Status.header().chars().count() <= 2);
+    }
+
+    /// A word, not `St`: the header is what tells a first look what the
+    /// glyphs are, and the columns panel lists the column by it. The column
+    /// is exactly as wide, so the word is never cut.
+    #[test]
+    fn the_status_column_reads_state_in_full() {
+        assert_eq!(PrColumn::Status.header(), "State");
+        assert_eq!(PrColumn::Status.width(), Constraint::Length(5));
     }
 
     /// A `columns.json` saved before the column existed gets it appended at

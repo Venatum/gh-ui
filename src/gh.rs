@@ -18,7 +18,7 @@ const PR_LIMIT: &str = "50";
 /// JSON fields requested from `gh` for each PR. A field more never costs a
 /// request more: `gh` builds one GraphQL query per repo whatever we ask for.
 /// `statusCheckRollup` is the heavy one (the full array of checks, no way to
-/// narrow it); it is what feeds the `St` column's ✗ and ● glyphs.
+/// narrow it); it is what feeds the `State` column's ✗ and ● glyphs.
 const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName,mergeable,statusCheckRollup";
 
 /// Number of runs fetched per repo (most recent runs, all branches).

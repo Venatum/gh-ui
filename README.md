@@ -75,7 +75,7 @@ repo, number, title, author, review decision, `+/-` size and labels, repo by
 repo. A draft reads `[D]` and grayed. `m` shows only
 yours (`author:@me`), and pressing it again shows everyone's.
 
-#### The `St` column
+#### The `State` column
 
 The first column sums a PR up in one glyph, so you can tell at a glance
 which rows need someone. A PR is often several things at once; it still gets
@@ -98,9 +98,9 @@ The two fields this needs, `mergeable` and `statusCheckRollup`, ride the one
 `gh pr list` call each repo already makes: no request per PR, so
 auto-refresh asks GitHub exactly as often as before.
 
-If you already had a saved layout, `St` is appended to its **right** end
+If you already had a saved layout, `State` is appended to its **right** end
 rather than reshuffling it (see [Memory](#memory)). To bring it to the
-front: `c`, put the cursor on `St`, `space` to grab it, `↑` until it is on
+front: `c`, put the cursor on `State`, `space` to grab it, `↑` until it is on
 top, `space` to drop it. It is saved.
 
 ### Actions

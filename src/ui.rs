@@ -746,10 +746,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab/1-5", "switch tab (PRs/Actions/Issues/Repos/Releases)"),
         help_row("m", "mine: PRs / their runs / issues assigned to me"),
-        help_row("St column", STATUS_LEGEND),
+        help_row("State", STATUS_LEGEND),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
-        // One row for both arrow pairs: it pays for the `St` legend's line,
+        // One row for both arrow pairs: it pays for the `State` legend's line,
         // the popup already filling an 80x24 terminal.
         help_row(
             "↑/↓ ←/→",
@@ -976,7 +976,7 @@ mod tests {
     /// The `/` row must be in the help AND fit `HELP_WIDTH` — `Paragraph`
     /// truncates instead of wrapping, so an over-long row loses its tail in
     /// silence. Same guard as `the_auto_refresh_help_row_is_not_truncated`.
-    /// The `St` column's legend is in the help, whole: `Paragraph` would
+    /// The `State` column's legend is in the help, whole: `Paragraph` would
     /// clip a longer legend (or a narrower `HELP_WIDTH`) without a word.
     #[test]
     fn the_status_legend_row_is_not_truncated() {
