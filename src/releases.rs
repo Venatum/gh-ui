@@ -52,6 +52,10 @@ pub struct RepoRelease {
     /// built from: `gh release list` gives no URL.
     pub origin: Option<String>,
     pub release: Option<Release>,
+    /// Commits on the default branch since the release's tag, counted by
+    /// the local `git` (see `gh::unreleased_commits`). `None` when there is
+    /// no release, or when this clone cannot tell.
+    pub unreleased: Option<u64>,
 }
 
 impl RepoRelease {
@@ -130,6 +134,7 @@ pub fn sample_row(repo: &str, published_at: Option<&str>) -> RepoRelease {
         repo: repo.to_string(),
         origin: Some(format!("acme/{repo}")),
         release: published_at.map(|at| sample_release("v1.0.0", at)),
+        unreleased: None,
     }
 }
 
@@ -204,6 +209,7 @@ mod tests {
             repo: "api".to_string(),
             origin: origin.map(str::to_string),
             release,
+            unreleased: None,
         }
     }
 

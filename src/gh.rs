@@ -210,11 +210,40 @@ fn release_list_args() -> [&'static str; 7] {
 /// still gets its row, and a failed `gh` still counts as a failed repo.
 pub fn fetch_release(repo_dir: &Path) -> Result<Vec<RepoRelease>> {
     let list: Vec<Release> = run_gh_json(&release_list_args(), Some(repo_dir))?;
+    let release = releases::latest(list);
+    let unreleased = release
+        .as_ref()
+        .and_then(|r| unreleased_commits(repo_dir, &r.tag_name));
     Ok(vec![RepoRelease {
         repo: String::new(), // stamped by the loader
         origin: origin_of(repo_dir),
-        release: releases::latest(list),
+        release,
+        unreleased,
     }])
+}
+
+/// How many commits the default branch holds past `tag`, from what this
+/// clone already knows: `git rev-list --count <tag>..origin/HEAD`, local
+/// only — never a fetch, so the count is as fresh as the last `git fetch`.
+/// `None` when the tag or `origin/HEAD` is missing here (a clone made with
+/// `git init` + `remote add` has no `origin/HEAD`).
+pub fn unreleased_commits(repo_dir: &Path, tag: &str) -> Option<u64> {
+    // `refs/tags/` spelled out: a branch of the same name cannot be picked
+    // instead, and a tag starting with `-` cannot pass for an option.
+    let range = format!("refs/tags/{tag}..origin/HEAD");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["rev-list", "--count", &range])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    parse_count(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The number `git rev-list --count` prints, or `None` for anything else.
+fn parse_count(stdout: &str) -> Option<u64> {
+    stdout.trim().parse().ok()
 }
 
 /// The login of the authenticated user, shown in the header. Asked of `gh`
@@ -574,6 +603,65 @@ mod tests {
                 "tagName,name,publishedAt,isLatest,isDraft,isPrerelease",
             ]
         );
+    }
+
+    #[test]
+    fn a_commit_count_parses_from_what_git_prints() {
+        assert_eq!(parse_count("3\n"), Some(3));
+        assert_eq!(parse_count("0"), Some(0));
+        assert_eq!(parse_count(""), None);
+        assert_eq!(parse_count("fatal: bad revision"), None);
+    }
+
+    /// Runs `git` in `dir` for the test's setup. Signing and hooks off: the
+    /// user's own git config must not decide whether the test passes.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// A real repo: a tag, two commits after it, and an `origin/HEAD` on
+    /// the last one — what a clone that fetched since the release looks
+    /// like. No remote is ever contacted.
+    #[test]
+    fn unreleased_counts_the_local_commits_since_the_tag() {
+        let dir = std::env::temp_dir().join(format!("gh-ui-unreleased-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet"]);
+        git(&dir, &["commit", "--allow-empty", "--quiet", "-m", "one"]);
+        git(&dir, &["tag", "v1.0.0"]);
+        git(&dir, &["commit", "--allow-empty", "--quiet", "-m", "two"]);
+        git(&dir, &["commit", "--allow-empty", "--quiet", "-m", "three"]);
+
+        // Without origin/HEAD, there is nothing to compare with.
+        assert_eq!(unreleased_commits(&dir, "v1.0.0"), None);
+
+        git(&dir, &["update-ref", "refs/remotes/origin/HEAD", "HEAD"]);
+        assert_eq!(unreleased_commits(&dir, "v1.0.0"), Some(2));
+        // A tag that was never fetched here: unknown, not zero.
+        assert_eq!(unreleased_commits(&dir, "v9.9.9"), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `comments` would bring every comment's body: 177 KB and 2.2 s instead

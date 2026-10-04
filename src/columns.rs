@@ -535,13 +535,15 @@ pub enum ReleaseColumn {
     Tag,
     Name,
     Published,
+    Unreleased,
 }
 
-const RELEASE_COLUMNS: [ReleaseColumn; 4] = [
+const RELEASE_COLUMNS: [ReleaseColumn; 5] = [
     ReleaseColumn::Repo,
     ReleaseColumn::Tag,
     ReleaseColumn::Name,
     ReleaseColumn::Published,
+    ReleaseColumn::Unreleased,
 ];
 
 impl Column for ReleaseColumn {
@@ -555,6 +557,7 @@ impl Column for ReleaseColumn {
             ReleaseColumn::Tag => "Tag",
             ReleaseColumn::Name => "Name",
             ReleaseColumn::Published => "Published",
+            ReleaseColumn::Unreleased => "Unreleased",
         }
     }
 
@@ -565,6 +568,8 @@ impl Column for ReleaseColumn {
             ReleaseColumn::Tag => Constraint::Length(20),
             ReleaseColumn::Name => Constraint::Fill(1),
             ReleaseColumn::Published => Constraint::Length(10),
+            // As wide as its header.
+            ReleaseColumn::Unreleased => Constraint::Length(10),
         }
     }
 }
@@ -575,6 +580,17 @@ pub fn release_row_style(row: &RepoRelease) -> Style {
     match row.release {
         Some(_) => Style::new(),
         None => Style::new().fg(Color::DarkGray),
+    }
+}
+
+/// The Unreleased count: yellow when commits wait for a release, gray at
+/// zero, and a gray `?` when the local clone cannot tell (tag not fetched,
+/// no `origin/HEAD`) — unknown must not read as "nothing to ship".
+fn unreleased_look(count: Option<u64>) -> (String, Style) {
+    match count {
+        Some(0) => ("0".to_string(), Style::new().fg(Color::DarkGray)),
+        Some(n) => (n.to_string(), Style::new().fg(Color::Yellow)),
+        None => ("?".to_string(), Style::new().fg(Color::DarkGray)),
     }
 }
 
@@ -601,6 +617,10 @@ impl ReleaseColumn {
                 .published_at
                 .as_deref()
                 .map_or_else(|| Cell::from(String::new()), date_cell),
+            ReleaseColumn::Unreleased => {
+                let (label, style) = unreleased_look(row.unreleased);
+                Cell::from(Span::styled(label, style))
+            }
         }
     }
 }
@@ -1462,6 +1482,37 @@ mod tests {
             Cell::from(String::new())
         );
         assert_eq!(release_row_style(&row), Style::new().fg(Color::DarkGray));
+    }
+
+    /// Commits waiting since the release: yellow when there are some, gray
+    /// at zero, and a gray `?` when this clone cannot tell.
+    #[test]
+    fn the_unreleased_column_reads_a_count_or_a_gray_question_mark() {
+        let mut row = crate::releases::sample_row("api", Some("2026-09-20T10:00:00Z"));
+        let gray = Style::new().fg(Color::DarkGray);
+
+        row.unreleased = Some(4);
+        assert_eq!(
+            ReleaseColumn::Unreleased.cell(&row),
+            Cell::from(Span::styled("4", Style::new().fg(Color::Yellow)))
+        );
+        row.unreleased = Some(0);
+        assert_eq!(
+            ReleaseColumn::Unreleased.cell(&row),
+            Cell::from(Span::styled("0", gray))
+        );
+        row.unreleased = None;
+        assert_eq!(
+            ReleaseColumn::Unreleased.cell(&row),
+            Cell::from(Span::styled("?", gray))
+        );
+
+        // No release, no tag to count from: blank.
+        let never = crate::releases::sample_row("docs", None);
+        assert_eq!(
+            ReleaseColumn::Unreleased.cell(&never),
+            Cell::from(String::new())
+        );
     }
 
     #[test]
