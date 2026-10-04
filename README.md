@@ -1,8 +1,8 @@
 # gh-ui
 
-`htop` for your GitHub work: the open PRs, their CI runs, the issues and the
-repos of every git repo in a folder, in one terminal UI, with keyboard
-filters and optional auto-refresh.
+`htop` for your GitHub work: the open PRs, their CI runs, the issues, the
+repos and the releases of every git repo in a folder, in one terminal UI,
+with keyboard filters and optional auto-refresh.
 
 ![gh-ui: the PRs, Actions, Issues and Repos tabs](assets/demo.gif)
 
@@ -12,6 +12,8 @@ filters and optional auto-refresh.
 - **Issues**: the open issues, who is on them and the PRs that close them.
 - **Repos**: an owner's repositories, which ones you already have, and a
   batch clone for the others.
+- **Releases**: each repo's latest release, and the repos that never had
+  one.
 
 ## Requirements
 
@@ -114,6 +116,20 @@ The owner stays put while a batch runs, and quitting asks first. Started
 in a folder that holds no
 git repo, gh-ui opens on this tab.
 
+### Releases
+
+The latest release of every repo in the folder, one row per repo, the most
+recently published first: tag, name and date. "Latest" is the release
+GitHub badges so, or — for a repo that only ever shipped pre-releases — the
+most recent one that is not a draft; a pre-release reads `[P]` after its
+tag. A repo that never released keeps its row, grayed, reading
+`no release`, at the bottom of the list. `enter` opens the release on
+GitHub, or the repo's releases page on a `no release` row.
+
+There are no filters and no `m` here: one row per repo is short enough, and
+`/` narrows it. Like the issues, the releases load on the first visit to
+the tab, and the auto-refresh keeps them fresh from then on.
+
 ## Shortcuts
 
 ### List
@@ -123,9 +139,9 @@ git repo, gh-ui opens on this tab.
 | `↑/↓`, `j/k` | navigate the list                            |
 | `PgUp/PgDn`  | move a page up / down                        |
 | `Home/End`   | jump to the first / last row                 |
-| `enter`      | open the selected PR, run, issue or repo in the browser (Repos: on the clone button, clone the ticked repos) |
+| `enter`      | open the selected PR, run, issue, repo or release in the browser (Repos: on the clone button, clone the ticked repos) |
 | `space`      | Repos tab: tick / untick the repo            |
-| `tab`, `1-4` | switch tab (PRs / Actions / Issues / Repos)  |
+| `tab`, `1-5` | switch tab (PRs / Actions / Issues / Repos / Releases) |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
 | `m`          | mine on/off: my PRs · their runs · issues assigned to me |
@@ -164,6 +180,7 @@ Each tab has its own filters:
   the unassigned ones), `since` and `label(s)` — independent of the PR ones.
 - **Repos**: `owner` (your account, then your orgs), `archived`, `forks` and
   `hide cloned` (keeps only what is left to clone).
+- **Releases**: none; the panel says so.
 
 ### Columns panel (`c`)
 
@@ -202,7 +219,8 @@ whether or not their column is visible:
 - a PR: repo, number, title, author, branch and labels;
 - a run: repo, number, workflow, branch, title and event;
 - an issue: repo, number, title, author, assignees and labels;
-- a repo: `owner/name` and description.
+- a repo: `owner/name` and description;
+- a release: repo, tag and name.
 
 It applies to the active tab, and it is deliberately **not** saved between
 runs: a search is a lookup, not a setting.
@@ -266,6 +284,7 @@ real account. `./demo/record.sh --shell` opens the same setup in a shell.
 | `runfilters.rs` | the Actions filters, applied in memory                      |
 | `issues.rs`     | the Issues tab: issue model, filters, linked PRs            |
 | `repos.rs`      | the Repos tab: clone states, ticks, the clone batch         |
+| `releases.rs`   | the Releases tab: the latest release of each repo           |
 | `search.rs`     | the `/` search: what a row matches on                       |
 | `columns.rs`    | table columns: registry, cells, order/visibility, persistence |
 | `refresh.rs`    | the auto-refresh pace                                       |
