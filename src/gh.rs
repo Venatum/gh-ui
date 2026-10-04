@@ -190,10 +190,10 @@ const RELEASE_LIMIT: &str = "10";
 /// origin (see `RepoRelease::url`).
 const RELEASE_JSON_FIELDS: &str = "tagName,name,publishedAt,isLatest,isDraft,isPrerelease";
 
-/// The `gh release list` command line. A function rather than a constant
-/// array, like `issue_list_args`, so a test can read it.
-fn release_list_args() -> [&'static str; 7] {
-    [
+/// The `gh release list` command line, on the `origin` repo when there is
+/// one. A function, like `issue_list_args`, so a test can read it.
+fn release_list_args(origin: Option<&str>) -> Vec<&str> {
+    let mut args = vec![
         "release",
         "list",
         "--exclude-drafts",
@@ -201,7 +201,14 @@ fn release_list_args() -> [&'static str; 7] {
         RELEASE_LIMIT,
         "--json",
         RELEASE_JSON_FIELDS,
-    ]
+    ];
+    // `-R`: in a fork, `gh` reads the upstream when it is the folder's
+    // default (`gh repo set-default`); the tab shows the folder's own repo,
+    // the one its page and its unreleased count are taken from.
+    if let Some(origin) = origin {
+        args.extend(["-R", origin]);
+    }
+    args
 }
 
 /// The Releases tab's row for `repo_dir`: its latest release (if any) and
@@ -209,14 +216,15 @@ fn release_list_args() -> [&'static str; 7] {
 /// through `fan_out` like the other tabs' lists — a repo without a release
 /// still gets its row, and a failed `gh` still counts as a failed repo.
 pub fn fetch_release(repo_dir: &Path) -> Result<Vec<RepoRelease>> {
-    let list: Vec<Release> = run_gh_json(&release_list_args(), Some(repo_dir))?;
+    let origin = origin_of(repo_dir);
+    let list: Vec<Release> = run_gh_json(&release_list_args(origin.as_deref()), Some(repo_dir))?;
     let release = releases::latest(list);
     let unreleased = release
         .as_ref()
         .and_then(|r| unreleased_commits(repo_dir, &r.tag_name));
     Ok(vec![RepoRelease {
         repo: String::new(), // stamped by the loader
-        origin: origin_of(repo_dir),
+        origin,
         release,
         unreleased,
     }])
@@ -592,7 +600,7 @@ mod tests {
     #[test]
     fn release_list_asks_for_a_few_published_releases() {
         assert_eq!(
-            release_list_args(),
+            release_list_args(None),
             [
                 "release",
                 "list",
@@ -603,6 +611,16 @@ mod tests {
                 "tagName,name,publishedAt,isLatest,isDraft,isPrerelease",
             ]
         );
+    }
+
+    /// The releases are the folder's own repo's, the one `origin` points
+    /// to: in a fork, `gh` alone would pick the upstream when it is set as
+    /// the default (`gh repo set-default`), while the page and the
+    /// unreleased count are the fork's.
+    #[test]
+    fn release_list_asks_for_the_origin_repo() {
+        let args = release_list_args(Some("Venatum/bull-board-docker"));
+        assert_eq!(args[args.len() - 2..], ["-R", "Venatum/bull-board-docker"]);
     }
 
     #[test]
