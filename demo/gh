@@ -46,8 +46,36 @@ case "${1:-} ${2:-}" in
       | .reviews //= (.latestReviews | map(. + {commit: {oid: $head}}))
       | '"$ago_dates"
     exit ;;
-  "run list") file="$fixtures/runs/$(basename "$PWD").json" ;;
+  # The demo's runs are named by their number: `gh run view` takes it.
+  "run list") file="$fixtures/runs/$(basename "$PWD").json"; defaults='.databaseId //= .number' ;;
+  # `run view <id>`: the run's row of `run list`, completed by its jobs from
+  # run-view/<repo>-<id>.json, or one job standing for the whole run.
+  "run view")
+    repo="$(basename "$PWD")"
+    extra="$(cat "$fixtures/run-view/$repo-$3.json" 2>/dev/null || echo '{}')"
+    jq -n --argjson id "$3" --argjson extra "$extra" --arg repo "$repo" \
+      --slurpfile list "$fixtures/runs/$repo.json" '
+      (first($list[0][] | select((.databaseId // .number) == $id))
+        // error("run \($id) not found"))
+      | {attempt: 1, headSha: "4f1c2e9a7b3d", startedAt: .createdAt, updatedAt: .createdAt,
+         jobs: [{name: "build", status, conclusion, startedAt: .createdAt,
+                 completedAt: .createdAt, steps: []}]} + . + $extra
+      | .url = "https://github.com/acme/\($repo)/actions/runs/\($id)"
+      | '"$ago_dates"
+    exit ;;
   "issue list") file="$fixtures/issues/$(basename "$PWD").json" ;;
+  # `issue view <n>`: the issue's row of `issue list`, completed by what
+  # only the detail view asks for from issue-view/<repo>-<n>.json.
+  "issue view")
+    repo="$(basename "$PWD")"
+    extra="$(cat "$fixtures/issue-view/$repo-$3.json" 2>/dev/null || echo '{}')"
+    jq -n --argjson n "$3" --argjson extra "$extra" \
+      --slurpfile list "$fixtures/issues/$repo.json" '
+      (first($list[0][] | select(.number == $n))
+        // error("issue #\($n) not found"))
+      | {state: "OPEN", stateReason: null, body: "", comments: []} + . + $extra
+      | '"$ago_dates"
+    exit ;;
   "release list") file="$fixtures/releases/$(basename "$PWD").json" ;;
   # `release view [-- tag]`: one release and the page GitHub would give.
   # No tag asks for GitHub's "Latest"; a repo without one, as for real,
@@ -62,7 +90,14 @@ case "${1:-} ${2:-}" in
       | .url = "https://github.com/acme/\($repo)/releases/tag/\(.tagName)"' \
       "$fixtures/releases/$repo.json" 2>/dev/null)"
     [[ -n "$release" ]] || { echo "release not found" >&2; exit 1; }
-    echo "$release"; exit 0 ;;
+    # What only the detail view reads (notes, files…) from
+    # release-view/<repo>-<tag>.json when there is one.
+    tag="$(jq -r .tagName <<<"$release")"
+    extra="$(cat "$fixtures/release-view/$repo-$tag.json" 2>/dev/null || echo '{}')"
+    jq --argjson extra "$extra" \
+      '{body: "", assets: [], author: {login: "alice"}, targetCommitish: "main"} + . + $extra' \
+      <<<"$release"
+    exit 0 ;;
   "repo list") file="$fixtures/repos/$3.json"; shift ;;
   # `repo clone owner/name dest`: an empty repo pointing at it, after a
   # pause so the batch reads queued → cloning → cloned.
@@ -76,7 +111,7 @@ esac
 shift 2
 
 # Relative dates first (see `ago_dates`).
-jq_filter="$ago_dates | .[]"
+jq_filter="$ago_dates | .[]${defaults:+ | $defaults}"
 while (($#)); do
   case "$1" in
     --author) jq_filter+=" | select(.author.login == \"$(who "$2")\")"; shift ;;

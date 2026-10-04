@@ -8,14 +8,20 @@ with keyboard filters and optional auto-refresh.
 
 - **PRs**: every open PR across the folder's repos, with a one-glyph
   verdict (draft, conflict, failing, running, ready), review state, size
-  and labels. `m` narrows to yours, `v` reads one without leaving the
+  and labels. `m` narrows to yours, `enter` reads one without leaving the
   terminal: its description, checks, files and comments.
-- **Actions**: the workflow runs sitting on those PRs' branches.
-- **Issues**: the open issues, who is on them and the PRs that close them.
+- **Actions**: the workflow runs sitting on those PRs' branches; `enter`
+  shows a run's jobs and the step that broke.
+- **Issues**: the open issues, who is on them and the PRs that close them;
+  `enter` reads one and its conversation.
 - **Repos**: an owner's repositories, which ones you already have, and a
   batch clone for the others.
 - **Releases**: each repo's latest release, how many commits wait for the
-  next one, and the repos that never had one.
+  next one, and the repos that never had one; `enter` reads its notes and
+  lists its files.
+
+`enter` always goes one level deeper — the row, read in gh-ui — and `o`
+straight to its GitHub page.
 
 ## Requirements
 
@@ -107,11 +113,11 @@ rather than reshuffling it (see [Memory](#memory)). To bring it to the
 front: `c`, put the cursor on `State`, `space` to grab it, `↑` until it is on
 top, `space` to drop it. It is saved.
 
-#### The detail view (`v`)
+#### The detail view (`enter`)
 
-`v` on a PR opens it in place of the table, full screen, to answer what
-`enter` would otherwise send you to the browser for. `←/→` walk four
-sections:
+`enter` on a PR opens it in place of the table, full screen, to answer
+what the browser would otherwise be needed for (`o` still goes straight to
+GitHub). `←/→` walk four sections:
 
 - **Overview**: the facts (state, author, branches and size; the review
   decision, what each reviewer said last and who is still waited on; the
@@ -134,15 +140,19 @@ sections:
   on a line of the diff themselves are not there: `gh pr view` does not
   give them, `enter` opens them on GitHub.
 
-`enter` opens the matching page on GitHub (the PR, its Checks tab, its Files
-tab), `space` folds and unfolds the Comments' reviews, `r` reloads the
-view, and `esc` (or `v`) goes back to the list with the cursor on that PR.
+`enter` (or `o`) opens the matching page on GitHub (the PR, its Checks
+tab, its Files tab), `space` folds and unfolds the Comments' reviews, `r`
+reloads the view, and `esc` goes back to the list with the cursor on that
+PR.
 
 It costs **one `gh pr view` per opening**, about a second, whatever the
 section: the four come in the same answer. Nothing is fetched until you
-press `v`, so the list and its auto-refresh cost exactly what they did. While
+press `enter`, so the list and its auto-refresh cost exactly what they did. While
 a detail is open, the auto-refresh reloads it too (one more call per tick),
 so the Checks section stays live while you wait for CI.
+
+The same view, with its own sections, opens a run, an issue or a release:
+see [Actions](#actions), [Issues](#issues) and [Releases](#releases).
 
 ### Actions
 
@@ -152,6 +162,17 @@ gh-ui fetches a wide window of runs per repo — a busy `main` or `develop`
 would otherwise fill a narrow one on its own and leave the tab empty. With
 the filter off the tab shows the 20 most recent runs of each repo, all
 branches together.
+
+`enter` on a run opens its [detail view](#the-detail-view-enter) on two
+sections, from one `gh run view`:
+
+- **Overview**: how it ended, its workflow, number and attempt; the event
+  and the commit that started it; when, and how long it took (or has been
+  running); how many jobs failed, run and passed.
+- **Jobs**: failures first, then what still runs, then the rest. A failed
+  or running job lists its steps underneath, with their times — the step
+  that broke is the reason to open it; `space` shows the steps of every
+  job.
 
 ### Issues
 
@@ -164,6 +185,11 @@ issues assigned to you, and pressing it again shows everyone's.
 There is no comments column on purpose: `gh` only gives the comments with
 their full text, which would make every load several times slower.
 `Created` is there but hidden; show it from the columns panel (`c`).
+
+`enter` on an issue opens its [detail view](#the-detail-view-enter), from
+one `gh issue view`: **Overview** (its state — and why it was closed —,
+who opened it and when, who is on it, the PRs that close it, its labels,
+then its description) and **Comments** (the conversation, as a PR's reads).
 
 ### Repos
 
@@ -192,8 +218,8 @@ recently published first: tag, name and date. "Latest" is the release
 GitHub badges so, whatever the number of pre-releases published since, or
 — for a repo that only ever shipped pre-releases — the most recent one
 that is not a draft; a pre-release reads `[P]` after its tag. A repo that never released keeps its row, grayed, reading
-`no release`, at the bottom of the list. `enter` opens the release's page
-as GitHub gives it, or the repo's releases page on a `no release` row.
+`no release`, at the bottom of the list. `o` opens the release's page as
+GitHub gives it, or the repo's releases page on a `no release` row.
 
 The releases are those of the repo the folder's `origin` points to: in a
 fork, yours, even when `gh repo set-default` points the folder to the
@@ -218,6 +244,13 @@ There are no filters and no `m` here: one row per repo is short enough, and
 `/` narrows it. Like the issues, the releases load on the first visit to
 the tab, and the auto-refresh keeps them fresh from then on.
 
+`enter` on a release opens its [detail view](#the-detail-view-enter), from
+one `gh release view` on the same repo: **Notes** (a release or a
+pre-release, its tag, author, date and target, how many files and
+downloads, then the release notes) and **Assets** (each file, its size and
+how many times it was downloaded). On a `no release` row, `enter` opens
+the repo's releases page.
+
 ## Shortcuts
 
 ### List
@@ -227,8 +260,8 @@ the tab, and the auto-refresh keeps them fresh from then on.
 | `↑/↓`, `j/k` | navigate the list                            |
 | `PgUp/PgDn`  | move a page up / down                        |
 | `Home/End`   | jump to the first / last row                 |
-| `enter`      | open the selected PR, run, issue, repo or release in the browser (Repos: on the clone button, clone the ticked repos) |
-| `v`          | PRs tab: read the PR in gh-ui (description, checks, files, comments) |
+| `enter`      | go one level deeper: read the PR, run, issue or release in gh-ui (see the tabs above); Repos: open the repo on GitHub, or on the clone button, clone the ticked repos |
+| `o`          | open the selected row on GitHub, on every tab |
 | `space`      | Repos tab: tick / untick the repo            |
 | `tab`, `1-5` | switch tab (PRs / Actions / Issues / Repos / Releases) |
 | `/`          | search the visible list (live, client-side)  |
@@ -242,16 +275,17 @@ the tab, and the auto-refresh keeps them fresh from then on.
 | `?`          | help screen                                  |
 | `q`          | quit                                         |
 
-### Detail view (`v`)
+### Detail view (`enter` on a PR, run, issue or release)
 
 | Key                    | Action                                           |
 |------------------------|--------------------------------------------------|
 | `←/→`, `h/l`           | previous / next section                          |
 | `↑/↓`, `j/k`           | scroll a line (each section keeps its place)     |
 | `PgUp/PgDn`, `Home/End` | scroll a page / to either end                   |
-| `enter`                | open the section's page on GitHub                |
-| `r`                    | reload the PR                                    |
-| `esc`, `v`             | back to the list, on the same PR                 |
+| `enter`, `o`           | open the section's page on GitHub                |
+| `space`                | fold / unfold: a PR's reviews, a run's steps     |
+| `r`                    | reload the view                                  |
+| `esc`                  | back to the list, on the same row                |
 | `?`, `q`               | help, quit                                       |
 
 The list's own keys (`tab`, `1-5`, `f`, `c`, `m`, `/`) wait until you are
@@ -385,7 +419,7 @@ real account. `./demo/record.sh --shell` opens the same setup in a shell.
 | `main.rs`       | event loop, keyboard routing, TUI setup/teardown            |
 | `app.rs`        | application state and its logic                             |
 | `model.rs`      | data structures (`Pr`, `Run`, deserialization of `gh` JSON) |
-| `detail.rs`     | the PR detail view (`v`): its data, state and lines          |
+| `detail/`       | the detail view (`enter`): `mod.rs` the view, its sections, the markdown and the PR's detail; `issue.rs`, `run.rs`, `release.rs` the others' |
 | `filters.rs`    | the PR filters: state, `gh` args, persistence               |
 | `runfilters.rs` | the Actions filters, applied in memory                      |
 | `issues.rs`     | the Issues tab: issue model, filters, linked PRs            |

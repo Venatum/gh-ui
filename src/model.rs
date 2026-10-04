@@ -7,7 +7,7 @@ use std::collections::HashMap;
 /// For a text field `gh` may send as `null`: read as "" like a missing
 /// key. `#[serde(default)]` alone covers the missing key only, and one
 /// `null` would fail the parse of the whole list.
-fn null_as_empty<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+pub fn null_as_empty<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
@@ -235,6 +235,10 @@ pub fn latest_attempts(checks: &[Check]) -> Vec<&Check> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
+    /// What `gh run view` takes to name the run; 0 when `gh` did not send
+    /// it (the detail view then has nothing to open).
+    #[serde(default)]
+    pub database_id: u64,
     pub workflow_name: String,
     pub display_title: String,
     pub head_branch: String,

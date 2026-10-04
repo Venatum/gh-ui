@@ -318,7 +318,7 @@ pub struct App {
     /// flags.
     pub release_tab: ReleasesTab,
     pub release_table_state: TableState,
-    /// The PR detail view (key `v`), drawn in place of the table while
+    /// The PR detail view (`enter` on a PR), drawn in place of the table while
     /// open.
     pub detail: Option<DetailView>,
     /// How many rows the table showed at the last draw: the jump of
@@ -336,6 +336,17 @@ pub struct App {
 
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
+}
+
+/// What `enter` does on the list (see `App::enter_action`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnterAction {
+    /// The Repos tab's clone button: ask to clone the ticked repos.
+    Clone,
+    /// A PR: open it in the detail view.
+    Detail,
+    /// Anything else: open the selected row on GitHub.
+    Browser,
 }
 
 impl App {
@@ -1489,47 +1500,136 @@ impl App {
         }
     }
 
+    /// What `enter` does on the list: one level deeper. The clone button
+    /// clones; a PR, an issue, a run or a release opens in gh-ui's detail
+    /// view; a row gh-ui has nothing deeper for (a repo, a `no release`
+    /// row) opens on GitHub. `o` opens GitHub from anywhere.
+    pub fn enter_action(&self) -> EnterAction {
+        if self.on_clone_button() {
+            EnterAction::Clone
+        } else if self.selected_detail().is_some() {
+            EnterAction::Detail
+        } else {
+            EnterAction::Browser
+        }
+    }
+
     // --- the detail view ---
 
-    /// `v`: opens the selected PR in the detail view and starts its load.
-    /// PRs tab only; elsewhere it does nothing, as `space` does outside the
-    /// Repos tab.
+    /// `enter` on a row with a detail view: opens it and starts its load.
+    /// Elsewhere (Repos, an empty list) it does nothing.
     pub fn open_detail(&mut self) {
-        if self.active_tab != Tab::Prs {
-            return;
-        }
-        // Owned copies first: `visible_prs()` borrows the whole `self`.
-        let Some((key, title)) = self.table_state.selected().and_then(|i| {
-            self.visible_prs().get(i).map(|pr| {
-                let key = DetailKey {
-                    repo: pr.repo.clone(),
-                    number: pr.number,
-                };
-                (key, pr.title.clone())
-            })
-        }) else {
+        let Some((key, title)) = self.selected_detail() else {
             return;
         };
         self.detail = Some(DetailView::new(key.clone(), title));
         fetch::spawn_detail(self.root.clone(), key, self.tx.clone());
     }
 
-    /// `esc`: back to the list, the cursor on the PR that was open.
-    pub fn close_detail(&mut self) {
-        if let Some(view) = self.detail.take() {
-            self.select_pr(&view.key);
+    /// Which detail the selected row opens, and the title to show while it
+    /// loads. Owned copies: the `visible_*` lists borrow the whole `self`.
+    fn selected_detail(&self) -> Option<(DetailKey, String)> {
+        match self.active_tab {
+            Tab::Prs => {
+                let pr = *self.visible_prs().get(self.table_state.selected()?)?;
+                let key = DetailKey::Pr {
+                    repo: pr.repo.clone(),
+                    number: pr.number,
+                };
+                Some((key, pr.title.clone()))
+            }
+            Tab::Issues => {
+                let issue = *self
+                    .visible_issues()
+                    .get(self.issue_table_state.selected()?)?;
+                let key = DetailKey::Issue {
+                    repo: issue.repo.clone(),
+                    number: issue.number,
+                };
+                Some((key, issue.title.clone()))
+            }
+            Tab::Runs => {
+                let run = *self.visible_runs().get(self.run_table_state.selected()?)?;
+                // Without its id, `gh run view` has nothing to go on.
+                (run.database_id != 0).then(|| {
+                    let key = DetailKey::Run {
+                        repo: run.repo.clone(),
+                        id: run.database_id,
+                        number: run.number,
+                    };
+                    (key, run.display_title.clone())
+                })
+            }
+            Tab::Releases => {
+                let row = *self
+                    .visible_releases()
+                    .get(self.release_table_state.selected()?)?;
+                // A `no release` row has nothing to show but GitHub's page.
+                let release = row.release.as_ref()?;
+                let key = DetailKey::Release {
+                    repo: row.repo.clone(),
+                    tag: release.tag_name.clone(),
+                };
+                let title = if release.name.is_empty() {
+                    &release.tag_name
+                } else {
+                    &release.name
+                };
+                Some((key, title.clone()))
+            }
+            Tab::Repos => None,
         }
     }
 
-    /// Puts the PRs cursor on `key`'s row, if it is still visible. A reload
-    /// moved it to row 0 meanwhile; a PR that left the list leaves it there.
-    fn select_pr(&mut self, key: &DetailKey) {
-        let found = self
-            .visible_prs()
-            .iter()
-            .position(|pr| pr.repo == key.repo && pr.number == key.number);
-        if let Some(i) = found {
-            self.table_state.select(Some(i));
+    /// `esc`: back to the list, the cursor on the row that was open.
+    pub fn close_detail(&mut self) {
+        if let Some(view) = self.detail.take() {
+            self.select_row(&view.key);
+        }
+    }
+
+    /// Puts the cursor of `key`'s tab on its row, if it is still visible. A
+    /// reload moved it to row 0 meanwhile; a row that left the list leaves
+    /// it there.
+    fn select_row(&mut self, key: &DetailKey) {
+        match key {
+            DetailKey::Pr { repo, number } => {
+                let found = self
+                    .visible_prs()
+                    .iter()
+                    .position(|pr| &pr.repo == repo && pr.number == *number);
+                if let Some(i) = found {
+                    self.table_state.select(Some(i));
+                }
+            }
+            DetailKey::Issue { repo, number } => {
+                let found = self
+                    .visible_issues()
+                    .iter()
+                    .position(|issue| &issue.repo == repo && issue.number == *number);
+                if let Some(i) = found {
+                    self.issue_table_state.select(Some(i));
+                }
+            }
+            DetailKey::Run { repo, id, .. } => {
+                let found = self
+                    .visible_runs()
+                    .iter()
+                    .position(|run| &run.repo == repo && run.database_id == *id);
+                if let Some(i) = found {
+                    self.run_table_state.select(Some(i));
+                }
+            }
+            // One row per folder on the Releases tab.
+            DetailKey::Release { repo, .. } => {
+                let found = self
+                    .visible_releases()
+                    .iter()
+                    .position(|row| &row.repo == repo);
+                if let Some(i) = found {
+                    self.release_table_state.select(Some(i));
+                }
+            }
         }
     }
 
@@ -1737,7 +1837,7 @@ fn errors_suffix(errors: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detail::DetailKey;
+    use crate::detail::{Detail, DetailKey, Section};
     use crate::fetch::DetailResult;
     use crate::filters::AuthorFilter;
     use crate::issues::{AssigneeFilter, sample_issue};
@@ -2384,6 +2484,135 @@ mod tests {
         assert_eq!(app.repo_table_state.selected(), Some(29));
         app.first();
         assert_eq!(app.repo_table_state.selected(), Some(0));
+    }
+
+    /// `enter` goes one level deeper: a PR, an issue, a run or a release
+    /// opens in gh-ui; a repo, or a row with nothing to show, opens on
+    /// GitHub; the clone button clones.
+    #[test]
+    fn enter_goes_one_level_deeper() {
+        let mut app = detail_app();
+        assert_eq!(app.enter_action(), EnterAction::Detail);
+
+        app.active_tab = Tab::Issues;
+        assert_eq!(app.enter_action(), EnterAction::Browser, "no issue loaded");
+        app.issue_tab.issues = vec![sample_issue("api", 57, "2026-09-02T00:00:00Z")];
+        app.issue_table_state.select(Some(0));
+        assert_eq!(app.enter_action(), EnterAction::Detail);
+
+        app.active_tab = Tab::Releases;
+        app.release_tab.rows = vec![
+            sample_row("api", Some("2026-09-01T00:00:00Z")),
+            sample_row("docs", None),
+        ];
+        app.release_table_state.select(Some(0));
+        assert_eq!(app.enter_action(), EnterAction::Detail);
+        app.release_table_state.select(Some(1));
+        assert_eq!(app.enter_action(), EnterAction::Browser, "no release");
+
+        let mut app = tick_app();
+        assert_eq!(app.enter_action(), EnterAction::Browser);
+        app.toggle_tick();
+        app.last();
+        assert_eq!(app.enter_action(), EnterAction::Clone);
+    }
+
+    /// A run on the PRs' branch, as `gh run list` returns it; `id` 0 for a
+    /// run listed without its id.
+    fn branch_run(app: &App, number: u64, id: u64) -> Run {
+        let mut run: Run = serde_json::from_value(serde_json::json!({
+            "databaseId": id, "workflowName": "CI", "displayTitle": format!("run {number}"),
+            "headBranch": app.prs[0].head_ref_name, "status": "completed",
+            "conclusion": "failure", "event": "pull_request",
+            "createdAt": "2026-10-04T10:00:00Z", "number": number,
+            "url": format!("https://github.com/acme/api/actions/runs/{id}")
+        }))
+        .unwrap();
+        run.repo = "api".to_string();
+        run
+    }
+
+    /// A run opens by its id, which `gh run view` takes; without one, `enter`
+    /// falls back to its GitHub page.
+    #[test]
+    fn a_run_opens_by_its_id_and_one_without_stays_on_github() {
+        let mut app = detail_app();
+        app.runs = vec![branch_run(&app, 812, 99)];
+        app.active_tab = Tab::Runs;
+        app.run_table_state.select(Some(0));
+
+        open_quietly(&mut app);
+        let view = app.detail.as_ref().expect("a view is open");
+        assert_eq!(
+            view.key,
+            DetailKey::Run {
+                repo: "api".into(),
+                id: 99,
+                number: 812
+            }
+        );
+        assert_eq!(view.section, Section::Overview);
+
+        app.close_detail();
+        app.runs = vec![branch_run(&app, 812, 0)];
+        assert_eq!(app.enter_action(), EnterAction::Browser);
+    }
+
+    /// A release opens by its tag, named by its title; `esc` comes back to
+    /// its folder's row.
+    #[test]
+    fn a_release_opens_by_its_tag_and_esc_finds_its_row() {
+        let mut app = detail_app();
+        app.active_tab = Tab::Releases;
+        app.release_tab.rows = vec![
+            sample_row("docs", None),
+            sample_row("api", Some("2026-09-01T00:00:00Z")),
+        ];
+        app.release_table_state.select(Some(1));
+
+        open_quietly(&mut app);
+        let view = app.detail.as_ref().expect("a view is open");
+        assert_eq!(
+            view.key,
+            DetailKey::Release {
+                repo: "api".into(),
+                tag: "v1.0.0".into()
+            }
+        );
+        assert_eq!(view.title, "Release v1.0.0");
+        assert_eq!(view.section, Section::Notes);
+
+        app.release_table_state.select(Some(0));
+        app.close_detail();
+        assert_eq!(app.release_table_state.selected(), Some(1));
+    }
+
+    /// `enter` on an issue opens its view; `esc` brings the cursor back to
+    /// it, even after a reload moved it.
+    #[test]
+    fn an_issue_opens_in_the_detail_view_and_esc_finds_it_again() {
+        let mut app = issues_app();
+        app.issue_tab.issues = vec![
+            sample_issue("api", 57, "2026-09-02T00:00:00Z"),
+            sample_issue("web", 12, "2026-09-01T00:00:00Z"),
+        ];
+        app.issue_table_state.select(Some(1));
+
+        app.open_detail();
+        let view = app.detail.as_ref().expect("a view is open");
+        assert_eq!(
+            view.key,
+            DetailKey::Issue {
+                repo: "web".into(),
+                number: 12
+            }
+        );
+        assert_eq!(view.title, "issue 12");
+        assert_eq!(view.section, Section::Overview);
+
+        app.issue_table_state.select(Some(0)); // a reload put it back on top
+        app.close_detail();
+        assert_eq!(app.issue_table_state.selected(), Some(1));
     }
 
     #[test]
@@ -3218,7 +3447,7 @@ mod tests {
 
     fn detail_answer(repo: &str, number: u64, detail: Result<&str, &str>) -> Loaded {
         Loaded::Detail(DetailResult {
-            key: DetailKey {
+            key: DetailKey::Pr {
                 repo: repo.into(),
                 number,
             },
@@ -3228,7 +3457,7 @@ mod tests {
                 .map(|title| {
                     let mut d = crate::detail::sample_detail();
                     d.title = title.to_string();
-                    Box::new(d)
+                    Box::new(Detail::Pr(d))
                 })
                 .map_err(str::to_string),
         })
@@ -3241,7 +3470,7 @@ mod tests {
         let view = app.detail.as_ref().expect("a view is open");
         assert_eq!(
             view.key,
-            DetailKey {
+            DetailKey::Pr {
                 repo: "web".into(),
                 number: 233
             }
@@ -3280,7 +3509,7 @@ mod tests {
         app.on_tick();
         let view = app.detail.as_ref().unwrap();
         assert!(!view.loading);
-        assert_eq!(view.detail.as_ref().unwrap().title, "Dark mode");
+        assert_eq!(view.detail.as_ref().unwrap().title(), "Dark mode");
         assert!(!app.loading, "a detail answer is not a PR/run load");
     }
 

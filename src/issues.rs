@@ -56,14 +56,21 @@ pub fn linked_prs_label(issue: &Issue) -> String {
     // Slice patterns: match on how many elements there are, and bind them.
     match issue.linked_prs.as_slice() {
         [] => String::new(),
-        [pr] if pr.repository.name.eq_ignore_ascii_case(&issue.repo) => {
-            format!("#{}", pr.number)
-        }
-        [pr] => format!(
+        [pr] => pr_ref_label(pr, &issue.repo),
+        many => format!("{} PRs", many.len()),
+    }
+}
+
+/// One linked PR: `#123` in the issue's own repo (its folder, `repo`),
+/// `owner/name#123` elsewhere.
+pub fn pr_ref_label(pr: &PrRef, repo: &str) -> String {
+    if pr.repository.name.eq_ignore_ascii_case(repo) {
+        format!("#{}", pr.number)
+    } else {
+        format!(
             "{}/{}#{}",
             pr.repository.owner.login, pr.repository.name, pr.number
-        ),
-        many => format!("{} PRs", many.len()),
+        )
     }
 }
 

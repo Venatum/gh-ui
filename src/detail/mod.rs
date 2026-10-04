@@ -1,5 +1,7 @@
-//! The PR detail view (key `v`): what `gh pr view` returns, the view's
-//! state, and the lines it shows. Pure: `gh.rs` runs the command,
+//! The detail view (`enter` on a row): what `gh … view` returns, the
+//! view's state, and the lines it shows. This file holds what every kind
+//! of row shares — the view, its sections, the markdown pass, the
+//! conversation — and the PRs' own detail. Pure: `gh.rs` runs the command,
 //! `fetch.rs` carries the answer, `ui.rs` draws what this module builds.
 
 use crate::columns::label_spans;
@@ -8,6 +10,14 @@ use chrono::{DateTime, Datelike, FixedOffset, Utc};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde::Deserialize;
+
+mod issue;
+mod release;
+mod run;
+
+pub use issue::IssueDetail;
+pub use release::ReleaseDetail;
+pub use run::RunDetail;
 
 /// One PR as `gh pr view --json …` returns it: only the fields the view
 /// shows (see `gh::PR_VIEW_FIELDS`, which asks for exactly these). The
@@ -108,18 +118,39 @@ impl PrDetail {
     }
 }
 
-/// The sections of the view, in the order `←`/`→` walk them.
+/// A section of the view. Each kind of row walks its own, in its own
+/// order (see `DetailKey::sections`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// The facts and the body.
     Overview,
     Checks,
     Files,
-    /// The conversation and the reviews' summaries.
+    /// The conversation (and, for a PR, its reviews).
     Comments,
+    /// A run's jobs and their steps.
+    Jobs,
+    /// A release's facts and notes.
+    Notes,
+    /// A release's files.
+    Assets,
 }
 
-pub const SECTIONS: [Section; 4] = [
+/// How many sections there are in all: the size of `DetailView::scrolls`,
+/// indexed by `Section as usize`.
+const SECTION_KINDS: usize = 7;
+
+/// An issue's sections.
+const ISSUE_SECTIONS: [Section; 2] = [Section::Overview, Section::Comments];
+
+/// A run's sections.
+const RUN_SECTIONS: [Section; 2] = [Section::Overview, Section::Jobs];
+
+/// A release's sections.
+const RELEASE_SECTIONS: [Section; 2] = [Section::Notes, Section::Assets];
+
+/// A PR's sections, in the order `←`/`→` walk them.
+const PR_SECTIONS: [Section; 4] = [
     Section::Overview,
     Section::Checks,
     Section::Files,
@@ -133,6 +164,9 @@ impl Section {
             Section::Checks => "Checks",
             Section::Files => "Files",
             Section::Comments => "Comments",
+            Section::Jobs => "Jobs",
+            Section::Notes => "Notes",
+            Section::Assets => "Assets",
         }
     }
 }
@@ -174,12 +208,148 @@ pub struct ReviewCommit {
     pub oid: String,
 }
 
-/// Which PR a view (or a late answer) is about. The folder name and the
-/// number are enough: two PRs of one folder never share a number.
+/// Which row a view (or a late answer) is about: the folder it comes from,
+/// and what tells it apart there.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetailKey {
-    pub repo: String,
-    pub number: u64,
+pub enum DetailKey {
+    /// Two PRs of one folder never share a number.
+    Pr { repo: String, number: u64 },
+    /// Nor two issues (nor an issue and a PR).
+    Issue { repo: String, number: u64 },
+    /// A run is named by its id, `gh run view`'s argument; its number
+    /// (`#812`) is what the view shows.
+    Run { repo: String, id: u64, number: u64 },
+    /// A folder's release, by its tag.
+    Release { repo: String, tag: String },
+}
+
+impl DetailKey {
+    /// The folder, where `gh` is run.
+    pub fn repo(&self) -> &str {
+        match self {
+            DetailKey::Pr { repo, .. }
+            | DetailKey::Issue { repo, .. }
+            | DetailKey::Run { repo, .. }
+            | DetailKey::Release { repo, .. } => repo,
+        }
+    }
+
+    /// `api #412`: what the view's border names before the title.
+    pub fn label(&self) -> String {
+        match self {
+            DetailKey::Pr { repo, number } | DetailKey::Issue { repo, number } => {
+                format!("{repo} #{number}")
+            }
+            DetailKey::Run { repo, number, .. } => format!("{repo} run #{number}"),
+            DetailKey::Release { repo, tag } => format!("{repo} {tag}"),
+        }
+    }
+
+    /// The sections the view walks for this kind of row.
+    pub fn sections(&self) -> &'static [Section] {
+        match self {
+            DetailKey::Pr { .. } => &PR_SECTIONS,
+            DetailKey::Issue { .. } => &ISSUE_SECTIONS,
+            DetailKey::Run { .. } => &RUN_SECTIONS,
+            DetailKey::Release { .. } => &RELEASE_SECTIONS,
+        }
+    }
+}
+
+/// What `gh` answered for a view, one variant per kind of row.
+#[derive(Debug)]
+pub enum Detail {
+    Pr(PrDetail),
+    Issue(IssueDetail),
+    Run(RunDetail),
+    Release(ReleaseDetail),
+}
+
+impl Detail {
+    /// The title as loaded, which may have changed since the list was.
+    pub fn title(&self) -> &str {
+        match self {
+            Detail::Pr(d) => &d.title,
+            Detail::Issue(d) => &d.title,
+            Detail::Run(d) => &d.display_title,
+            Detail::Release(d) => d.title(),
+        }
+    }
+
+    /// The GitHub page of `section`.
+    fn url(&self, section: Section) -> String {
+        match self {
+            Detail::Pr(d) => match section {
+                Section::Checks => format!("{}/checks", d.url),
+                Section::Files => format!("{}/files", d.url),
+                // The conversation is the PR's own page.
+                _ => d.url.clone(),
+            },
+            Detail::Issue(d) => d.url.clone(),
+            Detail::Run(d) => d.url.clone(),
+            Detail::Release(d) => d.url.clone(),
+        }
+    }
+
+    /// How many rows `section` lists, for the section bar; `None` for a
+    /// section that is no list (an overview).
+    fn count(&self, section: Section) -> Option<usize> {
+        match self {
+            Detail::Pr(d) => match section {
+                Section::Checks => Some(d.checks().len()),
+                Section::Files => usize::try_from(d.changed_files).ok(),
+                Section::Comments => Some(timeline(d).len()),
+                _ => None,
+            },
+            Detail::Issue(d) => match section {
+                Section::Comments => Some(d.comments.len()),
+                _ => None,
+            },
+            Detail::Run(d) => match section {
+                Section::Jobs => Some(d.jobs.len()),
+                _ => None,
+            },
+            Detail::Release(d) => match section {
+                Section::Assets => Some(d.assets.len()),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// What the drawing needs besides the detail: the room, the clock, the
+/// time zone and whether folded entries are open. Gathered so a section's
+/// lines are one pure call, which tests pin.
+#[derive(Debug, Clone, Copy)]
+pub struct Context {
+    pub width: u16,
+    pub now: DateTime<Utc>,
+    pub offset: FixedOffset,
+    pub show_folded: bool,
+}
+
+/// The lines of `section` of `detail`.
+pub fn section_lines(detail: &Detail, section: Section, cx: Context) -> Vec<Line<'static>> {
+    match detail {
+        Detail::Pr(d) => match section {
+            Section::Checks => checks_lines(d, cx.now, cx.width),
+            Section::Files => files_lines(d, cx.width),
+            Section::Comments => comments_lines(d, cx.offset, cx.show_folded),
+            _ => overview_lines(d, cx.width),
+        },
+        Detail::Issue(d) => match section {
+            Section::Comments => issue::comments_lines(d, cx.offset),
+            _ => issue::overview_lines(d, cx.width, cx.offset),
+        },
+        Detail::Run(d) => match section {
+            Section::Jobs => run::jobs_lines(d, cx.now, cx.width, cx.show_folded),
+            _ => run::overview_lines(d, cx.now, cx.offset),
+        },
+        Detail::Release(d) => match section {
+            Section::Assets => release::assets_lines(d, cx.width),
+            _ => release::notes_lines(d, cx.width, cx.offset),
+        },
+    }
 }
 
 /// The state of the open view: which PR, what `gh` answered so far, and
@@ -191,7 +361,7 @@ pub struct DetailView {
     pub title: String,
     /// The last answer that succeeded. Boxed because it travels inside
     /// `fetch::Loaded`, whose other variants are much smaller.
-    pub detail: Option<Box<PrDetail>>,
+    pub detail: Option<Box<Detail>>,
     /// The last load's failure, `gh`'s own message.
     pub error: Option<String>,
     /// A load is in flight: the header spinner turns.
@@ -200,7 +370,7 @@ pub struct DetailView {
     pub section: Section,
     /// How many rows each section is scrolled by, so going back to one
     /// finds it where it was left. Indexed by `Section as usize`.
-    scrolls: [u16; SECTIONS.len()],
+    scrolls: [u16; SECTION_KINDS],
     /// The furthest the section on screen may scroll: its last row at the
     /// bottom of the view. Written by `ui::render_detail`, which alone
     /// knows the size of the screen, as it writes `App::page_rows`.
@@ -215,13 +385,13 @@ impl DetailView {
     /// A view that waits for its first answer.
     pub fn new(key: DetailKey, title: String) -> Self {
         Self {
+            section: key.sections()[0],
             key,
             title,
             detail: None,
             error: None,
             loading: true,
-            section: Section::Overview,
-            scrolls: [0; SECTIONS.len()],
+            scrolls: [0; SECTION_KINDS],
             max_scroll: 0,
             page: 1,
             show_folded: false,
@@ -245,20 +415,22 @@ impl DetailView {
 
     /// `→`: the next section, back to the first after the last.
     pub fn next_section(&mut self) {
-        let at = SECTIONS
+        let sections = self.key.sections();
+        let at = sections
             .iter()
             .position(|&s| s == self.section)
             .unwrap_or(0);
-        self.section = SECTIONS[(at + 1) % SECTIONS.len()];
+        self.section = sections[(at + 1) % sections.len()];
     }
 
     /// `←`: the previous section, to the last before the first.
     pub fn prev_section(&mut self) {
-        let at = SECTIONS
+        let sections = self.key.sections();
+        let at = sections
             .iter()
             .position(|&s| s == self.section)
             .unwrap_or(0);
-        self.section = SECTIONS[(at + SECTIONS.len() - 1) % SECTIONS.len()];
+        self.section = sections[(at + sections.len() - 1) % sections.len()];
     }
 
     /// Scrolls by `delta` rows (negative: up), never past either end.
@@ -285,20 +457,14 @@ impl DetailView {
     }
 
     /// What `enter` opens: the GitHub page of the section on screen.
-    /// Nothing until the first answer brings the PR's URL.
+    /// Nothing until the first answer brings the row's URL.
     pub fn url(&self) -> Option<String> {
-        let base = &self.detail.as_ref()?.url;
-        Some(match self.section {
-            Section::Checks => format!("{base}/checks"),
-            Section::Files => format!("{base}/files"),
-            // The conversation is the PR's own page.
-            Section::Overview | Section::Comments => base.clone(),
-        })
+        Some(self.detail.as_ref()?.url(self.section))
     }
 
     /// Takes in an answer. A failure keeps the text already on screen: a
     /// reload that fails must not blank what the user is reading.
-    pub fn apply(&mut self, answer: Result<Box<PrDetail>, String>) {
+    pub fn apply(&mut self, answer: Result<Box<Detail>, String>) {
         self.loading = false;
         match answer {
             Ok(detail) => {
@@ -443,19 +609,27 @@ fn merge_fact(d: &PrDetail) -> Line<'static> {
 
 /// The Overview section: the facts, a rule `width` wide, the body.
 pub fn overview_lines(d: &PrDetail, width: u16) -> Vec<Line<'static>> {
-    let mut lines = facts_lines(d);
+    // GitHub's own words for a PR without a description.
+    facts_then_body(facts_lines(d), &d.body, width, "No description provided.")
+}
+
+/// An overview's shape, whatever the row: `facts`, a rule `width` wide,
+/// then `body` through the markdown pass — or `empty`, in gray, when there
+/// is none.
+fn facts_then_body(
+    mut lines: Vec<Line<'static>>,
+    body: &str,
+    width: u16,
+    empty: &'static str,
+) -> Vec<Line<'static>> {
     lines.push(Line::styled(
         "─".repeat(usize::from(width)),
         Style::new().fg(Color::DarkGray),
     ));
     lines.push(Line::default());
-    let body = markdown_lines(&d.body);
+    let body = markdown_lines(body);
     if body.is_empty() {
-        // GitHub's own words for a PR without a description.
-        lines.push(Line::styled(
-            "No description provided.",
-            Style::new().fg(Color::DarkGray),
-        ));
+        lines.push(Line::styled(empty, Style::new().fg(Color::DarkGray)));
     }
     lines.extend(body);
     lines
@@ -463,19 +637,18 @@ pub fn overview_lines(d: &PrDetail, width: u16) -> Vec<Line<'static>> {
 
 // --- the section bar ---
 
-/// ` Overview   Checks 12 `: the sections, the one on screen highlighted
-/// like the header's active tab, each with how many rows it lists.
-pub fn section_bar(active: Section, d: &PrDetail) -> Line<'static> {
+/// ` Overview   Checks 12 `: the view's sections, the one on screen
+/// highlighted like the header's active tab, each list with how many rows
+/// it holds.
+pub fn section_bar(active: Section, sections: &[Section], detail: &Detail) -> Line<'static> {
     let mut spans = Vec::new();
-    for (i, &section) in SECTIONS.iter().enumerate() {
+    for (i, &section) in sections.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" "));
         }
-        let label = match section {
-            Section::Overview => section.label().to_string(),
-            Section::Checks => format!("{} {}", section.label(), d.checks().len()),
-            Section::Files => format!("{} {}", section.label(), d.changed_files),
-            Section::Comments => format!("{} {}", section.label(), timeline(d).len()),
+        let label = match detail.count(section) {
+            Some(count) => format!("{} {count}", section.label()),
+            None => section.label().to_string(),
         };
         let style = if section == active {
             Style::new().fg(Color::Black).bg(Color::Cyan).bold()
@@ -526,17 +699,35 @@ fn check_time(at: Option<&str>) -> Option<DateTime<Utc>> {
 /// empty when it never started, or was skipped. `now` is a parameter so
 /// tests pin it.
 fn duration_label(check: &Check, now: DateTime<Utc>) -> String {
-    let Some(started) = check_time(check.started_at.as_deref()) else {
+    match check.bucket() {
+        Bucket::Skip => String::new(),
+        bucket => elapsed_label(
+            check.started_at.as_deref(),
+            check.completed_at.as_deref(),
+            bucket == Bucket::Pending,
+            now,
+        ),
+    }
+}
+
+/// `4m12s` from `started` to `finished`, or `for 6m` while it still
+/// `running`; empty without a start (queued, or never run). Shared by the
+/// checks of a PR and the jobs and steps of a run.
+fn elapsed_label(
+    started: Option<&str>,
+    finished: Option<&str>,
+    running: bool,
+    now: DateTime<Utc>,
+) -> String {
+    let Some(started) = check_time(started) else {
         return String::new();
     };
-    let finished = check_time(check.completed_at.as_deref());
-    match (check.bucket(), finished) {
-        (Bucket::Pending, _) => {
-            let minutes = (now - started).num_minutes().max(0);
-            format!("for {minutes}m")
-        }
-        (Bucket::Skip, _) => String::new(),
-        (_, Some(done)) if done >= started => {
+    if running {
+        let minutes = (now - started).num_minutes().max(0);
+        return format!("for {minutes}m");
+    }
+    match check_time(finished) {
+        Some(done) if done >= started => {
             let seconds = (done - started).num_seconds();
             format!("{}m{:02}s", seconds / 60, seconds % 60)
         }
@@ -789,15 +980,7 @@ struct Entry<'a> {
 
 /// The conversation and every review, oldest first.
 fn timeline(d: &PrDetail) -> Vec<Entry<'_>> {
-    let comments = d.comments.iter().map(|c| Entry {
-        who: &c.author.login,
-        what: None,
-        at: &c.created_at,
-        body: &c.body,
-        hidden: c.is_minimized.then_some(c.minimized_reason.as_str()),
-        folded: false,
-        older: false,
-    });
+    let comments = d.comments.iter().map(comment_entry);
     let reviews = d
         .reviews
         .iter()
@@ -806,6 +989,20 @@ fn timeline(d: &PrDetail) -> Vec<Entry<'_>> {
     // RFC 3339 times in UTC sort as text.
     entries.sort_by(|a, b| a.at.cmp(b.at));
     entries
+}
+
+/// A comment of the conversation as an entry: never folded, but hidden
+/// when a maintainer minimized it.
+fn comment_entry(c: &Comment) -> Entry<'_> {
+    Entry {
+        who: &c.author.login,
+        what: None,
+        at: &c.created_at,
+        body: &c.body,
+        hidden: c.is_minimized.then_some(c.minimized_reason.as_str()),
+        folded: false,
+        older: false,
+    }
 }
 
 /// A review as an entry, folded to one line when there is nothing to read
@@ -854,7 +1051,12 @@ fn local_time(at: &str, offset: FixedOffset) -> String {
 /// something to read, behind `▾`. `offset` is the user's time zone, a
 /// parameter so tests pin it.
 pub fn comments_lines(d: &PrDetail, offset: FixedOffset, show_folded: bool) -> Vec<Line<'static>> {
-    let entries = timeline(d);
+    entries_lines(&timeline(d), offset, show_folded)
+}
+
+/// A conversation's lines, whatever the row it belongs to (see
+/// `comments_lines`).
+fn entries_lines(entries: &[Entry], offset: FixedOffset, show_folded: bool) -> Vec<Line<'static>> {
     if entries.is_empty() {
         return vec![Line::styled(
             "No comments yet.",
@@ -864,7 +1066,7 @@ pub fn comments_lines(d: &PrDetail, offset: FixedOffset, show_folded: bool) -> V
     let gray = Style::new().fg(Color::DarkGray);
     let mut lines = Vec::new();
     let mut after_folded_line = false;
-    for entry in &entries {
+    for entry in entries {
         let open = !entry.folded || (show_folded && !entry.body.trim().is_empty());
         let one_line = !open;
         // A blank line between entries, except between two folded lines.
@@ -1186,7 +1388,7 @@ mod tests {
     use super::*;
 
     fn key(repo: &str, number: u64) -> DetailKey {
-        DetailKey {
+        DetailKey::Pr {
             repo: repo.into(),
             number,
         }
@@ -1405,7 +1607,7 @@ mod tests {
     #[test]
     fn a_failed_reload_keeps_what_is_on_screen() {
         let mut view = DetailView::new(key("api", 412), "t".into());
-        view.apply(Ok(Box::new(sample_detail())));
+        view.apply(Ok(Box::new(Detail::Pr(sample_detail()))));
         view.loading = true;
         view.apply(Err("`gh pr view` failed: HTTP 502".into()));
         assert!(view.detail.is_some(), "the text stays");
@@ -1636,7 +1838,7 @@ mod tests {
         view.prev_section();
         assert_eq!(view.scroll(), 7, "back where we were");
         view.prev_section();
-        assert_eq!(view.section, *SECTIONS.last().unwrap(), "wraps around");
+        assert_eq!(view.section, *PR_SECTIONS.last().unwrap(), "wraps around");
     }
 
     /// The section bar reads like the header's tabs: the active one on
@@ -1645,7 +1847,7 @@ mod tests {
     fn the_section_bar_names_the_sections_with_their_counts() {
         let mut d = sample_detail();
         d.status_check_rollup = Some(vec![run("CI", "a", "COMPLETED", "SUCCESS", "t")]);
-        let bar = section_bar(Section::Overview, &d);
+        let bar = section_bar(Section::Overview, &PR_SECTIONS, &Detail::Pr(d));
         assert_eq!(
             bar.to_string(),
             " Overview   Checks 1   Files 9   Comments 2 "
@@ -1926,7 +2128,7 @@ mod tests {
     fn enter_opens_the_page_of_the_section() {
         let mut view = DetailView::new(key("api", 412), "t".into());
         assert_eq!(view.url(), None, "nothing loaded yet");
-        view.apply(Ok(Box::new(sample_detail())));
+        view.apply(Ok(Box::new(Detail::Pr(sample_detail()))));
         let base = "https://github.com/acme/api/pull/412";
         assert_eq!(view.url().as_deref(), Some(base));
         view.next_section();

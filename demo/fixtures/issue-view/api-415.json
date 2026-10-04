@@ -1,0 +1,26 @@
+{
+  "body": "A `429 Too Many Requests` comes back without `X-RateLimit-Remaining` nor `Retry-After`, so clients cannot back off.\n\n### Steps\n\n1. Send 101 requests in a minute with one key\n2. Look at the 101st answer's headers\n\n<!-- triage: confirmed by the API team -->\n\n### Expected\n\nThe same rate limit headers as on a 200, plus `Retry-After`.",
+  "comments": [
+    {
+      "author": {
+        "login": "alice"
+      },
+      "body": "Confirmed: the middleware returns before the headers are set. Fix in #412.",
+      "createdAt": "@ago:2.5"
+    },
+    {
+      "author": {
+        "login": "bob"
+      },
+      "body": "Thanks! Could `Retry-After` be in seconds rather than a date? Our SDK only parses seconds.",
+      "createdAt": "@ago:2.1"
+    },
+    {
+      "author": {
+        "login": "alice"
+      },
+      "body": "Seconds it is, as the RFC allows both.",
+      "createdAt": "@ago:1.9"
+    }
+  ]
+}

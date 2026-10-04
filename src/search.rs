@@ -160,6 +160,7 @@ mod tests {
 
     fn run(number: u64, workflow: &str, branch: &str, title: &str, repo: &str) -> Run {
         Run {
+            database_id: 0,
             workflow_name: workflow.to_string(),
             display_title: title.to_string(),
             head_branch: branch.to_string(),

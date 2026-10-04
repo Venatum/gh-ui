@@ -1,0 +1,107 @@
+{
+  "attempt": 2,
+  "headSha": "7c9e3b2d41f0",
+  "startedAt": "@min:1500",
+  "updatedAt": "@min:1493",
+  "jobs": [
+    {
+      "name": "build",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "@min:1500",
+      "completedAt": "@min:1499",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1500",
+          "completedAt": "@min:1500"
+        },
+        {
+          "name": "Build",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1500",
+          "completedAt": "@min:1499"
+        }
+      ]
+    },
+    {
+      "name": "test (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "failure",
+      "startedAt": "@min:1499",
+      "completedAt": "@min:1494",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1499",
+          "completedAt": "@min:1499"
+        },
+        {
+          "name": "Start Postgres",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1499",
+          "completedAt": "@min:1498"
+        },
+        {
+          "name": "Run cargo test",
+          "status": "completed",
+          "conclusion": "failure",
+          "startedAt": "@min:1498",
+          "completedAt": "@min:1494"
+        },
+        {
+          "name": "Upload test report",
+          "status": "completed",
+          "conclusion": "skipped",
+          "startedAt": "@min:1494",
+          "completedAt": "@min:1494"
+        }
+      ]
+    },
+    {
+      "name": "test (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "@min:1499",
+      "completedAt": "@min:1493",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1499",
+          "completedAt": "@min:1499"
+        },
+        {
+          "name": "Run cargo test",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:1499",
+          "completedAt": "@min:1493"
+        }
+      ]
+    },
+    {
+      "name": "clippy",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "@min:1500",
+      "completedAt": "@min:1499",
+      "steps": []
+    },
+    {
+      "name": "deploy-preview",
+      "status": "completed",
+      "conclusion": "skipped",
+      "startedAt": "@min:1493",
+      "completedAt": "@min:1493",
+      "steps": []
+    }
+  ]
+}

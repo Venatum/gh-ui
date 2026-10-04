@@ -1,7 +1,7 @@
 //! The background loading: a thread does the slow work (`gh` calls) and returns
 //! the result over a channel, so the UI never freezes.
 
-use crate::detail::{DetailKey, PrDetail};
+use crate::detail::{Detail, DetailKey};
 use crate::filters::Filters;
 use crate::gh;
 use crate::issues::{Issue, IssueFilters};
@@ -58,13 +58,14 @@ pub struct ReposResult {
     pub locals: Vec<LocalRepo>,
 }
 
-/// One PR's detail (key `v`): which PR it is about, and what `gh` answered.
+/// One row's detail (`enter`): which row it is about, and what `gh`
+/// answered.
 pub struct DetailResult {
-    /// What was asked: an answer for a PR the view no longer shows is
+    /// What was asked: an answer for a row the view no longer shows is
     /// dropped.
     pub key: DetailKey,
     /// `Err` carries `gh`'s message, shown in the view.
-    pub detail: Result<Box<PrDetail>, String>,
+    pub detail: Result<Box<Detail>, String>,
 }
 
 /// What the background thread returns: PRs, runs, or both at once.
@@ -240,11 +241,11 @@ pub fn spawn_releases(root: PathBuf, tx: Sender<Loaded>) {
     });
 }
 
-/// Loads one PR's detail, in the PR's folder. The key rides along so a late
-/// answer for a PR the user already left can be recognised and dropped.
+/// Loads one row's detail, in its folder. The key rides along so a late
+/// answer for a row the user already left can be recognised and dropped.
 pub fn spawn_detail(root: PathBuf, key: DetailKey, tx: Sender<Loaded>) {
     thread::spawn(move || {
-        let detail = gh::fetch_pr_detail(&root.join(&key.repo), key.number)
+        let detail = gh::fetch_detail(&root.join(key.repo()), &key)
             .map(Box::new)
             .map_err(|e| e.to_string());
         let _ = tx.send(Loaded::Detail(DetailResult { key, detail }));

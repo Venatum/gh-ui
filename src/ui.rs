@@ -6,9 +6,7 @@ use crate::columns::{
     Column, ColumnLayout, IssueColumn, PrColumn, ReleaseColumn, RepoColumn, RunColumn,
     STATUS_LEGEND, release_row_style, repo_row_style,
 };
-use crate::detail::{
-    DetailView, Section, checks_lines, comments_lines, files_lines, overview_lines, section_bar,
-};
+use crate::detail::{Context, DetailView, section_bar, section_lines};
 use crate::filters::{AuthorFilter, Filters};
 use crate::issues::IssueFilters;
 use crate::refresh::{self, AutoRefresh};
@@ -355,19 +353,16 @@ fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.repo_table_state);
 }
 
-/// The detail view (key `v`): a bordered box named after the PR, holding
+/// The detail view (`enter` on a row): a bordered box named after the PR, holding
 /// its body once `gh` answered, or what it waits for, or why it failed.
 fn render_detail(frame: &mut Frame, view: &mut DetailView, area: Rect) {
     // The loaded title, which may have changed since the list was loaded.
     let title = view
         .detail
         .as_ref()
-        .map_or(view.title.as_str(), |d| d.title.as_str());
+        .map_or(view.title.as_str(), |d| d.title());
     let block = Block::bordered()
-        .title(format!(
-            " {} #{} · {} ",
-            view.key.repo, view.key.number, title
-        ))
+        .title(format!(" {} · {} ", view.key.label(), title))
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -388,7 +383,7 @@ fn render_detail(frame: &mut Frame, view: &mut DetailView, area: Rect) {
         ];
         render_centered(frame, lines, inner);
     } else {
-        let waiting = format!("Loading {} #{}…", view.key.repo, view.key.number);
+        let waiting = format!("Loading {}…", view.key.label());
         render_centered(frame, vec![Line::from(waiting)], inner);
     }
 }
@@ -406,7 +401,7 @@ fn render_sections(frame: &mut Frame, view: &mut DetailView, area: Rect) {
     ])
     .areas(area);
     // Owned lines: `detail` borrows `view`, which is written below.
-    let mut bar_line = section_bar(view.section, detail);
+    let mut bar_line = section_bar(view.section, view.key.sections(), detail);
     // A reload that failed kept the text: its error goes at the end of the
     // bar, against the right edge (cut there if the bar is too narrow).
     if let Some(error) = &view.error {
@@ -415,12 +410,13 @@ fn render_sections(frame: &mut Frame, view: &mut DetailView, area: Rect) {
         bar_line.push_span(Span::raw(" ".repeat(room.max(1))));
         bar_line.push_span(error);
     }
-    let lines = match view.section {
-        Section::Overview => overview_lines(detail, body.width),
-        Section::Checks => checks_lines(detail, Utc::now(), body.width),
-        Section::Files => files_lines(detail, body.width),
-        Section::Comments => comments_lines(detail, Local::now().offset().fix(), view.show_folded),
+    let cx = Context {
+        width: body.width,
+        now: Utc::now(),
+        offset: Local::now().offset().fix(),
+        show_folded: view.show_folded,
     };
+    let lines = section_lines(detail, view.section, cx);
     frame.render_widget(Paragraph::new(bar_line), bar);
 
     let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
@@ -451,7 +447,7 @@ const DETAIL_HINTS: [(&str, &str); 7] = [
     ("esc", "back"),
     ("←→", "section"),
     ("↑↓", "scroll"),
-    ("enter", "browser"),
+    ("enter", "github"),
     ("space", "unfold"),
     ("r", "reload"),
     ("q", "quit"),
@@ -465,9 +461,11 @@ const HINTS: [(&str, &str); 11] = [
     // Near the front on purpose: hints are dropped from the tail, and `/` is
     // the one key on this row that is not reachable from a panel.
     ("/", "search"),
-    ("enter", "open"),
-    // Next to `enter`: the other way to look at the selected PR.
-    ("v", "view"),
+    // `enter` opens the row in gh-ui's detail view; on the Repos tab, which
+    // has none, it reads "open" (see `hints_for`). `o` next to it: the
+    // other way to look at a row.
+    ("enter", "view"),
+    ("o", "github"),
     ("tab/1-5", "tab"),
     ("f", "filters"),
     ("m", "mine"),
@@ -477,20 +475,19 @@ const HINTS: [(&str, &str); 11] = [
     ("q", "quit"),
 ];
 
-/// The footer of `tab`. `v` opens a PR's detail: the PRs tab only. `m`
-/// does nothing on the Repos tab, and `space` ticks there: same slot, so
-/// both drop at the same width. The Releases tab has nothing to filter nor
-/// to call mine: both hints go.
+/// The footer of `tab`. `enter` views a row in gh-ui, but opens a repo on
+/// GitHub. `m` does nothing on the Repos tab, and `space` ticks there: same
+/// slot, so both drop at the same width. The Releases tab has nothing to
+/// filter nor to call mine: both hints go.
 fn hints_for(tab: Tab) -> Vec<(&'static str, &'static str)> {
     let mut hints = HINTS.to_vec();
-    if tab != Tab::Prs {
-        hints.retain(|hint| hint.0 != "v");
-    }
     match tab {
         Tab::Repos => {
             for hint in &mut hints {
                 if *hint == ("m", "mine") {
                     *hint = ("space", "tick");
+                } else if *hint == ("enter", "view") {
+                    *hint = ("enter", "open");
                 }
             }
         }
@@ -863,12 +860,8 @@ fn render_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         help_row("↑/↓, j/k", "navigate · PgUp/PgDn: a page · Home/End: ends"),
-        // Two rows rewritten rather than one added for `v`: the popup
-        // already fills an 80x24 terminal.
-        help_row(
-            "enter / v",
-            "open in the browser / in the detail view (PRs)",
-        ),
+        // One row for both keys: the popup already fills an 80x24 terminal.
+        help_row("enter / o", "view it in gh-ui (Repos: GitHub) / o: GitHub"),
         help_row("space", "Repos: tick · enter on the clone button: clone"),
         help_row("/", "search the visible list · esc clears it"),
         help_row("r / q", "reload now / quit"),
@@ -947,7 +940,7 @@ mod tests {
     use super::*;
     use crate::app::Confirm;
     use crate::columns::{ColumnLayout, PrColumn};
-    use crate::detail::{DetailKey, DetailView};
+    use crate::detail::{Detail, DetailKey, DetailView};
     use crate::repos::RepoFilters;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1037,13 +1030,16 @@ mod tests {
         }
     }
 
-    /// `v` opens the detail of a PR: the other tabs have no detail view.
+    /// `enter` views a row in gh-ui, except a repo, which it opens on
+    /// GitHub; `o` goes to GitHub on every tab.
     #[test]
-    fn only_the_prs_footer_offers_v() {
-        assert_eq!(hints_for(Tab::Prs), HINTS.to_vec());
-        assert!(hints_for(Tab::Prs).contains(&("v", "view")));
-        for tab in [Tab::Runs, Tab::Issues, Tab::Repos, Tab::Releases] {
-            assert!(!hints_for(tab).contains(&("v", "view")), "{tab:?}");
+    fn enter_reads_view_except_on_the_repos() {
+        for tab in [Tab::Prs, Tab::Runs, Tab::Issues, Tab::Releases] {
+            assert!(hints_for(tab).contains(&("enter", "view")), "{tab:?}");
+        }
+        assert!(hints_for(Tab::Repos).contains(&("enter", "open")));
+        for tab in [Tab::Prs, Tab::Runs, Tab::Issues, Tab::Repos, Tab::Releases] {
+            assert!(hints_for(tab).contains(&("o", "github")), "{tab:?}");
         }
     }
 
@@ -1432,19 +1428,19 @@ mod tests {
         assert!(text.contains("(any key to close)"), "still fits 80x24");
     }
 
-    /// The `v` row is paid for by rewriting the `enter` and `space` rows,
-    /// not by a new one: the popup already fills an 80x24 terminal.
+    /// One row for both: `enter` goes one level deeper, `o` to GitHub. The
+    /// popup already fills an 80x24 terminal.
     #[test]
-    fn the_help_names_the_detail_view_and_still_fits_80x24() {
+    fn the_help_names_enter_and_o_and_still_fits_80x24() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
-        assert!(text.contains("enter / v"));
-        assert!(text.contains("open in the browser / in the detail view (PRs)"));
+        assert!(text.contains("enter / o"));
+        assert!(text.contains("view it in gh-ui (Repos: GitHub) / o: GitHub"));
         assert!(text.contains("(any key to close)"));
     }
 
     fn loading_view() -> DetailView {
         DetailView::new(
-            DetailKey {
+            DetailKey::Pr {
                 repo: "api".into(),
                 number: 412,
             },
@@ -1503,7 +1499,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        view.apply(Ok(Box::new(d)));
+        view.apply(Ok(Box::new(Detail::Pr(d))));
         view
     }
 
@@ -1545,7 +1541,7 @@ mod tests {
         let mut view = loading_view();
         let mut d = crate::detail::sample_detail();
         d.body = format!("{} THE-END", "word ".repeat(400));
-        view.apply(Ok(Box::new(d)));
+        view.apply(Ok(Box::new(Detail::Pr(d))));
         render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
         view.end();
         let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));

@@ -2,7 +2,7 @@
 //! running `gh` (and `git`) to fetch the PRs, runs, issues, releases and
 //! repos, or to clone.
 
-use crate::detail::PrDetail;
+use crate::detail::{Detail, DetailKey, IssueDetail, PrDetail, RunDetail};
 use crate::filters::Filters;
 use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
@@ -47,7 +47,7 @@ const ORG_LIMIT: &str = "100";
 
 /// JSON fields requested from `gh` for each run.
 const RUN_JSON_FIELDS: &str =
-    "workflowName,displayTitle,headBranch,status,conclusion,event,createdAt,number,url";
+    "databaseId,workflowName,displayTitle,headBranch,status,conclusion,event,createdAt,number,url";
 
 /// Lists the subdirectories of `root` that are git repos (contain `.git`).
 /// Returns their names, sorted, as `list-prs.sh` does with `for dir in */`.
@@ -203,8 +203,62 @@ fn pr_view_args(number: u64) -> Vec<String> {
 /// One PR, everything the detail view shows. ONE GraphQL request whatever
 /// the field list (measured with `GH_DEBUG=api`), so the view never makes
 /// a second call.
-pub fn fetch_pr_detail(repo_dir: &Path, number: u64) -> Result<PrDetail> {
+fn fetch_pr_detail(repo_dir: &Path, number: u64) -> Result<PrDetail> {
     run_gh_json(&pr_view_args(number), Some(repo_dir))
+}
+
+/// JSON fields requested from `gh issue view`: exactly what
+/// `detail::IssueDetail` reads.
+const ISSUE_VIEW_FIELDS: &str = "title,url,body,state,stateReason,author,createdAt,labels,assignees,closedByPullRequestsReferences,comments";
+
+/// `gh issue view <number> --json …`, run in the issue's folder.
+fn issue_view_args(number: u64) -> Vec<String> {
+    [
+        "issue",
+        "view",
+        &number.to_string(),
+        "--json",
+        ISSUE_VIEW_FIELDS,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// JSON fields requested from `gh run view`: exactly what
+/// `detail::RunDetail` reads, its jobs and their steps included.
+const RUN_VIEW_FIELDS: &str = "workflowName,displayTitle,number,attempt,status,conclusion,event,headBranch,headSha,url,startedAt,updatedAt,jobs";
+
+fn run_json_view(repo_dir: &Path, id: u64) -> Result<RunDetail> {
+    run_gh_json(&run_view_args(id), Some(repo_dir))
+}
+
+/// `gh run view <id> --json …`, run in the run's folder.
+fn run_view_args(id: u64) -> Vec<String> {
+    ["run", "view", &id.to_string(), "--json", RUN_VIEW_FIELDS]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// The detail of the row `key` names, in its folder: one `gh … view`.
+pub fn fetch_detail(repo_dir: &Path, key: &DetailKey) -> Result<Detail> {
+    Ok(match key {
+        DetailKey::Pr { number, .. } => Detail::Pr(fetch_pr_detail(repo_dir, *number)?),
+        DetailKey::Issue { repo, number } => {
+            let mut issue: IssueDetail = run_gh_json(&issue_view_args(*number), Some(repo_dir))?;
+            issue.repo = repo.clone();
+            Detail::Issue(issue)
+        }
+        DetailKey::Run { id, .. } => Detail::Run(run_json_view(repo_dir, *id)?),
+        DetailKey::Release { tag, .. } => {
+            // The repo the Releases tab listed it from: `origin`'s.
+            let source = release_source(repo_dir);
+            let repo = source.as_ref().and_then(ReleaseSource::gh_repo);
+            let args = release_view_args(RELEASE_DETAIL_FIELDS, repo.as_deref(), Some(tag));
+            Detail::Release(run_gh_json(&args, Some(repo_dir))?)
+        }
+    })
 }
 
 /// Releases listed for a repo with no "Latest" (see `latest_release`):
@@ -217,6 +271,12 @@ const RELEASE_JSON_FIELDS: &str = "tagName,name,publishedAt,isLatest,isDraft,isP
 /// JSON fields requested from `gh release view`: the same, but `url`
 /// instead of `isLatest`, which it does not offer.
 const RELEASE_VIEW_JSON_FIELDS: &str = "tagName,name,publishedAt,isDraft,isPrerelease,url";
+
+/// JSON fields requested from `gh release view` for the detail view:
+/// exactly what `detail::ReleaseDetail` reads, the notes and files
+/// included.
+const RELEASE_DETAIL_FIELDS: &str =
+    "tagName,name,url,body,isDraft,isPrerelease,author,publishedAt,targetCommitish,assets";
 
 /// The `gh release list` command line, on the `origin` repo when there is
 /// one. A function, like `issue_list_args`, so a test can read it.
@@ -239,11 +299,15 @@ fn release_list_args(repo: Option<&str>) -> Vec<&str> {
     args
 }
 
-/// The `gh release view` command line: GitHub's "Latest" without a tag,
+/// The `gh release view` command line, asking for `fields`: GitHub's "Latest" without a tag,
 /// that release with one. The tag comes last, after `--`, so it can only
 /// ever be read as a tag.
-fn release_view_args<'a>(repo: Option<&'a str>, tag: Option<&'a str>) -> Vec<&'a str> {
-    let mut args = vec!["release", "view", "--json", RELEASE_VIEW_JSON_FIELDS];
+fn release_view_args<'a>(
+    fields: &'a str,
+    repo: Option<&'a str>,
+    tag: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut args = vec!["release", "view", "--json", fields];
     if let Some(repo) = repo {
         args.extend(["-R", repo]);
     }
@@ -285,7 +349,10 @@ pub fn fetch_release(repo_dir: &Path) -> Result<Vec<RepoRelease>> {
 /// shipped pre-releases still has something to show — then that one's
 /// page, asked of `gh` rather than built from a tag.
 fn latest_release(repo_dir: &Path, repo: Option<&str>) -> Result<Option<Release>> {
-    match run_gh_json::<Release, _>(&release_view_args(repo, None), Some(repo_dir)) {
+    match run_gh_json::<Release, _>(
+        &release_view_args(RELEASE_VIEW_JSON_FIELDS, repo, None),
+        Some(repo_dir),
+    ) {
         Ok(release) => return Ok(Some(release)),
         Err(err) if !is_release_not_found(&err) => return Err(err),
         Err(_) => {} // no "Latest": look further
@@ -295,7 +362,7 @@ fn latest_release(repo_dir: &Path, repo: Option<&str>) -> Result<Option<Release>
         return Ok(None);
     };
     // Its page is a nicety: without it, `enter` opens the releases page.
-    let args = release_view_args(repo, Some(&newest.tag_name));
+    let args = release_view_args(RELEASE_VIEW_JSON_FIELDS, repo, Some(&newest.tag_name));
     Ok(Some(run_gh_json(&args, Some(repo_dir)).unwrap_or(newest)))
 }
 
@@ -779,7 +846,7 @@ mod tests {
     #[test]
     fn release_view_asks_for_the_latest_and_its_page() {
         assert_eq!(
-            release_view_args(Some("acme/api"), None),
+            release_view_args(RELEASE_VIEW_JSON_FIELDS, Some("acme/api"), None),
             [
                 "release",
                 "view",
@@ -794,7 +861,7 @@ mod tests {
     /// A tag comes last, after `--`: whatever it holds, it is a tag.
     #[test]
     fn release_view_takes_a_tag_after_the_options() {
-        let args = release_view_args(None, Some("v1.0.0-beta"));
+        let args = release_view_args(RELEASE_VIEW_JSON_FIELDS, None, Some("v1.0.0-beta"));
         assert_eq!(args[args.len() - 2..], ["--", "v1.0.0-beta"]);
         assert!(!args.contains(&"-R"));
     }
@@ -893,6 +960,36 @@ mod tests {
             pr_view_args(412),
             ["pr", "view", "412", "--json", PR_VIEW_FIELDS]
         );
+    }
+
+    /// The issue's detail, in one call: description, people, linked PRs
+    /// and the conversation together.
+    #[test]
+    fn issue_view_asks_for_what_the_detail_reads() {
+        assert_eq!(
+            issue_view_args(57),
+            [
+                "issue",
+                "view",
+                "57",
+                "--json",
+                "title,url,body,state,stateReason,author,createdAt,labels,assignees,closedByPullRequestsReferences,comments",
+            ]
+        );
+    }
+
+    /// The run by its id, with its jobs and their steps, in one call.
+    #[test]
+    fn run_view_asks_for_the_jobs_too() {
+        let args = run_view_args(99);
+        assert_eq!(args[..4], ["run", "view", "99", "--json"]);
+        assert!(args[4].split(',').any(|f| f == "jobs"));
+    }
+
+    /// The list must bring each run's id: `gh run view` takes nothing else.
+    #[test]
+    fn run_list_asks_for_the_id_the_detail_needs() {
+        assert!(RUN_JSON_FIELDS.split(',').any(|f| f == "databaseId"));
     }
 
     /// `detail::PrDetail` defaults most of its fields: if the request

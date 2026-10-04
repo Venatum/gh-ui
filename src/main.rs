@@ -15,7 +15,7 @@ mod search;
 mod ui;
 
 use anyhow::Result;
-use app::{App, Tab};
+use app::{App, EnterAction, Tab};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::path::PathBuf;
@@ -142,17 +142,15 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char('a') => app.cycle_auto_refresh(),
         KeyCode::Char('A') => app.disable_auto_refresh(),
-        // On the Repos tab's clone button, enter clones; everywhere else it
-        // opens the selected item in the browser.
-        KeyCode::Enter => {
-            if app.on_clone_button() {
-                app.ask_clone();
-            } else {
-                open_selected(app);
-            }
-        }
+        // enter goes one level deeper (see `App::enter_action`); `o` goes
+        // straight to GitHub, on every tab.
+        KeyCode::Enter => match app.enter_action() {
+            EnterAction::Clone => app.ask_clone(),
+            EnterAction::Detail => app.open_detail(),
+            EnterAction::Browser => open_selected(app),
+        },
+        KeyCode::Char('o') => open_selected(app),
         KeyCode::Char(' ') => app.toggle_tick(),
-        KeyCode::Char('v') => app.open_detail(),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('c') => app.toggle_column_panel(),
         KeyCode::Char('?') => app.toggle_help(),
@@ -175,11 +173,12 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
 /// keys (tab, 1-5, f, c, m, /) wait until `esc`.
 fn handle_detail_key(app: &mut App, code: KeyCode) {
     match code {
-        KeyCode::Esc | KeyCode::Char('v') => app.close_detail(),
+        KeyCode::Esc => app.close_detail(),
         KeyCode::Char('q') => app.request_quit(),
         KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Char('r') => app.reload_detail(),
-        KeyCode::Enter => {
+        // One level deeper again, or straight there: the section's page.
+        KeyCode::Enter | KeyCode::Char('o') => {
             if let Some(url) = app.detail_url() {
                 open_url(&url);
             }

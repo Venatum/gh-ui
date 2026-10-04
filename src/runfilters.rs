@@ -232,6 +232,7 @@ mod tests {
     /// A run with the given `status`/`conclusion`; the rest is filler.
     fn run(status: &str, conclusion: &str) -> Run {
         Run {
+            database_id: 0,
             workflow_name: "CI".into(),
             display_title: "t".into(),
             head_branch: "b".into(),

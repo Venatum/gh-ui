@@ -1,0 +1,53 @@
+{
+  "attempt": 1,
+  "headSha": "b41a07e9c3d2",
+  "startedAt": "@min:6",
+  "jobs": [
+    {
+      "name": "build",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "@min:6",
+      "completedAt": "@min:5",
+      "steps": []
+    },
+    {
+      "name": "test (ubuntu-latest)",
+      "status": "in_progress",
+      "conclusion": "",
+      "startedAt": "@min:5",
+      "completedAt": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "@min:5",
+          "completedAt": "@min:5"
+        },
+        {
+          "name": "Run cargo test",
+          "status": "in_progress",
+          "conclusion": "",
+          "startedAt": "@min:5",
+          "completedAt": null
+        },
+        {
+          "name": "Upload test report",
+          "status": "queued",
+          "conclusion": "",
+          "startedAt": null,
+          "completedAt": null
+        }
+      ]
+    },
+    {
+      "name": "clippy",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "@min:6",
+      "completedAt": "@min:5",
+      "steps": []
+    }
+  ]
+}

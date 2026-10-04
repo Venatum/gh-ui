@@ -1,0 +1,29 @@
+{
+  "author": {
+    "login": "alice"
+  },
+  "targetCommitish": "main",
+  "body": "## What's changed\n\n- `X-RateLimit-Limit`, `-Remaining` and `-Reset` on every response, 429s included (#412)\n- `Retry-After` in seconds on a 429\n\n## Upgrading\n\nNothing to do: the headers are new, none changed.\n\n**Full changelog**: v2.3.1...v2.4.0",
+  "assets": [
+    {
+      "name": "api-linux-amd64.tar.gz",
+      "size": 8912345,
+      "downloadCount": 1204
+    },
+    {
+      "name": "api-linux-arm64.tar.gz",
+      "size": 8410221,
+      "downloadCount": 388
+    },
+    {
+      "name": "api-darwin-arm64.tar.gz",
+      "size": 8702114,
+      "downloadCount": 215
+    },
+    {
+      "name": "checksums.txt",
+      "size": 412,
+      "downloadCount": 97
+    }
+  ]
+}
