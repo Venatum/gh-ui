@@ -62,31 +62,69 @@ pub enum RepoState {
     Failed(String),
 }
 
-/// The `owner/name` a GitHub remote URL points to, or `None` for anything
-/// else. Accepts the three forms `git` writes — `https://github.com/o/n`,
-/// `git@github.com:o/n` and `ssh://git@github.com/o/n` — each with or
-/// without the `.git` suffix. The two ssh forms take any host: a
-/// `~/.ssh/config` alias (`git@github-perso:o/n`) is how one machine holds
-/// several GitHub accounts, and the caller compares the result with the
-/// repo's own `owner/name` anyway.
-pub fn parse_origin(url: &str) -> Option<String> {
+/// Where a remote URL points: its host, as written, and the repo's
+/// `owner/name`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteUrl {
+    /// `github.com`, a GitHub Enterprise host, or — for the ssh forms — a
+    /// `~/.ssh/config` alias (`github-perso`) standing for one of them.
+    pub host: String,
+    pub repo: String,
+    /// One of the two ssh forms, whose host may be such an alias.
+    pub ssh: bool,
+}
+
+/// Parses the three forms `git` writes — `https://host/o/n`, `git@host:o/n`
+/// and `ssh://git@host/o/n` — each with or without the `.git` suffix.
+/// `None` for anything else, and for any part holding a character GitHub
+/// would refuse in a name: `.git/config` is a local file anyone can write
+/// into a repo they hand over, and what comes out of it reaches command
+/// lines and URLs.
+pub fn parse_remote(url: &str) -> Option<RemoteUrl> {
     let url = url.trim();
-    let after_host = |rest: &'static str, sep: char| {
-        url.strip_prefix(rest)
-            .and_then(|rest| rest.split_once(sep))
-            .map(|(_host, path)| path)
+    let (ssh, rest, separator) = if let Some(rest) = url.strip_prefix("https://") {
+        (false, rest, '/')
+    } else if let Some(rest) = url.strip_prefix("ssh://git@") {
+        (true, rest, '/')
+    } else {
+        (true, url.strip_prefix("git@")?, ':')
     };
-    let path = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| after_host("ssh://git@", '/'))
-        .or_else(|| after_host("git@", ':'))?;
+    let (host, path) = rest.split_once(separator)?;
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
-    if owner.is_empty() || name.is_empty() || name.contains('/') {
+    // `:` in a host only for a port (`ssh://git@host:2222/o/n`).
+    let host_ok = is_name(&host.replace(':', ""));
+    if !host_ok || !is_name(owner) || !is_name(name) {
         return None;
     }
-    Some(format!("{owner}/{name}"))
+    Some(RemoteUrl {
+        host: host.to_string(),
+        repo: format!("{owner}/{name}"),
+        ssh,
+    })
+}
+
+/// A host, owner or repo name made only of what GitHub allows in one
+/// (letters, digits, `-`, `_`, `.`), and not starting with `-`, which a
+/// command would read as an option.
+fn is_name(part: &str) -> bool {
+    !part.is_empty()
+        && !part.starts_with('-')
+        && part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The `owner/name` a GitHub remote URL points to, or `None` for anything
+/// else (see `parse_remote`). The https form must be github.com; the two
+/// ssh forms take any host: a `~/.ssh/config` alias
+/// (`git@github-perso:o/n`) is how one machine holds several GitHub
+/// accounts, and the caller compares the result with the repo's own
+/// `owner/name` anyway.
+pub fn parse_origin(url: &str) -> Option<String> {
+    let remote = parse_remote(url)?;
+    (remote.ssh || remote.host == "github.com").then_some(remote.repo)
 }
 
 /// The state `repo` has from the folder alone (no clone in progress). The
@@ -543,6 +581,46 @@ mod tests {
         assert_eq!(parse_origin("https://github.com/acme/api/tree/main"), None);
         assert_eq!(parse_origin(""), None);
         assert_eq!(parse_origin("not a url"), None);
+    }
+
+    /// `.git/config` is a local file anyone can write into a repo they hand
+    /// over: a name GitHub would refuse (`&`, `|`, `%`, quotes...) never
+    /// passes for a repo, so it cannot reach a command line or a URL.
+    #[test]
+    fn a_name_github_would_refuse_is_rejected() {
+        assert_eq!(parse_origin("git@github.com:acme/api&calc.git"), None);
+        assert_eq!(parse_origin("https://github.com/ac|me/api"), None);
+        assert_eq!(parse_origin("git@github.com:acme/%PATH%"), None);
+        // An option, not a host: `ssh -G` would read it as one.
+        assert_eq!(parse_remote("git@-oProxyCommand:acme/api"), None);
+    }
+
+    /// The host is kept, as written: an ssh alias for the ssh forms.
+    #[test]
+    fn a_remote_gives_its_host_and_repo() {
+        let remote = |host: &str, ssh| {
+            Some(RemoteUrl {
+                host: host.to_string(),
+                repo: "acme/api".to_string(),
+                ssh,
+            })
+        };
+        assert_eq!(
+            parse_remote("https://github.com/acme/api.git"),
+            remote("github.com", false)
+        );
+        assert_eq!(
+            parse_remote("https://ghe.corp/acme/api"),
+            remote("ghe.corp", false)
+        );
+        assert_eq!(
+            parse_remote("git@github-perso:acme/api.git"),
+            remote("github-perso", true)
+        );
+        assert_eq!(
+            parse_remote("ssh://git@gitlab.com:2222/acme/api"),
+            remote("gitlab.com:2222", true)
+        );
     }
 
     #[test]
