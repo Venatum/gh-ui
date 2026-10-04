@@ -246,6 +246,12 @@ fn label_dot_style(hex: &str) -> Style {
 /// Labels as `● bug ● api`, truncated to the column width: the PRs and
 /// issues tables show them alike.
 fn labels_cell(labels: &[Label]) -> Cell<'static> {
+    Cell::from(Line::from(label_spans(labels)))
+}
+
+/// The spans of `● bug ● api`, each dot in its label's color. Shared by
+/// the tables and the detail view, so a label looks the same everywhere.
+pub(crate) fn label_spans(labels: &[Label]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, label) in labels.iter().enumerate() {
         if i > 0 {
@@ -254,7 +260,7 @@ fn labels_cell(labels: &[Label]) -> Cell<'static> {
         spans.push(Span::styled("●", label_dot_style(&label.color)));
         spans.push(Span::raw(format!(" {}", label.name)));
     }
-    Cell::from(Line::from(spans))
+    spans
 }
 
 impl PrColumn {

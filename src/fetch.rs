@@ -1,6 +1,7 @@
 //! The background loading: a thread does the slow work (`gh` calls) and returns
 //! the result over a channel, so the UI never freezes.
 
+use crate::detail::{DetailKey, PrDetail};
 use crate::filters::Filters;
 use crate::gh;
 use crate::issues::{Issue, IssueFilters};
@@ -57,6 +58,15 @@ pub struct ReposResult {
     pub locals: Vec<LocalRepo>,
 }
 
+/// One PR's detail (key `v`): which PR it is about, and what `gh` answered.
+pub struct DetailResult {
+    /// What was asked: an answer for a PR the view no longer shows is
+    /// dropped.
+    pub key: DetailKey,
+    /// `Err` carries `gh`'s message, shown in the view.
+    pub detail: Result<Box<PrDetail>, String>,
+}
+
 /// What the background thread returns: PRs, runs, or both at once.
 pub enum Loaded {
     Prs(FetchResult),
@@ -78,6 +88,9 @@ pub enum Loaded {
     /// The latest release of every repo (Releases tab), with its own
     /// loading flag like the issues.
     Releases(ReleasesResult),
+    /// One PR's detail. Not a `Job` either: the view has its own loading
+    /// flag (`DetailView::loading`).
+    Detail(DetailResult),
 }
 
 /// What we ask the thread to load.
@@ -224,6 +237,17 @@ pub fn spawn_issues(root: PathBuf, filters: IssueFilters, tx: Sender<Loaded>) {
 pub fn spawn_releases(root: PathBuf, tx: Sender<Loaded>) {
     thread::spawn(move || {
         let _ = tx.send(Loaded::Releases(load_releases(&root)));
+    });
+}
+
+/// Loads one PR's detail, in the PR's folder. The key rides along so a late
+/// answer for a PR the user already left can be recognised and dropped.
+pub fn spawn_detail(root: PathBuf, key: DetailKey, tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        let detail = gh::fetch_pr_detail(&root.join(&key.repo), key.number)
+            .map(Box::new)
+            .map_err(|e| e.to_string());
+        let _ = tx.send(Loaded::Detail(DetailResult { key, detail }));
     });
 }
 

@@ -2,6 +2,7 @@
 //! running `gh` (and `git`) to fetch the PRs, runs, issues, releases and
 //! repos, or to clone.
 
+use crate::detail::PrDetail;
 use crate::filters::Filters;
 use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
@@ -185,6 +186,25 @@ fn issue_list_args(filters: &IssueFilters) -> Vec<String> {
 /// failed repo, the others still show.
 pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue>> {
     run_gh_json(&issue_list_args(filters), Some(repo_dir))
+}
+
+/// JSON fields of `gh pr view` for the detail view. It grows with what
+/// `detail.rs` reads: a field nobody reads is payload for nothing.
+const PR_VIEW_FIELDS: &str = "title,url,body,state,isDraft,author,baseRefName,headRefName,additions,deletions,changedFiles,reviewDecision,mergeable,labels,reviewRequests,latestReviews,reviews,headRefOid,statusCheckRollup,files,comments";
+
+/// `gh pr view <number> --json …`, run in the PR's folder like `pr list`.
+fn pr_view_args(number: u64) -> Vec<String> {
+    ["pr", "view", &number.to_string(), "--json", PR_VIEW_FIELDS]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// One PR, everything the detail view shows. ONE GraphQL request whatever
+/// the field list (measured with `GH_DEBUG=api`), so the view never makes
+/// a second call.
+pub fn fetch_pr_detail(repo_dir: &Path, number: u64) -> Result<PrDetail> {
+    run_gh_json(&pr_view_args(number), Some(repo_dir))
 }
 
 /// Releases listed for a repo with no "Latest" (see `latest_release`):
@@ -863,6 +883,43 @@ mod tests {
         assert_eq!(unreleased_commits(&dir, "v1.0.0"), Some(2));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One PR, by number, in the PR's own folder: `gh` reads the repo from
+    /// there, as for `gh pr list`.
+    #[test]
+    fn pr_view_asks_for_one_pr_by_number() {
+        assert_eq!(
+            pr_view_args(412),
+            ["pr", "view", "412", "--json", PR_VIEW_FIELDS]
+        );
+    }
+
+    /// `detail::PrDetail` defaults most of its fields: if the request
+    /// stopped asking for one, the view would silently read "no review, no
+    /// label" instead of failing loudly.
+    #[test]
+    fn the_pr_view_asks_for_every_field_the_view_reads() {
+        for field in [
+            "body",
+            "baseRefName",
+            "headRefName",
+            "reviewDecision",
+            "mergeable",
+            "labels",
+            "reviewRequests",
+            "latestReviews",
+            "reviews",
+            "headRefOid",
+            "statusCheckRollup",
+            "files",
+            "comments",
+        ] {
+            assert!(
+                PR_VIEW_FIELDS.split(',').any(|f| f == field),
+                "PR_VIEW_FIELDS must request {field}"
+            );
+        }
     }
 
     /// `comments` would bring every comment's body: 177 KB and 2.2 s instead

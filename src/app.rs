@@ -1,8 +1,10 @@
 //! The application state and its logic (independent of rendering).
 
 use crate::columns::Columns;
+use crate::detail::{DetailKey, DetailView};
 use crate::fetch::{
-    self, FetchResult, IssuesResult, Job, Loaded, ReleasesResult, ReposResult, RunsResult,
+    self, DetailResult, FetchResult, IssuesResult, Job, Loaded, ReleasesResult, ReposResult,
+    RunsResult,
 };
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
@@ -316,6 +318,9 @@ pub struct App {
     /// flags.
     pub release_tab: ReleasesTab,
     pub release_table_state: TableState,
+    /// The PR detail view (key `v`), drawn in place of the table while
+    /// open.
+    pub detail: Option<DetailView>,
     /// How many rows the table showed at the last draw: the jump of
     /// `PgUp`/`PgDn`. Written by `ui::render`, which alone knows the height.
     pub page_rows: usize,
@@ -378,6 +383,7 @@ impl App {
             issue_table_state: TableState::default(),
             release_tab: ReleasesTab::default(),
             release_table_state: TableState::default(),
+            detail: None,
             page_rows: 1,
             repos_loading: false,
             repos_pending: false,
@@ -497,6 +503,7 @@ impl App {
             || self.issue_tab.loading
             || self.release_tab.loading
             || self.repo_tab.cloning
+            || self.detail.as_ref().is_some_and(|view| view.loading)
     }
 
     /// Reloads the Repos tab's list — or queues it behind the one in flight,
@@ -571,7 +578,7 @@ impl App {
     /// What the auto-refresh reloads: the flow the active tab shows (the
     /// PRs behind the Repos, Issues and Releases tabs), plus the issues and
     /// the releases once they have been loaded — whichever tab is on screen,
-    /// as the runs are.
+    /// as the runs are — and the PR detail while it is open.
     fn background_reload(&mut self) {
         self.refresh_job(self.active_job());
         if self.issue_tab.loaded {
@@ -580,6 +587,8 @@ impl App {
         if self.release_tab.loaded {
             self.refresh_releases();
         }
+        // An open detail too: its Checks section is how one waits for CI.
+        self.reload_detail();
     }
 
     /// The owner picker's values, from what is known so far.
@@ -667,6 +676,10 @@ impl App {
                 }
                 Loaded::Releases(result) => {
                     self.apply_releases(result);
+                    Vec::new()
+                }
+                Loaded::Detail(result) => {
+                    self.apply_detail(result);
                     Vec::new()
                 }
             };
@@ -1476,6 +1489,80 @@ impl App {
         }
     }
 
+    // --- the detail view ---
+
+    /// `v`: opens the selected PR in the detail view and starts its load.
+    /// PRs tab only; elsewhere it does nothing, as `space` does outside the
+    /// Repos tab.
+    pub fn open_detail(&mut self) {
+        if self.active_tab != Tab::Prs {
+            return;
+        }
+        // Owned copies first: `visible_prs()` borrows the whole `self`.
+        let Some((key, title)) = self.table_state.selected().and_then(|i| {
+            self.visible_prs().get(i).map(|pr| {
+                let key = DetailKey {
+                    repo: pr.repo.clone(),
+                    number: pr.number,
+                };
+                (key, pr.title.clone())
+            })
+        }) else {
+            return;
+        };
+        self.detail = Some(DetailView::new(key.clone(), title));
+        fetch::spawn_detail(self.root.clone(), key, self.tx.clone());
+    }
+
+    /// `esc`: back to the list, the cursor on the PR that was open.
+    pub fn close_detail(&mut self) {
+        if let Some(view) = self.detail.take() {
+            self.select_pr(&view.key);
+        }
+    }
+
+    /// Puts the PRs cursor on `key`'s row, if it is still visible. A reload
+    /// moved it to row 0 meanwhile; a PR that left the list leaves it there.
+    fn select_pr(&mut self, key: &DetailKey) {
+        let found = self
+            .visible_prs()
+            .iter()
+            .position(|pr| pr.repo == key.repo && pr.number == key.number);
+        if let Some(i) = found {
+            self.table_state.select(Some(i));
+        }
+    }
+
+    /// Stores a detail answer, unless it is for a PR the view no longer
+    /// shows (or the view was closed meanwhile).
+    fn apply_detail(&mut self, result: DetailResult) {
+        if let Some(view) = &mut self.detail
+            && view.key == result.key
+        {
+            view.apply(result.detail);
+        }
+    }
+
+    /// What `enter` opens from the detail view: the page of the section on
+    /// screen, nothing until the first answer.
+    pub fn detail_url(&self) -> Option<String> {
+        self.detail.as_ref()?.url()
+    }
+
+    /// `r` in the detail view, and every auto-refresh while it is open:
+    /// loads the PR again. The text stays on screen until the answer lands.
+    /// A no-op while a load is already on its way: its answer will do.
+    pub fn reload_detail(&mut self) {
+        let Some(view) = self.detail.as_mut() else {
+            return;
+        };
+        if view.loading {
+            return;
+        }
+        view.loading = true;
+        fetch::spawn_detail(self.root.clone(), view.key.clone(), self.tx.clone());
+    }
+
     // --- tabs ---
 
     pub fn set_tab(&mut self, tab: Tab) {
@@ -1650,8 +1737,11 @@ fn errors_suffix(errors: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detail::DetailKey;
+    use crate::fetch::DetailResult;
     use crate::filters::AuthorFilter;
     use crate::issues::{AssigneeFilter, sample_issue};
+    use crate::model::sample_pr;
     use crate::releases::{RepoRelease, sample_row};
     use crate::repos::{CloneEvent, LocalRepo, RepoFilters, sample_repo};
 
@@ -3101,5 +3191,212 @@ mod tests {
         app.column_toggle();
         assert!(!app.columns.releases.entries[1].visible);
         assert!(app.columns.prs.entries[1].visible, "the PR columns stay");
+    }
+
+    // --- the detail view ---
+
+    /// Two PRs, the cursor on the second, nothing loading. The root does not
+    /// exist: the thread `open_detail` starts fails to run `gh` there.
+    fn detail_app() -> App {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs = vec![sample_pr("api", 412), sample_pr("web", 233)];
+        app.prs_loaded = true;
+        app.table_state.select(Some(1));
+        app
+    }
+
+    /// `open_detail`, then the answer of the thread it started, taken off
+    /// the channel: that thread fails (the root does not exist) and its
+    /// error would otherwise land in the middle of the test, whenever the
+    /// scheduler lets it. The test then decides alone what arrives.
+    fn open_quietly(app: &mut App) {
+        app.open_detail();
+        app.rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the load thread always answers");
+    }
+
+    fn detail_answer(repo: &str, number: u64, detail: Result<&str, &str>) -> Loaded {
+        Loaded::Detail(DetailResult {
+            key: DetailKey {
+                repo: repo.into(),
+                number,
+            },
+            // From `sample_detail`, so this keeps compiling as `PrDetail`
+            // gains fields.
+            detail: detail
+                .map(|title| {
+                    let mut d = crate::detail::sample_detail();
+                    d.title = title.to_string();
+                    Box::new(d)
+                })
+                .map_err(str::to_string),
+        })
+    }
+
+    #[test]
+    fn v_opens_the_selected_pr_and_spins() {
+        let mut app = detail_app();
+        app.open_detail();
+        let view = app.detail.as_ref().expect("a view is open");
+        assert_eq!(
+            view.key,
+            DetailKey {
+                repo: "web".into(),
+                number: 233
+            }
+        );
+        assert_eq!(view.title, "PR 233");
+        assert!(view.loading);
+        assert!(app.is_busy(), "the header spinner turns");
+    }
+
+    #[test]
+    fn v_does_nothing_outside_the_prs_tab() {
+        for tab in [Tab::Runs, Tab::Issues, Tab::Repos, Tab::Releases] {
+            let mut app = detail_app();
+            app.active_tab = tab;
+            app.open_detail();
+            assert!(app.detail.is_none(), "{tab:?}");
+        }
+    }
+
+    #[test]
+    fn v_on_an_empty_list_does_nothing() {
+        let mut app = detail_app();
+        app.prs.clear();
+        app.table_state.select(None);
+        app.open_detail();
+        assert!(app.detail.is_none());
+    }
+
+    #[test]
+    fn the_answer_fills_the_open_view() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        app.tx
+            .send(detail_answer("web", 233, Ok("Dark mode")))
+            .unwrap();
+        app.on_tick();
+        let view = app.detail.as_ref().unwrap();
+        assert!(!view.loading);
+        assert_eq!(view.detail.as_ref().unwrap().title, "Dark mode");
+        assert!(!app.loading, "a detail answer is not a PR/run load");
+    }
+
+    /// Opened #412, went back, opened #233: #412's late answer is not
+    /// #233's.
+    #[test]
+    fn an_answer_for_another_pr_is_dropped() {
+        let mut app = detail_app();
+        open_quietly(&mut app); // web#233
+        app.tx.send(detail_answer("api", 412, Ok("late"))).unwrap();
+        app.on_tick();
+        let view = app.detail.as_ref().unwrap();
+        assert!(view.loading, "still waiting for its own answer");
+        assert!(view.detail.is_none());
+    }
+
+    #[test]
+    fn a_failed_load_says_why() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        app.tx
+            .send(detail_answer(
+                "web",
+                233,
+                Err("`gh pr view` failed: not found"),
+            ))
+            .unwrap();
+        app.on_tick();
+        let view = app.detail.as_ref().unwrap();
+        assert_eq!(
+            view.error.as_deref(),
+            Some("`gh pr view` failed: not found")
+        );
+    }
+
+    /// Every PR reload puts the cursor back on row 0 (`apply_prs`). Leaving
+    /// the view must land on the PR that was open, not on row 0.
+    #[test]
+    fn closing_puts_the_cursor_back_on_the_pr() {
+        let mut app = detail_app();
+        app.open_detail(); // row 1, web#233
+        app.table_state.select(Some(0)); // what a reload behind the view does
+        app.close_detail();
+        assert!(app.detail.is_none());
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    /// Merged meanwhile, or filtered out: the cursor stays where the
+    /// reload put it.
+    #[test]
+    fn closing_on_a_pr_gone_from_the_list_leaves_the_cursor_alone() {
+        let mut app = detail_app();
+        app.open_detail(); // web#233
+        app.prs.pop();
+        app.table_state.select(Some(0));
+        app.close_detail();
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn enter_in_the_view_opens_the_loaded_pr() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        assert_eq!(app.detail_url(), None, "nothing loaded yet");
+        app.tx
+            .send(detail_answer("web", 233, Ok("Dark mode")))
+            .unwrap();
+        app.on_tick();
+        assert_eq!(
+            app.detail_url().as_deref(),
+            Some("https://github.com/acme/api/pull/412")
+        );
+    }
+
+    #[test]
+    fn r_reloads_the_detail_and_keeps_its_text_meanwhile() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        app.tx
+            .send(detail_answer("web", 233, Ok("Dark mode")))
+            .unwrap();
+        app.on_tick();
+        app.reload_detail();
+        let view = app.detail.as_ref().unwrap();
+        assert!(view.loading);
+        assert!(view.detail.is_some(), "no blank screen during a reload");
+        assert!(!app.loading, "the PR list is not reloaded");
+    }
+
+    /// A second `r` while the first reload runs starts nothing: one
+    /// answer is on its way already.
+    #[test]
+    fn r_while_loading_starts_no_second_load() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        app.reload_detail();
+        assert!(
+            app.rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "no second thread, so no second answer"
+        );
+    }
+
+    /// The auto-refresh keeps an open detail live: waiting for CI is the
+    /// main reason to stay on the Checks section.
+    #[test]
+    fn the_auto_refresh_reloads_an_open_detail() {
+        let mut app = detail_app();
+        open_quietly(&mut app);
+        app.tx
+            .send(detail_answer("web", 233, Ok("Dark mode")))
+            .unwrap();
+        app.on_tick();
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now() - Duration::from_secs(90);
+        app.on_tick();
+        assert!(app.detail.as_ref().unwrap().loading);
+        assert!(app.loading, "the list reloads behind the view too");
     }
 }

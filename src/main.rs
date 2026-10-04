@@ -1,6 +1,7 @@
 mod app;
 mod columns;
 mod config;
+mod detail;
 mod fetch;
 mod filters;
 mod gh;
@@ -94,14 +95,16 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
             match event::read()? {
                 // A key was pressed (we ignore releases).
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    // Six modes, by priority: input, yes/no prompt, help,
-                    // filters, columns, normal.
+                    // Seven modes, by priority: input, yes/no prompt, help,
+                    // detail, filters, columns, normal.
                     if app.is_input_mode() {
                         handle_input_key(app, key.code);
                     } else if app.confirm.is_some() {
                         handle_confirm_key(app, key.code);
                     } else if app.show_help {
                         app.toggle_help(); // any key closes the help
+                    } else if app.detail.is_some() {
+                        handle_detail_key(app, key.code);
                     } else if app.filter_panel_open {
                         handle_filter_panel_key(app, key.code);
                     } else if app.column_panel_open {
@@ -149,6 +152,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char(' ') => app.toggle_tick(),
+        KeyCode::Char('v') => app.open_detail(),
         KeyCode::Char('f') => app.toggle_filter_panel(), // opens the panel
         KeyCode::Char('c') => app.toggle_column_panel(),
         KeyCode::Char('?') => app.toggle_help(),
@@ -164,6 +168,41 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         // "Mine" on either tab: my PRs, or the runs of my PRs.
         KeyCode::Char('m') => app.toggle_mine(),
         _ => {}
+    }
+}
+
+/// Keys in the detail view. `?` and `q` work as everywhere; the list's own
+/// keys (tab, 1-5, f, c, m, /) wait until `esc`.
+fn handle_detail_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('v') => app.close_detail(),
+        KeyCode::Char('q') => app.request_quit(),
+        KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('r') => app.reload_detail(),
+        KeyCode::Enter => {
+            if let Some(url) = app.detail_url() {
+                open_url(&url);
+            }
+        }
+        _ => {
+            // The other keys move the text: the list is not on screen, so
+            // the arrows scroll rather than pick a row.
+            let Some(view) = app.detail.as_mut() else {
+                return;
+            };
+            match code {
+                KeyCode::Char(' ') => view.toggle_folded(),
+                KeyCode::Right | KeyCode::Char('l') => view.next_section(),
+                KeyCode::Left | KeyCode::Char('h') => view.prev_section(),
+                KeyCode::Down | KeyCode::Char('j') => view.scroll_by(1),
+                KeyCode::Up | KeyCode::Char('k') => view.scroll_by(-1),
+                KeyCode::PageDown => view.page_down(),
+                KeyCode::PageUp => view.page_up(),
+                KeyCode::Home => view.home(),
+                KeyCode::End => view.end(),
+                _ => {}
+            }
+        }
     }
 }
 

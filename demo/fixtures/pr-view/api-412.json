@@ -1,0 +1,190 @@
+{
+  "body": "<!--\r\nThanks for contributing to acme/api! Fill in every section below.\r\nIf this fixes a security issue, STOP and read SECURITY.md first.\r\n-->\r\n\r\n## Summary\r\n\r\nAdds a token-bucket rate limiter in front of every `/v1/public/*` route.\r\nLimits are per API key, 100 requests a minute by default, and can be raised per plan in `config/limits.toml`.\r\n\r\n## Changes\r\n\r\n- a new `limit` module: the bucket, its Redis store and the middleware\r\n- `429 Too Many Requests`, with a `Retry-After` header\r\n- metrics: `api_rate_limited_total`, by route and by plan\r\n  - exported on the existing `/metrics` endpoint\r\n- `src/throttle.rs` is gone: the new module replaces it\r\n\r\n## How to test\r\n<!-- Commands a reviewer can paste. -->\r\n\r\n```sh\r\ncargo test -p api limit::\r\nfor i in $(seq 120); do\r\n\tcurl -s -o /dev/null -w '%{http_code}\\n' localhost:8080/v1/public/ping\r\ndone\r\n```\r\n\r\n## Checklist\r\n\r\n- [x] Tests added\r\n- [x] Docs updated\r\n- [ ] Load-tested on staging\r\n\r\n> Per-org limits are out of scope, see #415.\r\n\r\n---\r\n\r\nCloses #398. ![the rate-limit dashboard](https://github.com/acme/api/assets/1/rate-limit-dashboard.png)\r\n",
+  "baseRefName": "main",
+  "changedFiles": 10,
+  "reviewRequests": [
+    {
+      "__typename": "User",
+      "login": "Venatum"
+    },
+    {
+      "__typename": "Team",
+      "name": "core"
+    }
+  ],
+  "latestReviews": [
+    {
+      "author": {
+        "login": "bob"
+      },
+      "state": "APPROVED",
+      "body": "Nice and small. One nit about the default burst, otherwise good to go.",
+      "submittedAt": "@ago:1.6"
+    },
+    {
+      "author": {
+        "login": "carol"
+      },
+      "state": "COMMENTED",
+      "body": "Do we want the limit per key or per org? An org with 40 keys gets 40× the budget today.",
+      "submittedAt": "@ago:1.1"
+    },
+    {
+      "author": {
+        "login": "dave"
+      },
+      "state": "APPROVED",
+      "body": "",
+      "submittedAt": "@ago:0.4"
+    }
+  ],
+  "comments": [
+    {
+      "author": {
+        "login": "alice"
+      },
+      "body": "Per key on purpose for v1, the per-org cap is #415. I added a line to the README.",
+      "createdAt": "@ago:1.0",
+      "isMinimized": false,
+      "minimizedReason": ""
+    },
+    {
+      "author": {
+        "login": "app/github-actions"
+      },
+      "body": "<!-- preview-bot:412 -->\r\nPreview deployed: https://pr-412.preview.acme.dev",
+      "createdAt": "@ago:0.2",
+      "isMinimized": false,
+      "minimizedReason": ""
+    },
+    {
+      "author": {
+        "login": "app/github-actions"
+      },
+      "body": "<!-- preview-bot:412 -->\r\nPreview deployed: https://pr-412-old.preview.acme.dev",
+      "createdAt": "@ago:1.5",
+      "isMinimized": true,
+      "minimizedReason": "OUTDATED"
+    }
+  ],
+  "files": [
+    {
+      "path": "src/limit/bucket.rs",
+      "additions": 98,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/limit/middleware.rs",
+      "additions": 61,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/limit/mod.rs",
+      "additions": 12,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/limit/store.rs",
+      "additions": 44,
+      "deletions": 0,
+      "changeType": "ADDED"
+    },
+    {
+      "path": "src/routes/public.rs",
+      "additions": 9,
+      "deletions": 4,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src/metrics.rs",
+      "additions": 7,
+      "deletions": 1,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "config/limits.toml",
+      "additions": 11,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "Cargo.toml",
+      "additions": 2,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src/throttle.rs",
+      "additions": 0,
+      "deletions": 26,
+      "changeType": "DELETED"
+    },
+    {
+      "path": "tests/limit.rs",
+      "additions": 4,
+      "deletions": 0,
+      "changeType": "RENAMED"
+    }
+  ],
+  "headRefOid": "4f1c2e9",
+  "reviews": [
+    {
+      "author": {
+        "login": "carol"
+      },
+      "state": "CHANGES_REQUESTED",
+      "body": "The bucket refills per second: a burst of 100 at minute start passes. Can it refill continuously?",
+      "submittedAt": "@ago:2.2",
+      "commit": {
+        "oid": "9a3d7b1"
+      }
+    },
+    {
+      "author": {
+        "login": "bob"
+      },
+      "state": "APPROVED",
+      "body": "Nice and small. One nit about the default burst, otherwise good to go.",
+      "submittedAt": "@ago:1.6",
+      "commit": {
+        "oid": "4f1c2e9"
+      }
+    },
+    {
+      "author": {
+        "login": "Venatum"
+      },
+      "state": "COMMENTED",
+      "body": "",
+      "submittedAt": "@ago:1.3",
+      "commit": {
+        "oid": "4f1c2e9"
+      }
+    },
+    {
+      "author": {
+        "login": "carol"
+      },
+      "state": "COMMENTED",
+      "body": "Do we want the limit per key or per org? An org with 40 keys gets 40× the budget today.",
+      "submittedAt": "@ago:1.1",
+      "commit": {
+        "oid": "4f1c2e9"
+      }
+    },
+    {
+      "author": {
+        "login": "dave"
+      },
+      "state": "APPROVED",
+      "body": "",
+      "submittedAt": "@ago:0.4",
+      "commit": {
+        "oid": "4f1c2e9"
+      }
+    }
+  ]
+}

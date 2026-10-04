@@ -1,0 +1,21 @@
+{
+  "body": "Arrow keys move between cells, `Home`/`End` jump to the ends of a row and `PageUp`/`PageDown` scroll a screenful.\r\n\r\nThe e2e suite still fails on Safari: the grid loses focus after a sort. Looking into it.\r\n\r\n- [x] arrows, Home/End, PgUp/PgDn\r\n- [ ] keep the focus after a sort\r\n",
+  "baseRefName": "main",
+  "changedFiles": 4,
+  "reviewRequests": [{ "__typename": "User", "login": "carol" }],
+  "comments": [
+    {
+      "author": { "login": "carol" },
+      "body": "Happy to review once e2e is green.",
+      "createdAt": "@ago:0.9",
+      "isMinimized": false,
+      "minimizedReason": ""
+    }
+  ],
+  "files": [
+    { "path": "src/components/grid/DataGrid.tsx", "additions": 71, "deletions": 6, "changeType": "MODIFIED" },
+    { "path": "src/components/grid/useGridKeys.ts", "additions": 52, "deletions": 0, "changeType": "ADDED" },
+    { "path": "src/components/grid/DataGrid.test.tsx", "additions": 19, "deletions": 3, "changeType": "MODIFIED" },
+    { "path": "e2e/grid.spec.ts", "additions": 3, "deletions": 0, "changeType": "MODIFIED" }
+  ]
+}

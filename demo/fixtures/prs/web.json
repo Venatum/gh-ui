@@ -76,21 +76,21 @@
     "statusCheckRollup": [
       {
         "__typename": "CheckRun",
-        "completedAt": "@ago:1",
+        "completedAt": "@min:1447.2",
         "conclusion": "SUCCESS",
         "detailsUrl": "https://github.com/acme/web/actions/runs/9100017055/job/27300051165",
         "name": "build",
-        "startedAt": "@ago:1",
+        "startedAt": "@min:1450",
         "status": "COMPLETED",
         "workflowName": "CI"
       },
       {
         "__typename": "CheckRun",
-        "completedAt": "@ago:1",
+        "completedAt": "@min:1441.6",
         "conclusion": "FAILURE",
         "detailsUrl": "https://github.com/acme/web/actions/runs/9100018192/job/27300054576",
         "name": "e2e",
-        "startedAt": "@ago:1",
+        "startedAt": "@min:1450",
         "status": "COMPLETED",
         "workflowName": "CI"
       }

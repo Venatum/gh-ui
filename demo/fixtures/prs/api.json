@@ -22,33 +22,89 @@
     "statusCheckRollup": [
       {
         "__typename": "CheckRun",
-        "completedAt": "@ago:0.1",
+        "completedAt": "@min:146.9",
         "conclusion": "SUCCESS",
         "detailsUrl": "https://github.com/acme/api/actions/runs/9100001137/job/27300003411",
         "name": "build",
-        "startedAt": "@ago:0.1",
+        "startedAt": "@min:150",
         "status": "COMPLETED",
         "workflowName": "CI"
       },
       {
         "__typename": "CheckRun",
-        "completedAt": "@ago:0.1",
-        "conclusion": "SUCCESS",
+        "completedAt": "@min:145.8",
+        "conclusion": "FAILURE",
         "detailsUrl": "https://github.com/acme/api/actions/runs/9100002274/job/27300006822",
-        "name": "test",
-        "startedAt": "@ago:0.1",
+        "name": "test (ubuntu-latest)",
+        "startedAt": "@min:150",
         "status": "COMPLETED",
         "workflowName": "CI"
       },
       {
         "__typename": "CheckRun",
-        "completedAt": "@ago:0.1",
+        "completedAt": "@min:135.8",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100002274/job/27300006901",
+        "name": "test (ubuntu-latest)",
+        "startedAt": "@min:140",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@min:143.3",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100002274/job/27300006823",
+        "name": "test (macos-latest)",
+        "startedAt": "@min:150",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@min:148.2",
         "conclusion": "SUCCESS",
         "detailsUrl": "https://github.com/acme/api/actions/runs/9100003411/job/27300010233",
-        "name": "lint",
-        "startedAt": "@ago:0.1",
+        "name": "clippy",
+        "startedAt": "@min:150",
         "status": "COMPLETED",
         "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@min:149.65",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100003411/job/27300010234",
+        "name": "fmt",
+        "startedAt": "@min:150",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@min:147.5",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100003502/job/27300010410",
+        "name": "analyze (rust)",
+        "startedAt": "@min:151",
+        "status": "COMPLETED",
+        "workflowName": "CodeQL"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "@min:150",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/acme/api/actions/runs/9100003611/job/27300010588",
+        "name": "links",
+        "startedAt": "@min:150",
+        "status": "COMPLETED",
+        "workflowName": "Docs"
+      },
+      {
+        "__typename": "StatusContext",
+        "context": "deploy-preview",
+        "state": "SUCCESS",
+        "targetUrl": "https://pr-412.preview.acme.dev"
       }
     ]
   },

@@ -33,8 +33,8 @@ pub struct Label {
 /// `status` + `conclusion`) and a `StatusContext` (the older commit-status
 /// API: `state` alone). Rather than an untagged enum, all three fields are
 /// defaulted and we read whichever the entry carries; the ones we do not
-/// need (detailsUrl, completedAt...) are simply ignored by serde.
-#[derive(Debug, Deserialize)]
+/// need (detailsUrl, targetUrl...) are simply ignored by serde.
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
     /// CheckRun: "QUEUED" | "IN_PROGRESS" | "COMPLETED"... ; "" on a
@@ -61,9 +61,44 @@ pub struct Check {
     /// runner.
     #[serde(default)]
     pub started_at: Option<String>,
+    /// When it finished: year 1 while it runs. The detail view shows how
+    /// long it took.
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+/// Where one check stands: the five groups `gh pr checks` sorts checks
+/// into (its "buckets"). The order of the variants is the order the
+/// detail view lists them in — what needs attention first — and `Ord`
+/// follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Bucket {
+    Fail,
+    Pending,
+    Pass,
+    Cancel,
+    Skip,
 }
 
 impl Check {
+    /// This check's bucket. Failing first, then running: the same order
+    /// `Pr::checks_state` reads, so the `State` column and the detail view
+    /// always agree. Anything else unknown counts as passed, as it always
+    /// did in the `State` column.
+    pub fn bucket(&self) -> Bucket {
+        if self.is_failing() {
+            Bucket::Fail
+        } else if self.is_running() {
+            Bucket::Pending
+        } else {
+            match self.conclusion.as_str() {
+                "CANCELLED" => Bucket::Cancel,
+                "SKIPPED" | "NEUTRAL" | "STALE" => Bucket::Skip,
+                _ => Bucket::Pass,
+            }
+        }
+    }
+
     /// Which check this entry is an attempt of: GitHub lists every attempt,
     /// so a job re-run after a failure appears twice under the same key.
     fn key(&self) -> (&str, &str, &str) {
@@ -166,22 +201,21 @@ impl Pr {
     /// a failure.
     pub fn checks_state(&self) -> ChecksState {
         let checks = latest_attempts(self.status_check_rollup.as_deref().unwrap_or_default());
-        if checks.is_empty() {
-            ChecksState::None
-        } else if checks.iter().any(|check| check.is_failing()) {
-            ChecksState::Failing
-        } else if checks.iter().any(|check| check.is_running()) {
-            ChecksState::Running
-        } else {
-            ChecksState::Passing
+        // The worst bucket wins: `Bucket`'s order puts failing first, then
+        // running, so the smallest one is the verdict.
+        match checks.iter().map(|check| check.bucket()).min() {
+            None => ChecksState::None,
+            Some(Bucket::Fail) => ChecksState::Failing,
+            Some(Bucket::Pending) => ChecksState::Running,
+            Some(_) => ChecksState::Passing,
         }
     }
 }
 
 /// The latest attempt of each check, as `gh pr checks` and GitHub's own
 /// checks tab count them: the earlier attempts of a re-run job no longer
-/// say anything about the PR.
-fn latest_attempts(checks: &[Check]) -> Vec<&Check> {
+/// say anything about the PR. In no particular order.
+pub fn latest_attempts(checks: &[Check]) -> Vec<&Check> {
     let mut latest: HashMap<(&str, &str, &str), &Check> = HashMap::new();
     for check in checks {
         latest
@@ -216,6 +250,20 @@ pub struct Run {
     pub url: String,
     #[serde(skip)]
     pub repo: String,
+}
+
+/// A minimal PR for the tests of every module, as `issues::sample_issue`.
+#[cfg(test)]
+pub fn sample_pr(repo: &str, number: u64) -> Pr {
+    let mut pr: Pr = serde_json::from_str(&format!(
+        r#"{{"number": {number}, "title": "PR {number}", "author": {{"login": "alice"}},
+            "isDraft": false, "url": "https://github.com/acme/{repo}/pull/{number}",
+            "updatedAt": "2026-10-04T09:00:00Z", "additions": 1, "deletions": 1,
+            "labels": [], "headRefName": "feat/x"}}"#
+    ))
+    .unwrap();
+    pr.repo = repo.to_string();
+    pr
 }
 
 #[cfg(test)]
@@ -469,6 +517,37 @@ mod tests {
         assert_eq!(pr.review_decision, "");
         assert_eq!(pr.mergeable, "");
         assert_eq!(pr.checks_state(), ChecksState::Passing);
+    }
+
+    /// The five groups of `gh pr checks`. A check of an unknown kind reads
+    /// as passed, as `checks_state` always counted it.
+    #[test]
+    fn buckets_follow_gh_pr_checks() {
+        let run = |status: &str, conclusion: &str| Check {
+            status: status.into(),
+            conclusion: conclusion.into(),
+            ..Default::default()
+        };
+        assert_eq!(run("IN_PROGRESS", "").bucket(), Bucket::Pending);
+        assert_eq!(run("QUEUED", "").bucket(), Bucket::Pending);
+        assert_eq!(run("COMPLETED", "SUCCESS").bucket(), Bucket::Pass);
+        for fail in ["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"] {
+            assert_eq!(run("COMPLETED", fail).bucket(), Bucket::Fail, "{fail}");
+        }
+        assert_eq!(run("COMPLETED", "CANCELLED").bucket(), Bucket::Cancel);
+        for skip in ["SKIPPED", "NEUTRAL", "STALE"] {
+            assert_eq!(run("COMPLETED", skip).bucket(), Bucket::Skip, "{skip}");
+        }
+        // A StatusContext has only `state`.
+        let status = |state: &str| Check {
+            context: Some("deploy".into()),
+            state: state.into(),
+            ..Default::default()
+        };
+        assert_eq!(status("SUCCESS").bucket(), Bucket::Pass);
+        assert_eq!(status("ERROR").bucket(), Bucket::Fail);
+        assert_eq!(status("PENDING").bucket(), Bucket::Pending);
+        assert_eq!(status("EXPECTED").bucket(), Bucket::Pending);
     }
 
     #[test]

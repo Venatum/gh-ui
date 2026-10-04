@@ -8,7 +8,8 @@ with keyboard filters and optional auto-refresh.
 
 - **PRs**: every open PR across the folder's repos, with a one-glyph
   verdict (draft, conflict, failing, running, ready), review state, size
-  and labels. `m` narrows to yours.
+  and labels. `m` narrows to yours, `v` reads one without leaving the
+  terminal: its description, checks, files and comments.
 - **Actions**: the workflow runs sitting on those PRs' branches.
 - **Issues**: the open issues, who is on them and the PRs that close them.
 - **Repos**: an owner's repositories, which ones you already have, and a
@@ -106,6 +107,43 @@ rather than reshuffling it (see [Memory](#memory)). To bring it to the
 front: `c`, put the cursor on `State`, `space` to grab it, `↑` until it is on
 top, `space` to drop it. It is saved.
 
+#### The detail view (`v`)
+
+`v` on a PR opens it in place of the table, full screen, to answer what
+`enter` would otherwise send you to the browser for. `←/→` walk four
+sections:
+
+- **Overview**: the facts (state, author, branches and size; the review
+  decision, what each reviewer said last and who is still waited on; the
+  checks; the merge state and the labels), then the description. The
+  markdown gets a light touch: headings, lists, quotes and code blocks stand
+  out, a PR template's `<!-- … -->` instructions are hidden as on GitHub, an
+  image reads `[image: its alt text]`. Bold, links and tables stay as typed.
+- **Checks**: one line per check, failures first, with how long it took or
+  how long it has been running. A job re-run counts by its latest attempt
+  only, as in the `State` column, which reads the same checks the same way.
+- **Files**: the changed files, `git diff --stat` style. `gh` lists 100 at
+  most; past that, the last line says how many are shown.
+- **Comments**: the conversation and every review, oldest first, times in
+  your time zone. A review with nothing to read, or no longer current,
+  folds to one gray `▸` line: a bare approval, a review made only of
+  comments on the diff (`commented on the diff`), a dismissed one, and one
+  made on an `older commit` — GitHub does not tell `gh pr view` which
+  threads are resolved, and code that moved on since is the closest sign.
+  `space` unfolds the folded ones that have a summary (`▾`). The comments
+  on a line of the diff themselves are not there: `gh pr view` does not
+  give them, `enter` opens them on GitHub.
+
+`enter` opens the matching page on GitHub (the PR, its Checks tab, its Files
+tab), `space` folds and unfolds the Comments' reviews, `r` reloads the
+view, and `esc` (or `v`) goes back to the list with the cursor on that PR.
+
+It costs **one `gh pr view` per opening**, about a second, whatever the
+section: the four come in the same answer. Nothing is fetched until you
+press `v`, so the list and its auto-refresh cost exactly what they did. While
+a detail is open, the auto-refresh reloads it too (one more call per tick),
+so the Checks section stays live while you wait for CI.
+
 ### Actions
 
 The workflow runs of the same repos. Its `my PRs` filter (`m`, on by
@@ -190,6 +228,7 @@ the tab, and the auto-refresh keeps them fresh from then on.
 | `PgUp/PgDn`  | move a page up / down                        |
 | `Home/End`   | jump to the first / last row                 |
 | `enter`      | open the selected PR, run, issue, repo or release in the browser (Repos: on the clone button, clone the ticked repos) |
+| `v`          | PRs tab: read the PR in gh-ui (description, checks, files, comments) |
 | `space`      | Repos tab: tick / untick the repo            |
 | `tab`, `1-5` | switch tab (PRs / Actions / Issues / Repos / Releases) |
 | `/`          | search the visible list (live, client-side)  |
@@ -202,6 +241,21 @@ the tab, and the auto-refresh keeps them fresh from then on.
 | `c`          | open the columns panel                       |
 | `?`          | help screen                                  |
 | `q`          | quit                                         |
+
+### Detail view (`v`)
+
+| Key                    | Action                                           |
+|------------------------|--------------------------------------------------|
+| `←/→`, `h/l`           | previous / next section                          |
+| `↑/↓`, `j/k`           | scroll a line (each section keeps its place)     |
+| `PgUp/PgDn`, `Home/End` | scroll a page / to either end                   |
+| `enter`                | open the section's page on GitHub                |
+| `r`                    | reload the PR                                    |
+| `esc`, `v`             | back to the list, on the same PR                 |
+| `?`, `q`               | help, quit                                       |
+
+The list's own keys (`tab`, `1-5`, `f`, `c`, `m`, `/`) wait until you are
+back on it.
 
 ### Filters panel (`f`)
 
@@ -283,7 +337,8 @@ first time, and the pace you leave it on is remembered between runs.
 
 While it is on, the header carries the pace **and the time left** before the
 next reload: `⟳ auto 5mn · 4:12`. It sits at `0:00` while a reload is running,
-or while a prompt holds one back.
+or while a prompt holds one back. An open detail view reloads on the same
+tick as the list.
 
 ## Memory
 
@@ -330,6 +385,7 @@ real account. `./demo/record.sh --shell` opens the same setup in a shell.
 | `main.rs`       | event loop, keyboard routing, TUI setup/teardown            |
 | `app.rs`        | application state and its logic                             |
 | `model.rs`      | data structures (`Pr`, `Run`, deserialization of `gh` JSON) |
+| `detail.rs`     | the PR detail view (`v`): its data, state and lines          |
 | `filters.rs`    | the PR filters: state, `gh` args, persistence               |
 | `runfilters.rs` | the Actions filters, applied in memory                      |
 | `issues.rs`     | the Issues tab: issue model, filters, linked PRs            |

@@ -17,6 +17,9 @@ publish = false
 anyhow = "1.0.104"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 dirs = "7.0.0"
-ratatui = "0.30.2"
+# `unstable-rendered-line-info` brings `Paragraph::line_count`: how many rows
+# a text takes once wrapped, which makes the detail view's scroll stop
+# exactly at its last screenful. A feature flag of ratatui, no new crate.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

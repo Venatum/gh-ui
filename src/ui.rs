@@ -6,16 +6,20 @@ use crate::columns::{
     Column, ColumnLayout, IssueColumn, PrColumn, ReleaseColumn, RepoColumn, RunColumn,
     STATUS_LEGEND, release_row_style, repo_row_style,
 };
+use crate::detail::{
+    DetailView, Section, checks_lines, comments_lines, files_lines, overview_lines, section_bar,
+};
 use crate::filters::{AuthorFilter, Filters};
 use crate::issues::IssueFilters;
 use crate::refresh::{self, AutoRefresh};
 use crate::repos::RepoFilters;
 use crate::runfilters::RunFilters;
+use chrono::{Local, Offset, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
 use std::time::Duration;
 
 /// Width (in columns) of the centered overlays.
@@ -43,7 +47,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     .split(frame.area());
 
     render_header(frame, app, areas[0]);
-    render_table(frame, app, areas[1]);
+    // The detail view takes the table's place; the header and the footer
+    // stay, so the spinner and the auto-refresh countdown keep working.
+    if let Some(view) = app.detail.as_mut() {
+        render_detail(frame, view, areas[1]);
+    } else {
+        render_table(frame, app, areas[1]);
+    }
     render_footer(frame, app, areas[2]);
 
     // Overlays, drawn on top of the rest.
@@ -345,15 +355,119 @@ fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.repo_table_state);
 }
 
+/// The detail view (key `v`): a bordered box named after the PR, holding
+/// its body once `gh` answered, or what it waits for, or why it failed.
+fn render_detail(frame: &mut Frame, view: &mut DetailView, area: Rect) {
+    // The loaded title, which may have changed since the list was loaded.
+    let title = view
+        .detail
+        .as_ref()
+        .map_or(view.title.as_str(), |d| d.title.as_str());
+    let block = Block::bordered()
+        .title(format!(
+            " {} #{} · {} ",
+            view.key.repo, view.key.number, title
+        ))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if view.detail.is_some() {
+        render_sections(frame, view, inner);
+    } else if let Some(error) = &view.error {
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("✗ {error}"),
+                Style::new().fg(Color::Red),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "r  try again  ·  esc  back to the list",
+                Style::new().fg(Color::DarkGray),
+            )),
+        ];
+        render_centered(frame, lines, inner);
+    } else {
+        let waiting = format!("Loading {} #{}…", view.key.repo, view.key.number);
+        render_centered(frame, vec![Line::from(waiting)], inner);
+    }
+}
+
+/// A loaded view: the section bar, a blank row, then the section's text,
+/// scrolled.
+fn render_sections(frame: &mut Frame, view: &mut DetailView, area: Rect) {
+    let Some(detail) = view.detail.as_deref() else {
+        return;
+    };
+    let [bar, _, body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    // Owned lines: `detail` borrows `view`, which is written below.
+    let mut bar_line = section_bar(view.section, detail);
+    // A reload that failed kept the text: its error goes at the end of the
+    // bar, against the right edge (cut there if the bar is too narrow).
+    if let Some(error) = &view.error {
+        let error = Span::styled(format!("✗ {error}"), Style::new().fg(Color::Red));
+        let room = usize::from(bar.width).saturating_sub(bar_line.width() + error.width());
+        bar_line.push_span(Span::raw(" ".repeat(room.max(1))));
+        bar_line.push_span(error);
+    }
+    let lines = match view.section {
+        Section::Overview => overview_lines(detail, body.width),
+        Section::Checks => checks_lines(detail, Utc::now(), body.width),
+        Section::Files => files_lines(detail, body.width),
+        Section::Comments => comments_lines(detail, Local::now().offset().fix(), view.show_folded),
+    };
+    frame.render_widget(Paragraph::new(bar_line), bar);
+
+    let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+    // Counted once wrapped, so the last screenful is exact however long the
+    // lines are. A reload may have shortened the text: the scroll comes
+    // back within it.
+    let rows = u16::try_from(paragraph.line_count(body.width)).unwrap_or(u16::MAX);
+    view.page = body.height.max(1);
+    view.max_scroll = rows.saturating_sub(body.height);
+    let scroll = view.scroll().min(view.max_scroll);
+    *view.scroll_mut() = scroll;
+    frame.render_widget(paragraph.scroll((scroll, 0)), body);
+}
+
+/// `lines`, each one centered, in the middle of `area`. A line wider than
+/// the area wraps rather than losing its tail: an error message is the one
+/// thing the user must be able to read in full.
+fn render_centered(frame: &mut Frame, lines: Vec<Line<'static>>, area: Rect) {
+    let paragraph = Paragraph::new(lines).centered().wrap(Wrap { trim: true });
+    let rows = u16::try_from(paragraph.line_count(area.width)).unwrap_or(u16::MAX);
+    let height = rows.min(area.height);
+    frame.render_widget(paragraph, centered_rect(area.width, height, area));
+}
+
+/// The detail view's footer: only the keys that work there, the list's
+/// own keys wait until `esc`.
+const DETAIL_HINTS: [(&str, &str); 7] = [
+    ("esc", "back"),
+    ("←→", "section"),
+    ("↑↓", "scroll"),
+    ("enter", "browser"),
+    ("space", "unfold"),
+    ("r", "reload"),
+    ("q", "quit"),
+];
+
 /// The footer shortcuts, in the order they matter. `?` is not in the list: it
 /// is appended separately and never dropped, because it is how the user
 /// reaches everything the footer had to cut.
-const HINTS: [(&str, &str); 10] = [
+const HINTS: [(&str, &str); 11] = [
     ("↑↓", "nav"),
     // Near the front on purpose: hints are dropped from the tail, and `/` is
     // the one key on this row that is not reachable from a panel.
     ("/", "search"),
     ("enter", "open"),
+    // Next to `enter`: the other way to look at the selected PR.
+    ("v", "view"),
     ("tab/1-5", "tab"),
     ("f", "filters"),
     ("m", "mine"),
@@ -363,11 +477,15 @@ const HINTS: [(&str, &str); 10] = [
     ("q", "quit"),
 ];
 
-/// The footer of `tab`. `m` does nothing on the Repos tab, and `space`
-/// ticks there: same slot, so both drop at the same width. The Releases tab
-/// has nothing to filter nor to call mine: both hints go.
+/// The footer of `tab`. `v` opens a PR's detail: the PRs tab only. `m`
+/// does nothing on the Repos tab, and `space` ticks there: same slot, so
+/// both drop at the same width. The Releases tab has nothing to filter nor
+/// to call mine: both hints go.
 fn hints_for(tab: Tab) -> Vec<(&'static str, &'static str)> {
     let mut hints = HINTS.to_vec();
+    if tab != Tab::Prs {
+        hints.retain(|hint| hint.0 != "v");
+    }
     match tab {
         Tab::Repos => {
             for hint in &mut hints {
@@ -455,7 +573,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Otherwise, a compact footer; the full detail is in the help (?).
-    let (hints, cut) = fitting_hints(&hints_for(app.active_tab), area.width as usize);
+    // Bound first, so the slice below does not borrow a temporary.
+    let tab_hints = hints_for(app.active_tab);
+    let hints: &[(&str, &str)] = if app.detail.is_some() {
+        &DETAIL_HINTS
+    } else {
+        &tab_hints
+    };
+    let (hints, cut) = fitting_hints(hints, area.width as usize);
     let mut spans = Vec::new();
     for (key, label) in hints {
         spans.push(Span::styled(
@@ -738,8 +863,13 @@ fn render_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         help_row("↑/↓, j/k", "navigate · PgUp/PgDn: a page · Home/End: ends"),
-        help_row("enter", "open in the browser · on the clone button: clone"),
-        help_row("space", "Repos: tick a repo · ↓ to the clone button"),
+        // Two rows rewritten rather than one added for `v`: the popup
+        // already fills an 80x24 terminal.
+        help_row(
+            "enter / v",
+            "open in the browser / in the detail view (PRs)",
+        ),
+        help_row("space", "Repos: tick · enter on the clone button: clone"),
         help_row("/", "search the visible list · esc clears it"),
         help_row("r / q", "reload now / quit"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
@@ -817,6 +947,7 @@ mod tests {
     use super::*;
     use crate::app::Confirm;
     use crate::columns::{ColumnLayout, PrColumn};
+    use crate::detail::{DetailKey, DetailView};
     use crate::repos::RepoFilters;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -902,7 +1033,17 @@ mod tests {
         assert!(!repos.contains(&("m", "mine")), "m does nothing there");
 
         for tab in [Tab::Prs, Tab::Runs, Tab::Issues] {
-            assert_eq!(hints_for(tab), HINTS.to_vec(), "{tab:?}");
+            assert!(hints_for(tab).contains(&("m", "mine")), "{tab:?}");
+        }
+    }
+
+    /// `v` opens the detail of a PR: the other tabs have no detail view.
+    #[test]
+    fn only_the_prs_footer_offers_v() {
+        assert_eq!(hints_for(Tab::Prs), HINTS.to_vec());
+        assert!(hints_for(Tab::Prs).contains(&("v", "view")));
+        for tab in [Tab::Runs, Tab::Issues, Tab::Repos, Tab::Releases] {
+            assert!(!hints_for(tab).contains(&("v", "view")), "{tab:?}");
         }
     }
 
@@ -1286,10 +1427,129 @@ mod tests {
     #[test]
     fn the_help_explains_ticking_and_the_clone_button() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
-        assert!(text.contains("open in the browser · on the clone button: clone"));
-        assert!(text.contains("Repos: tick a repo · ↓ to the clone button"));
+        assert!(text.contains("Repos: tick · enter on the clone button: clone"));
         assert!(text.contains("reload now / quit"));
         assert!(text.contains("(any key to close)"), "still fits 80x24");
+    }
+
+    /// The `v` row is paid for by rewriting the `enter` and `space` rows,
+    /// not by a new one: the popup already fills an 80x24 terminal.
+    #[test]
+    fn the_help_names_the_detail_view_and_still_fits_80x24() {
+        let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
+        assert!(text.contains("enter / v"));
+        assert!(text.contains("open in the browser / in the detail view (PRs)"));
+        assert!(text.contains("(any key to close)"));
+    }
+
+    fn loading_view() -> DetailView {
+        DetailView::new(
+            DetailKey {
+                repo: "api".into(),
+                number: 412,
+            },
+            "Add rate limiting".into(),
+        )
+    }
+
+    #[test]
+    fn a_loading_detail_names_its_pr_and_says_so() {
+        let mut view = loading_view();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("api #412 · Add rate limiting"));
+        assert!(text.contains("Loading api #412…"));
+    }
+
+    #[test]
+    fn a_failed_detail_says_why() {
+        let mut view = loading_view();
+        view.apply(Err("`gh pr view` failed: not found".into()));
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("`gh pr view` failed: not found"));
+        assert!(text.contains("r  try again  ·  esc  back to the list"));
+    }
+
+    /// A reload that fails keeps the text, and says so on the section bar.
+    #[test]
+    fn a_failed_reload_shows_its_error_next_to_the_sections() {
+        let mut view = long_view();
+        view.loading = true;
+        view.apply(Err("HTTP 502".into()));
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("line 1 "), "the text stays");
+        // The buffer is one string: cut it back into its 80-column rows.
+        let cells: Vec<char> = text.chars().collect();
+        let bar: String = cells
+            .chunks(80)
+            .map(String::from_iter)
+            .find(|row| row.contains("Overview"))
+            .unwrap();
+        assert!(bar.contains("✗ HTTP 502"), "{bar}");
+    }
+
+    /// At 80 columns the footer drops hints from its tail: the way back
+    /// must be the first one, never dropped.
+    #[test]
+    fn the_detail_footer_keeps_back_and_help_at_80_columns() {
+        let (hints, _) = fitting_hints(&DETAIL_HINTS, 80);
+        assert_eq!(hints.first(), Some(&("esc", "back")));
+    }
+
+    /// A body of 60 numbered lines, loaded: far more than 24 rows hold.
+    fn long_view() -> DetailView {
+        let mut view = loading_view();
+        let mut d = crate::detail::sample_detail();
+        d.body = (1..=60)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        view.apply(Ok(Box::new(d)));
+        view
+    }
+
+    #[test]
+    fn end_shows_the_last_line_and_home_the_first() {
+        let mut view = long_view();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("line 1 ") && !text.contains("line 60"));
+        assert!(view.max_scroll > 0, "the render says how far it can go");
+
+        view.end();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("line 60"));
+        assert!(!text.contains("line 1 "));
+
+        view.home();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("line 1 "));
+    }
+
+    #[test]
+    fn a_loaded_view_shows_the_section_bar_then_the_section() {
+        let mut view = long_view();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains(" Overview   Checks 0 "));
+        assert!(text.contains("line 1 "));
+
+        view.next_section();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("No checks on this PR."));
+        assert!(!text.contains("line 1 "));
+    }
+
+    /// The end of the scroll counts the rows the text takes once wrapped,
+    /// not its source lines: a long paragraph must still be readable to its
+    /// last word.
+    #[test]
+    fn the_scroll_reaches_the_end_of_wrapped_text() {
+        let mut view = loading_view();
+        let mut d = crate::detail::sample_detail();
+        d.body = format!("{} THE-END", "word ".repeat(400));
+        view.apply(Ok(Box::new(d)));
+        render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        view.end();
+        let text = render_to_text(80, 24, |f| render_detail(f, &mut view, f.area()));
+        assert!(text.contains("THE-END"));
     }
 
     #[test]

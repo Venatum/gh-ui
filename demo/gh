@@ -17,15 +17,35 @@ if [[ "${1:-}" == "ui" ]]; then
   exec gh-ui "$@"
 fi
 
-# Relative dates: "@ago:2" is two days ago, so today stays today whenever
-# the GIF is recorded.
+# Relative dates: "@ago:2" is two days ago, "@min:90" an hour and a half
+# ago, so today stays today whenever the GIF is recorded.
 ago_dates='walk(if type == "string" and startswith("@ago:")
-  then (now - (.[5:] | tonumber) * 86400 | floor | todate) else . end)'
+    then (now - (.[5:] | tonumber) * 86400 | floor | todate)
+  elif type == "string" and startswith("@min:")
+    then (now - (.[5:] | tonumber) * 60 | floor | todate)
+  else . end)'
 
 case "${1:-} ${2:-}" in
   "auth status") echo "$me"; exit 0 ;;
   "org list") echo "acme"; exit 0 ;;
   "pr list") file="$fixtures/prs/$(basename "$PWD").json" ;;
+  # `pr view <n>`: the PR's row of `pr list`, so the two always agree,
+  # completed by what only the detail view asks for (body, files,
+  # comments…) from pr-view/<repo>-<n>.json when there is one.
+  "pr view")
+    repo="$(basename "$PWD")"
+    extra="$(cat "$fixtures/pr-view/$repo-$3.json" 2>/dev/null || echo '{}')"
+    jq -n --argjson n "$3" --argjson extra "$extra" \
+      --slurpfile list "$fixtures/prs/$repo.json" '
+      (first($list[0][] | select(.number == $n))
+        // error("no pull requests found for #\($n)"))
+      | {state: "OPEN", baseRefName: "main", body: "", files: [],
+         comments: [], latestReviews: [], reviewRequests: []} + . + $extra
+      | .changedFiles //= (.files | length)
+      | .headRefOid //= "4f1c2e9" | .headRefOid as $head
+      | .reviews //= (.latestReviews | map(. + {commit: {oid: $head}}))
+      | '"$ago_dates"
+    exit ;;
   "run list") file="$fixtures/runs/$(basename "$PWD").json" ;;
   "issue list") file="$fixtures/issues/$(basename "$PWD").json" ;;
   "release list") file="$fixtures/releases/$(basename "$PWD").json" ;;
