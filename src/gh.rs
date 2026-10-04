@@ -5,8 +5,8 @@
 use crate::filters::Filters;
 use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
-use crate::releases::{self, Release, RepoRelease};
-use crate::repos::{LocalRepo, Repo, RepoFilters, parse_origin};
+use crate::releases::{self, Release, ReleaseSource, RepoRelease};
+use crate::repos::{LocalRepo, Repo, RepoFilters, is_name, parse_origin, parse_remote};
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use std::path::Path;
@@ -187,18 +187,20 @@ pub fn fetch_issues(repo_dir: &Path, filters: &IssueFilters) -> Result<Vec<Issue
     run_gh_json(&issue_list_args(filters), Some(repo_dir))
 }
 
-/// Releases fetched per repo: the latest is almost always the first one,
-/// the rest is room for the pre-releases that may come before it.
+/// Releases listed for a repo with no "Latest" (see `latest_release`):
+/// room enough to find its newest pre-release.
 const RELEASE_LIMIT: &str = "10";
 
-/// JSON fields requested from `gh` for each release. There is no `url`
-/// among the fields `gh release list` offers: the page is built from the
-/// origin (see `RepoRelease::url`).
+/// JSON fields requested from `gh release list`, which has no `url`.
 const RELEASE_JSON_FIELDS: &str = "tagName,name,publishedAt,isLatest,isDraft,isPrerelease";
+
+/// JSON fields requested from `gh release view`: the same, but `url`
+/// instead of `isLatest`, which it does not offer.
+const RELEASE_VIEW_JSON_FIELDS: &str = "tagName,name,publishedAt,isDraft,isPrerelease,url";
 
 /// The `gh release list` command line, on the `origin` repo when there is
 /// one. A function, like `issue_list_args`, so a test can read it.
-fn release_list_args(origin: Option<&str>) -> Vec<&str> {
+fn release_list_args(repo: Option<&str>) -> Vec<&str> {
     let mut args = vec![
         "release",
         "list",
@@ -211,29 +213,121 @@ fn release_list_args(origin: Option<&str>) -> Vec<&str> {
     // `-R`: in a fork, `gh` reads the upstream when it is the folder's
     // default (`gh repo set-default`); the tab shows the folder's own repo,
     // the one its page and its unreleased count are taken from.
-    if let Some(origin) = origin {
-        args.extend(["-R", origin]);
+    if let Some(repo) = repo {
+        args.extend(["-R", repo]);
     }
     args
 }
 
+/// The `gh release view` command line: GitHub's "Latest" without a tag,
+/// that release with one. The tag comes last, after `--`, so it can only
+/// ever be read as a tag.
+fn release_view_args<'a>(repo: Option<&'a str>, tag: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["release", "view", "--json", RELEASE_VIEW_JSON_FIELDS];
+    if let Some(repo) = repo {
+        args.extend(["-R", repo]);
+    }
+    if let Some(tag) = tag {
+        args.extend(["--", tag]);
+    }
+    args
+}
+
+/// Whether `gh release view` failed only because the repo has no "Latest"
+/// release — nothing published, or pre-releases only.
+fn is_release_not_found(err: &anyhow::Error) -> bool {
+    err.to_string().contains("release not found")
+}
+
 /// The Releases tab's row for `repo_dir`: its latest release (if any) and
-/// its origin. ONE row whatever `gh` lists, in a `Vec` so that it goes
-/// through `fan_out` like the other tabs' lists — a repo without a release
-/// still gets its row, and a failed `gh` still counts as a failed repo.
+/// its releases page. ONE row whatever `gh` lists, in a `Vec` so that it
+/// goes through `fan_out` like the other tabs' lists — a repo without a
+/// release still gets its row, and a failed `gh` still counts as a failed
+/// repo.
 pub fn fetch_release(repo_dir: &Path) -> Result<Vec<RepoRelease>> {
-    let origin = origin_of(repo_dir);
-    let list: Vec<Release> = run_gh_json(&release_list_args(origin.as_deref()), Some(repo_dir))?;
-    let release = releases::latest(list);
+    let source = release_source(repo_dir);
+    let repo = source.as_ref().and_then(ReleaseSource::gh_repo);
+    let release = latest_release(repo_dir, repo.as_deref())?;
     let unreleased = release
         .as_ref()
         .and_then(|r| unreleased_commits(repo_dir, &r.tag_name));
     Ok(vec![RepoRelease {
         repo: String::new(), // stamped by the loader
-        origin,
+        releases_page: source.as_ref().map(ReleaseSource::releases_page),
         release,
         unreleased,
     }])
+}
+
+/// A repo's latest release, its page included. GitHub's own "Latest"
+/// first: one call, whatever the number of pre-releases published since.
+/// Without one, the newest of the releases listed — a repo that only ever
+/// shipped pre-releases still has something to show — then that one's
+/// page, asked of `gh` rather than built from a tag.
+fn latest_release(repo_dir: &Path, repo: Option<&str>) -> Result<Option<Release>> {
+    match run_gh_json::<Release, _>(&release_view_args(repo, None), Some(repo_dir)) {
+        Ok(release) => return Ok(Some(release)),
+        Err(err) if !is_release_not_found(&err) => return Err(err),
+        Err(_) => {} // no "Latest": look further
+    }
+    let list: Vec<Release> = run_gh_json(&release_list_args(repo), Some(repo_dir))?;
+    let Some(newest) = releases::latest(list) else {
+        return Ok(None);
+    };
+    // Its page is a nicety: without it, `enter` opens the releases page.
+    let args = release_view_args(repo, Some(&newest.tag_name));
+    Ok(Some(run_gh_json(&args, Some(repo_dir)).unwrap_or(newest)))
+}
+
+/// The repo the folder's `origin` points to, on its real host: a
+/// `~/.ssh/config` alias (`git@github-perso:o/n`) is resolved to the host
+/// it stands for, so `gh` is asked about the right GitHub. `None` without
+/// a usable `origin`: `gh` then picks the repo itself, as in the other
+/// tabs.
+fn release_source(dir: &Path) -> Option<ReleaseSource> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let remote = parse_remote(&String::from_utf8_lossy(&output.stdout))?;
+    let host = if remote.ssh {
+        // The ssh port, if any, is ssh's business, not GitHub's.
+        let alias = remote.host.split(':').next().unwrap_or_default();
+        ssh_hostname(alias).unwrap_or_else(|| alias.to_string())
+    } else {
+        remote.host
+    };
+    Some(ReleaseSource {
+        host,
+        repo: remote.repo,
+    })
+}
+
+/// The host an ssh alias stands for, from `ssh -G`: it prints the
+/// configuration ssh would use, read from `~/.ssh/config`, without
+/// connecting anywhere.
+fn ssh_hostname(alias: &str) -> Option<String> {
+    let output = Command::new("ssh")
+        .args(["-G", "--", alias])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    parse_ssh_hostname(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The `hostname` line of what `ssh -G` printed, if it names a host.
+fn parse_ssh_hostname(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("hostname "))
+        .map(str::trim)
+        .filter(|host| is_name(host))
+        .map(str::to_string)
 }
 
 /// How many commits the default branch holds past `tag`, from what this
@@ -645,6 +739,54 @@ mod tests {
     fn release_list_asks_for_the_origin_repo() {
         let args = release_list_args(Some("Venatum/bull-board-docker"));
         assert_eq!(args[args.len() - 2..], ["-R", "Venatum/bull-board-docker"]);
+    }
+
+    /// No tag: GitHub's own "Latest", whatever the number of pre-releases
+    /// published since, with its page.
+    #[test]
+    fn release_view_asks_for_the_latest_and_its_page() {
+        assert_eq!(
+            release_view_args(Some("acme/api"), None),
+            [
+                "release",
+                "view",
+                "--json",
+                "tagName,name,publishedAt,isDraft,isPrerelease,url",
+                "-R",
+                "acme/api",
+            ]
+        );
+    }
+
+    /// A tag comes last, after `--`: whatever it holds, it is a tag.
+    #[test]
+    fn release_view_takes_a_tag_after_the_options() {
+        let args = release_view_args(None, Some("v1.0.0-beta"));
+        assert_eq!(args[args.len() - 2..], ["--", "v1.0.0-beta"]);
+        assert!(!args.contains(&"-R"));
+    }
+
+    /// What `gh release view` says for a repo with no "Latest" (nothing
+    /// released, or pre-releases only), apart from any other failure.
+    #[cfg(unix)]
+    #[test]
+    fn no_latest_release_is_told_apart_from_a_failure() {
+        let none =
+            parse_gh_output::<Release>("gh release view", &gh_output(1, "", "release not found\n"));
+        let failure =
+            parse_gh_output::<Release>("gh release view", &gh_output(1, "", "HTTP 403\n"));
+        assert!(is_release_not_found(&none.unwrap_err()));
+        assert!(!is_release_not_found(&failure.unwrap_err()));
+    }
+
+    /// `ssh -G <alias>` prints the configuration it would use, the real
+    /// host among it; a host GitHub could not have is no host.
+    #[test]
+    fn the_real_host_is_what_ssh_g_says() {
+        let out = "user git\nhostname github.com\nport 22\n";
+        assert_eq!(parse_ssh_hostname(out).as_deref(), Some("github.com"));
+        assert_eq!(parse_ssh_hostname("user git\n"), None);
+        assert_eq!(parse_ssh_hostname("hostname evil&calc\n"), None);
     }
 
     #[test]

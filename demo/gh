@@ -17,6 +17,11 @@ if [[ "${1:-}" == "ui" ]]; then
   exec gh-ui "$@"
 fi
 
+# Relative dates: "@ago:2" is two days ago, so today stays today whenever
+# the GIF is recorded.
+ago_dates='walk(if type == "string" and startswith("@ago:")
+  then (now - (.[5:] | tonumber) * 86400 | floor | todate) else . end)'
+
 case "${1:-} ${2:-}" in
   "auth status") echo "$me"; exit 0 ;;
   "org list") echo "acme"; exit 0 ;;
@@ -24,6 +29,20 @@ case "${1:-} ${2:-}" in
   "run list") file="$fixtures/runs/$(basename "$PWD").json" ;;
   "issue list") file="$fixtures/issues/$(basename "$PWD").json" ;;
   "release list") file="$fixtures/releases/$(basename "$PWD").json" ;;
+  # `release view [-- tag]`: one release and the page GitHub would give.
+  # No tag asks for GitHub's "Latest"; a repo without one, as for real,
+  # answers "release not found".
+  "release view")
+    tag=""
+    while (($#)); do [[ "$1" == "--" ]] && { tag="${2:-}"; break; }; shift; done
+    repo="$(basename "$PWD")"
+    release="$(jq --arg tag "$tag" --arg repo "$repo" "$ago_dates"' |
+      map(select(if $tag == "" then .isLatest else .tagName == $tag end)) | first
+      | select(. != null) | del(.isLatest)
+      | .url = "https://github.com/acme/\($repo)/releases/tag/\(.tagName)"' \
+      "$fixtures/releases/$repo.json" 2>/dev/null)"
+    [[ -n "$release" ]] || { echo "release not found" >&2; exit 1; }
+    echo "$release"; exit 0 ;;
   "repo list") file="$fixtures/repos/$3.json"; shift ;;
   # `repo clone owner/name dest`: an empty repo pointing at it, after a
   # pause so the batch reads queued → cloning → cloned.
@@ -36,10 +55,8 @@ case "${1:-} ${2:-}" in
 esac
 shift 2
 
-# Relative dates first: "@ago:2" is two days ago, so today stays today
-# whenever the GIF is recorded.
-jq_filter='walk(if type == "string" and startswith("@ago:")
-  then (now - (.[5:] | tonumber) * 86400 | floor | todate) else . end) | .[]'
+# Relative dates first (see `ago_dates`).
+jq_filter="$ago_dates | .[]"
 while (($#)); do
   case "$1" in
     --author) jq_filter+=" | select(.author.login == \"$(who "$2")\")"; shift ;;

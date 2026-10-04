@@ -150,13 +150,23 @@ git repo, gh-ui opens on this tab.
 
 The latest release of every repo in the folder, one row per repo, the most
 recently published first: tag, name and date. "Latest" is the release
-GitHub badges so, or — for a repo that only ever shipped pre-releases — the
-most recent one that is not a draft; a pre-release reads `[P]` after its
-tag. A repo that never released keeps its row, grayed, reading
-`no release`, at the bottom of the list. `enter` opens the release on
-GitHub, or the repo's releases page on a `no release` row. The releases are
-those of the repo the folder's `origin` points to: in a fork, yours, even
-when `gh repo set-default` points the folder to the upstream.
+GitHub badges so, whatever the number of pre-releases published since, or
+— for a repo that only ever shipped pre-releases — the most recent one
+that is not a draft; a pre-release reads `[P]` after its tag. A repo that never released keeps its row, grayed, reading
+`no release`, at the bottom of the list. `enter` opens the release's page
+as GitHub gives it, or the repo's releases page on a `no release` row.
+
+The releases are those of the repo the folder's `origin` points to: in a
+fork, yours, even when `gh repo set-default` points the folder to the
+upstream. An ssh alias (`git@github-perso:o/n`) is resolved through your
+`~/.ssh/config` (`ssh -G`, no connection). An `origin` that is not on
+github.com is left to `gh`, which reads it if it is a GitHub Enterprise
+host you are logged into, and counts the repo as failed otherwise.
+
+One `gh release view` per repo asks GitHub for its "Latest". A repo
+without one — nothing released, or pre-releases only — takes a
+`gh release list` more, and one more `gh release view` for the page of
+its newest pre-release.
 
 `Unreleased` counts the commits on the default branch since the release's
 tag — what the next release would ship. It is asked of your local clone

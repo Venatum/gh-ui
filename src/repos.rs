@@ -108,7 +108,7 @@ pub fn parse_remote(url: &str) -> Option<RemoteUrl> {
 /// A host, owner or repo name made only of what GitHub allows in one
 /// (letters, digits, `-`, `_`, `.`), and not starting with `-`, which a
 /// command would read as an option.
-fn is_name(part: &str) -> bool {
+pub fn is_name(part: &str) -> bool {
     !part.is_empty()
         && !part.starts_with('-')
         && part

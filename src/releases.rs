@@ -23,6 +23,10 @@ pub struct Release {
     pub is_draft: bool,
     #[serde(default)]
     pub is_prerelease: bool,
+    /// The release's page, as GitHub gives it (`gh release view`; `gh
+    /// release list` has no such field). Empty when we have none.
+    #[serde(default)]
+    pub url: String,
 }
 
 /// A repo's latest release: the one GitHub badges "Latest", otherwise the
@@ -48,9 +52,10 @@ pub fn latest(releases: Vec<Release>) -> Option<Release> {
 pub struct RepoRelease {
     /// The folder, stamped by the loader as `Pr::repo` is.
     pub repo: String,
-    /// The `owner/name` of the folder's `origin`, which the release page is
-    /// built from: `gh release list` gives no URL.
-    pub origin: Option<String>,
+    /// The repo's releases page, for a row with no release page of its
+    /// own (see `ReleaseSource::releases_page`). `None` without a usable
+    /// `origin`.
+    pub releases_page: Option<String>,
     pub release: Option<Release>,
     /// Commits on the default branch since the release's tag, counted by
     /// the local `git` (see `gh::unreleased_commits`). `None` when there is
@@ -64,17 +69,41 @@ impl RepoRelease {
         self.release.as_ref()?.published_at.as_deref()
     }
 
-    /// The page `enter` opens: the release itself, or the repo's releases
-    /// page when it has none. `None` without a GitHub origin to build it on.
+    /// The page `enter` opens: the release's own, as GitHub gave it, or
+    /// else the repo's releases page. Never built from the tag: a tag may
+    /// hold characters a URL (or, on Windows, `cmd`) would read otherwise.
     pub fn url(&self) -> Option<String> {
-        let origin = self.origin.as_deref()?;
-        Some(match &self.release {
-            Some(release) => format!(
-                "https://github.com/{origin}/releases/tag/{}",
-                release.tag_name
-            ),
-            None => format!("https://github.com/{origin}/releases"),
-        })
+        match &self.release {
+            Some(release) if !release.url.is_empty() => Some(release.url.clone()),
+            _ => self.releases_page.clone(),
+        }
+    }
+}
+
+/// Where the tab reads a folder's releases: the repo its `origin` points
+/// to, on its real host (an ssh alias already resolved).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReleaseSource {
+    /// `github.com` or a GitHub Enterprise host.
+    pub host: String,
+    /// `owner/name`.
+    pub repo: String,
+}
+
+impl ReleaseSource {
+    /// What to pass `gh -R`: `owner/name` on github.com, `gh`'s default
+    /// host. Elsewhere `None`: `-R owner/name` would name that repo on
+    /// github.com — someone else's — and `-R host/owner/name` would send
+    /// `gh` to a host it may know nothing of (a GitLab origin). Without
+    /// `-R`, `gh` picks among the hosts it is logged into, or fails before
+    /// any request.
+    pub fn gh_repo(&self) -> Option<String> {
+        (self.host == "github.com").then(|| self.repo.clone())
+    }
+
+    /// The repo's releases page, for a row without a release.
+    pub fn releases_page(&self) -> String {
+        format!("https://{}/{}/releases", self.host, self.repo)
     }
 }
 
@@ -123,6 +152,7 @@ pub fn sample_release(tag: &str, published_at: &str) -> Release {
         is_latest: false,
         is_draft: false,
         is_prerelease: false,
+        url: String::new(),
     }
 }
 
@@ -132,8 +162,11 @@ pub fn sample_release(tag: &str, published_at: &str) -> Release {
 pub fn sample_row(repo: &str, published_at: Option<&str>) -> RepoRelease {
     RepoRelease {
         repo: repo.to_string(),
-        origin: Some(format!("acme/{repo}")),
-        release: published_at.map(|at| sample_release("v1.0.0", at)),
+        releases_page: Some(format!("https://github.com/acme/{repo}/releases")),
+        release: published_at.map(|at| Release {
+            url: format!("https://github.com/acme/{repo}/releases/tag/v1.0.0"),
+            ..sample_release("v1.0.0", at)
+        }),
         unreleased: None,
     }
 }
@@ -204,32 +237,71 @@ mod tests {
         assert_eq!(latest(Vec::new()), None);
     }
 
-    fn row(origin: Option<&str>, release: Option<Release>) -> RepoRelease {
+    fn row(releases_page: Option<&str>, release: Option<Release>) -> RepoRelease {
         RepoRelease {
             repo: "api".to_string(),
-            origin: origin.map(str::to_string),
+            releases_page: releases_page.map(str::to_string),
             release,
             unreleased: None,
         }
     }
 
+    /// The page GitHub gives for the release: nothing built from the tag,
+    /// which may hold characters a URL (or a shell) would read otherwise.
     #[test]
-    fn enter_opens_the_release_page_built_from_the_origin() {
-        let r = row(
-            Some("acme/api"),
-            Some(sample_release("v1.4.0", "2026-09-01T00:00:00Z")),
-        );
+    fn enter_opens_the_page_github_gives_for_the_release() {
+        let mut release = sample_release("v1&calc", "2026-09-01T00:00:00Z");
+        release.url = "https://github.com/acme/api/releases/tag/v1%26calc".to_string();
+        let r = row(Some("https://github.com/acme/api/releases"), Some(release));
         assert_eq!(
             r.url().as_deref(),
-            Some("https://github.com/acme/api/releases/tag/v1.4.0")
+            Some("https://github.com/acme/api/releases/tag/v1%26calc")
         );
     }
 
     #[test]
     fn enter_on_a_repo_without_release_opens_its_releases_page() {
         assert_eq!(
-            row(Some("acme/api"), None).url().as_deref(),
+            row(Some("https://github.com/acme/api/releases"), None)
+                .url()
+                .as_deref(),
             Some("https://github.com/acme/api/releases")
+        );
+    }
+
+    /// A release whose page GitHub did not give (its second `gh release
+    /// view` failed) opens the releases page rather than nothing.
+    #[test]
+    fn a_release_without_its_page_opens_the_releases_page() {
+        let r = row(
+            Some("https://github.com/acme/api/releases"),
+            Some(sample_release("v1.4.0", "2026-09-01T00:00:00Z")),
+        );
+        assert_eq!(
+            r.url().as_deref(),
+            Some("https://github.com/acme/api/releases")
+        );
+    }
+
+    /// `-R owner/name` on github.com only: anywhere else, `gh` would look
+    /// for that `owner/name` on github.com — someone else's repo — or ask
+    /// a host it knows nothing of (a GitLab origin). Without `-R`, `gh`
+    /// picks among the hosts it is logged into, or fails without a request.
+    #[test]
+    fn only_a_github_com_source_is_named_to_gh() {
+        let github = ReleaseSource {
+            host: "github.com".to_string(),
+            repo: "acme/api".to_string(),
+        };
+        let elsewhere = ReleaseSource {
+            host: "gitlab.com".to_string(),
+            repo: "acme/api".to_string(),
+        };
+        assert_eq!(github.gh_repo().as_deref(), Some("acme/api"));
+        assert_eq!(elsewhere.gh_repo(), None);
+        assert_eq!(
+            github.releases_page(),
+            "https://github.com/acme/api/releases"
         );
     }
 
@@ -263,7 +335,8 @@ mod tests {
     }
 
     #[test]
-    fn without_a_github_origin_there_is_nothing_to_open() {
+    fn without_a_releases_page_nor_a_release_page_there_is_nothing_to_open() {
+        assert_eq!(row(None, None).url(), None);
         let r = row(None, Some(sample_release("v1", "2026-01-01T00:00:00Z")));
         assert_eq!(r.url(), None);
     }
