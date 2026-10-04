@@ -4,9 +4,10 @@
 repos and the releases of every git repo in a folder, in one terminal UI,
 with keyboard filters and optional auto-refresh.
 
-![gh-ui: the PRs, Actions, Issues and Repos tabs](assets/demo.gif)
+![gh-ui: the PRs, Actions, Issues, Repos and Releases tabs](assets/demo.gif)
 
-- **PRs**: every open PR across the folder's repos, with review state, size
+- **PRs**: every open PR across the folder's repos, with a one-glyph
+  verdict (draft, conflict, failing, running, ready), review state, size
   and labels. `m` narrows to yours.
 - **Actions**: the workflow runs sitting on those PRs' branches.
 - **Issues**: the open issues, who is on them and the PRs that close them.

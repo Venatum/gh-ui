@@ -20,9 +20,9 @@ Show
 Type "gh ui"
 Sleep 400ms
 Enter
-Sleep 2.5s
+Sleep 3s
 
-# PRs: move around, search, then only mine.
+# PRs: the State glyphs first, then move around, search, only mine.
 Down 3
 Sleep 800ms
 Type "/"
@@ -70,7 +70,11 @@ Sleep 1s
 Type "f"
 Sleep 3s
 
-# Quit off camera: the GIF loops back from the Repos tab, not a shell.
+# Releases: each repo's latest, and the commits waiting for the next one.
+Type "5"
+Sleep 3.5s
+
+# Quit off camera: the GIF loops back from the Releases tab, not a shell.
 Hide
 Type "q"
 Sleep 500ms
