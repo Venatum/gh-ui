@@ -12,8 +12,8 @@ with keyboard filters and optional auto-refresh.
 - **Issues**: the open issues, who is on them and the PRs that close them.
 - **Repos**: an owner's repositories, which ones you already have, and a
   batch clone for the others.
-- **Releases**: each repo's latest release, and the repos that never had
-  one.
+- **Releases**: each repo's latest release, how many commits wait for the
+  next one, and the repos that never had one.
 
 ## Requirements
 
@@ -125,6 +125,13 @@ most recent one that is not a draft; a pre-release reads `[P]` after its
 tag. A repo that never released keeps its row, grayed, reading
 `no release`, at the bottom of the list. `enter` opens the release on
 GitHub, or the repo's releases page on a `no release` row.
+
+`Unreleased` counts the commits on the default branch since the release's
+tag — what the next release would ship. It is asked of your local clone
+(`git rev-list --count <tag>..origin/HEAD`), never of the network, so it is
+as fresh as your last `git fetch`. A gray `?` means the clone cannot tell:
+the tag was never fetched, or there is no `origin/HEAD`
+(`git remote set-head origin --auto` sets it).
 
 There are no filters and no `m` here: one row per repo is short enough, and
 `/` narrows it. Like the issues, the releases load on the first visit to
