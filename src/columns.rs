@@ -36,6 +36,7 @@ pub trait Column: Copy + PartialEq + 'static {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum PrColumn {
+    Status,
     Repo,
     Updated,
     Number,
@@ -46,7 +47,11 @@ pub enum PrColumn {
     Labels,
 }
 
-const PR_COLUMNS: [PrColumn; 8] = [
+// `Status` first: a fresh install reads the verdict before anything else, as
+// on GitHub's own PR list. A saved layout gets it appended last instead (see
+// `normalize`), which one move in the columns panel fixes.
+const PR_COLUMNS: [PrColumn; 9] = [
+    PrColumn::Status,
     PrColumn::Repo,
     PrColumn::Updated,
     PrColumn::Number,
@@ -64,6 +69,9 @@ impl Column for PrColumn {
 
     fn header(self) -> &'static str {
         match self {
+            // Two letters, not "Status": the column is 2 cells wide, as wide
+            // as its glyph needs.
+            PrColumn::Status => "St",
             PrColumn::Repo => "Repo",
             PrColumn::Updated => "Updated",
             PrColumn::Number => "#",
@@ -78,6 +86,7 @@ impl Column for PrColumn {
     /// The widths of the former literal array in `render_pr_table`, unchanged.
     fn width(self) -> Constraint {
         match self {
+            PrColumn::Status => Constraint::Length(2),
             PrColumn::Repo => Constraint::Length(16),
             PrColumn::Updated => Constraint::Length(10),
             PrColumn::Number => Constraint::Length(7),
@@ -112,6 +121,52 @@ fn review_look(decision: &str) -> (&'static str, Style) {
         "CHANGES_REQUESTED" => ("changes", Style::new().fg(Color::Red)),
         "REVIEW_REQUIRED" => ("review", Style::new().fg(Color::Yellow)),
         _ => ("-", Style::new().fg(Color::DarkGray)),
+    }
+}
+
+/// A PR's one-glyph verdict, shown in the `St` column. The order of the
+/// variants IS the precedence `pr_status` applies: the first one that matches
+/// wins, so a PR that is several things at once still gets exactly one glyph
+/// and the column never jitters horizontally.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PrStatus {
+    /// Dormant: the author says it is not ready, so it asks nothing of anyone.
+    Draft,
+    /// Something is wrong and the author has work to do.
+    Failing,
+    /// Approved with nothing against it: merge it.
+    Ready,
+    /// Nothing to report — typically still waiting on a reviewer.
+    Idle,
+}
+
+/// The verdict for `pr`. A pure function over a `Pr`, so the precedence is
+/// testable on its own, without an `App`.
+fn pr_status(pr: &Pr) -> PrStatus {
+    if pr.is_draft {
+        return PrStatus::Draft;
+    }
+    if pr.review_decision == "CHANGES_REQUESTED" {
+        return PrStatus::Failing;
+    }
+    if pr.review_decision == "APPROVED" {
+        return PrStatus::Ready;
+    }
+    PrStatus::Idle
+}
+
+/// Glyph + color of a verdict, same shape as `review_look` and `run_look`.
+/// Every glyph is one gh-ui already draws (`·` in the panel hints, `✗` and
+/// `✓` in `run_look`), so a terminal that runs gh-ui today renders this
+/// column too.
+fn status_look(status: PrStatus) -> (&'static str, Style) {
+    match status {
+        PrStatus::Draft => ("·", Style::new().fg(Color::DarkGray)),
+        PrStatus::Failing => ("✗", Style::new().fg(Color::Red)),
+        PrStatus::Ready => ("✓", Style::new().fg(Color::Green)),
+        // Blank on purpose: waiting on a reviewer is the common case, and a
+        // glyph on every row would say nothing.
+        PrStatus::Idle => (" ", Style::new()),
     }
 }
 
@@ -183,6 +238,10 @@ impl PrColumn {
     /// `String`, so the row keeps borrowing neither the `Pr` nor the `App`.
     pub fn cell(self, pr: &Pr) -> Cell<'static> {
         match self {
+            PrColumn::Status => {
+                let (glyph, style) = status_look(pr_status(pr));
+                Cell::from(Span::styled(glyph, style))
+            }
             PrColumn::Repo => Cell::from(pr.repo.clone()),
             PrColumn::Updated => date_cell(&pr.updated_at),
             PrColumn::Number => Cell::from(format!("#{}", pr.number)),
@@ -1038,18 +1097,19 @@ mod tests {
 
         assert_eq!(layout.move_down(0), 1);
         let order: Vec<_> = layout.visible().collect();
-        assert_eq!(order[0], PrColumn::Updated);
-        assert_eq!(order[1], PrColumn::Repo);
+        assert_eq!(order[0], PrColumn::Repo);
+        assert_eq!(order[1], PrColumn::Status);
     }
 
     #[test]
     fn move_up_swaps_with_the_previous_column() {
         let mut layout = ColumnLayout::<PrColumn>::default();
 
+        // Index 3 is `Number`; moving it up puts it where `Updated` was.
         assert_eq!(layout.move_up(3), 2);
         let order: Vec<_> = layout.visible().collect();
-        assert_eq!(order[2], PrColumn::Title);
-        assert_eq!(order[3], PrColumn::Number);
+        assert_eq!(order[2], PrColumn::Number);
+        assert_eq!(order[3], PrColumn::Updated);
     }
 
     #[test]
@@ -1067,12 +1127,12 @@ mod tests {
     fn toggle_hides_then_shows_a_column_again() {
         let mut layout = ColumnLayout::<PrColumn>::default();
 
-        layout.toggle(7); // labels
-        assert_eq!(layout.visible_count(), 7);
+        layout.toggle(8); // labels
+        assert_eq!(layout.visible_count(), 8);
         assert!(!layout.visible().any(|c| c == PrColumn::Labels));
 
-        layout.toggle(7);
-        assert_eq!(layout.visible_count(), 8);
+        layout.toggle(8);
+        assert_eq!(layout.visible_count(), 9);
     }
 
     #[test]
@@ -1188,6 +1248,119 @@ mod tests {
         assert_eq!(run_look("completed", "cancelled").0, "cancelled");
         assert_eq!(run_look("in_progress", "").0, "● running");
         assert_eq!(run_look("queued", "").0, "queued");
+    }
+
+    /// A draft is the author saying "not yet": it asks nothing of anyone, so
+    /// it stays quiet even when its review decision is bad news.
+    #[test]
+    fn a_draft_outranks_every_other_state() {
+        let mut pr = sample_pr();
+        pr.is_draft = true;
+        pr.review_decision = "CHANGES_REQUESTED".to_string();
+
+        assert_eq!(pr_status(&pr), PrStatus::Draft);
+    }
+
+    #[test]
+    fn changes_requested_reads_as_failing_and_approved_as_ready() {
+        let mut pr = sample_pr();
+
+        pr.review_decision = "CHANGES_REQUESTED".to_string();
+        assert_eq!(pr_status(&pr), PrStatus::Failing);
+
+        pr.review_decision = "APPROVED".to_string();
+        assert_eq!(pr_status(&pr), PrStatus::Ready);
+    }
+
+    /// The common case. The column stays blank so the eye is only drawn by
+    /// the rows that have something to say.
+    #[test]
+    fn a_pr_waiting_on_a_reviewer_is_idle_and_draws_nothing() {
+        let mut pr = sample_pr();
+        pr.review_decision = "REVIEW_REQUIRED".to_string();
+
+        assert_eq!(pr_status(&pr), PrStatus::Idle);
+        assert_eq!(status_look(PrStatus::Idle).0, " ");
+    }
+
+    /// The column is 2 cells wide: a glyph of several characters would be
+    /// clipped and would break the table's alignment.
+    #[test]
+    fn every_status_glyph_is_a_single_character() {
+        for status in [
+            PrStatus::Draft,
+            PrStatus::Failing,
+            PrStatus::Ready,
+            PrStatus::Idle,
+        ] {
+            let (glyph, _) = status_look(status);
+            assert_eq!(
+                glyph.chars().count(),
+                1,
+                "{status:?} draws {glyph:?}, which is not one character"
+            );
+        }
+    }
+
+    #[test]
+    fn the_status_cell_renders_the_verdicts_glyph() {
+        let mut pr = sample_pr();
+        pr.review_decision = "APPROVED".to_string();
+
+        assert_eq!(
+            PrColumn::Status.cell(&pr),
+            Cell::from(Span::styled("✓", Style::new().fg(Color::Green)))
+        );
+    }
+
+    /// Guards the on-disk format, like the `updated` case above.
+    #[test]
+    fn the_status_column_is_stored_under_its_snake_case_name() {
+        let entry = ColumnEntry {
+            column: PrColumn::Status,
+            visible: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+
+        assert_eq!(json, r#"{"column":"status","visible":true}"#);
+    }
+
+    /// A fresh install sees the verdict first, where GitHub's own PR list
+    /// puts it; the header stays within the column's 2 cells.
+    #[test]
+    fn a_fresh_pr_layout_opens_on_the_status_column() {
+        let layout = ColumnLayout::<PrColumn>::default();
+
+        assert_eq!(layout.visible().next(), Some(PrColumn::Status));
+        assert_eq!(PrColumn::Status.width(), Constraint::Length(2));
+        assert!(PrColumn::Status.header().chars().count() <= 2);
+    }
+
+    /// A `columns.json` saved before the column existed gets it appended at
+    /// the end, shown, without its own order being reshuffled.
+    #[test]
+    fn a_layout_saved_before_the_status_column_gets_it_last() {
+        let columns = Columns::from_json(
+            r#"{"prs":{"entries":[
+                {"column":"repo","visible":true},
+                {"column":"updated","visible":true},
+                {"column":"number","visible":true},
+                {"column":"title","visible":true},
+                {"column":"author","visible":true},
+                {"column":"review","visible":true},
+                {"column":"diff","visible":true},
+                {"column":"labels","visible":true}
+            ]}}"#,
+        );
+
+        assert_eq!(columns.prs.entries[0].column, PrColumn::Repo);
+        assert_eq!(
+            columns.prs.entries.last(),
+            Some(&ColumnEntry {
+                column: PrColumn::Status,
+                visible: true
+            })
+        );
     }
 
     #[test]
