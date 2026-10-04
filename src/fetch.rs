@@ -5,6 +5,7 @@ use crate::filters::Filters;
 use crate::gh;
 use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
+use crate::releases::RepoRelease;
 use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -31,6 +32,15 @@ pub struct RunsResult {
 /// Mirror of `FetchResult`, for the issues.
 pub struct IssuesResult {
     pub issues: Vec<Issue>,
+    pub all_repos: Vec<String>,
+    pub scanned: usize,
+    pub errors: usize,
+}
+
+/// Mirror of `FetchResult`, for the releases: one row per repo that
+/// answered.
+pub struct ReleasesResult {
+    pub releases: Vec<RepoRelease>,
     pub all_repos: Vec<String>,
     pub scanned: usize,
     pub errors: usize,
@@ -65,6 +75,9 @@ pub enum Loaded {
     /// The folder's open issues (Issues tab). Not a `Job`: the issues have
     /// their own loading flag, like the repo list.
     Issues(IssuesResult),
+    /// The latest release of every repo (Releases tab), with its own
+    /// loading flag like the issues.
+    Releases(ReleasesResult),
 }
 
 /// What we ask the thread to load.
@@ -105,6 +118,12 @@ impl FromRepo for Run {
 }
 
 impl FromRepo for Issue {
+    fn set_repo(&mut self, repo: &str) {
+        self.repo = repo.to_string();
+    }
+}
+
+impl FromRepo for RepoRelease {
     fn set_repo(&mut self, repo: &str) {
         self.repo = repo.to_string();
     }
@@ -201,6 +220,13 @@ pub fn spawn_issues(root: PathBuf, filters: IssueFilters, tx: Sender<Loaded>) {
     });
 }
 
+/// Loads the latest release of every repo in the background.
+pub fn spawn_releases(root: PathBuf, tx: Sender<Loaded>) {
+    thread::spawn(move || {
+        let _ = tx.send(Loaded::Releases(load_releases(&root)));
+    });
+}
+
 /// Clones `batch` — (`owner/name`, folder) pairs — one repo after the
 /// other, reporting each step. Sequential on purpose: a batch is rare, and
 /// one clone at a time keeps every error attributable.
@@ -287,6 +313,20 @@ fn load_issues(root: &Path, filters: &IssueFilters) -> IssuesResult {
     let (issues, errors) = fan_out(root, &to_scan, |dir| gh::fetch_issues(dir, filters));
     IssuesResult {
         issues,
+        scanned: to_scan.len(),
+        errors,
+        all_repos,
+    }
+}
+
+/// Like `load_issues`, for the releases. Every repo of the folder: the tab
+/// has no repo filter, its whole point is the folder at a glance.
+fn load_releases(root: &Path) -> ReleasesResult {
+    let all_repos = gh::discover_repos(root).unwrap_or_default();
+    let to_scan = repos_to_scan(&all_repos, None);
+    let (releases, errors) = fan_out(root, &to_scan, gh::fetch_release);
+    ReleasesResult {
+        releases,
         scanned: to_scan.len(),
         errors,
         all_repos,

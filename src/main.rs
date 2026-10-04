@@ -160,6 +160,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('2') => app.set_tab(Tab::Runs),
         KeyCode::Char('3') => app.set_tab(Tab::Issues),
         KeyCode::Char('4') => app.set_tab(Tab::Repos),
+        KeyCode::Char('5') => app.set_tab(Tab::Releases),
         // "Mine" on either tab: my PRs, or the runs of my PRs.
         KeyCode::Char('m') => app.toggle_mine(),
         _ => {}

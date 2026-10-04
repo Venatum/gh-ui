@@ -3,7 +3,8 @@
 
 use crate::app::{App, Confirm, FilterField, InputKind, Tab, section_of};
 use crate::columns::{
-    Column, ColumnLayout, IssueColumn, PrColumn, RepoColumn, RunColumn, repo_row_style,
+    Column, ColumnLayout, IssueColumn, PrColumn, ReleaseColumn, RepoColumn, RunColumn,
+    release_row_style, repo_row_style,
 };
 use crate::filters::{AuthorFilter, Filters};
 use crate::issues::IssueFilters;
@@ -121,6 +122,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         tab_span("Issues", app.active_tab == Tab::Issues),
         Span::raw(" "),
         tab_span("Repos", app.active_tab == Tab::Repos),
+        Span::raw(" "),
+        tab_span("Releases", app.active_tab == Tab::Releases),
     ]);
 
     // Line 3: depending on the tab, PRs filters summary OR the runs toggle
@@ -155,6 +158,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             app.issue_tab.filters.summary(),
             Style::new().fg(Color::DarkGray),
         ),
+        // No filters to summarize: say what the rows are instead.
+        Tab::Releases => Span::styled(
+            "the latest release of every repo in the folder",
+            Style::new().fg(Color::DarkGray),
+        ),
     }];
 
     // Counted against the tab's own list: the PRs tab compares with everything
@@ -164,6 +172,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Runs => (app.visible_runs().len(), app.branch_runs().len()),
         Tab::Repos => (app.visible_repos().len(), app.repo_tab.listed().len()),
         Tab::Issues => (app.visible_issues().len(), app.issue_tab.issues.len()),
+        Tab::Releases => (app.visible_releases().len(), app.release_tab.rows.len()),
     };
     if let Some(chip) = search_summary(&app.search, shown, total) {
         subtitle.push(Span::raw("  "));
@@ -183,6 +192,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Tab::Runs => render_run_table(frame, app, area),
         Tab::Repos => render_repo_table(frame, app, area),
         Tab::Issues => render_issue_table(frame, app, area),
+        Tab::Releases => render_release_table(frame, app, area),
     }
 }
 
@@ -255,6 +265,32 @@ fn render_issue_table(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.issue_table_state);
 }
 
+fn render_release_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    let columns: Vec<ReleaseColumn> = app.columns.releases.visible().collect();
+
+    let header =
+        Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    // Owned cells, as in the other tables: nothing may still borrow `app`
+    // when `&mut app.release_table_state` is handed over below.
+    let rows: Vec<Row<'static>> = app
+        .visible_releases()
+        .into_iter()
+        .map(|row| {
+            Row::new(columns.iter().map(|c| c.cell(row)).collect::<Vec<_>>())
+                .style(release_row_style(row))
+        })
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::new().reversed())
+        .highlight_symbol("▌ ")
+        .block(Block::bordered());
+
+    frame.render_stateful_widget(table, area, &mut app.release_table_state);
+}
+
 fn render_repo_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let columns: Vec<RepoColumn> = app.columns.repos.visible().collect();
 
@@ -318,7 +354,7 @@ const HINTS: [(&str, &str); 10] = [
     // the one key on this row that is not reachable from a panel.
     ("/", "search"),
     ("enter", "open"),
-    ("tab/1-4", "tab"),
+    ("tab/1-5", "tab"),
     ("f", "filters"),
     ("m", "mine"),
     ("c", "columns"),
@@ -328,15 +364,20 @@ const HINTS: [(&str, &str); 10] = [
 ];
 
 /// The footer of `tab`. `m` does nothing on the Repos tab, and `space`
-/// ticks there: same slot, so both drop at the same width.
-fn hints_for(tab: Tab) -> [(&'static str, &'static str); 10] {
-    let mut hints = HINTS;
-    if tab == Tab::Repos {
-        for hint in &mut hints {
-            if *hint == ("m", "mine") {
-                *hint = ("space", "tick");
+/// ticks there: same slot, so both drop at the same width. The Releases tab
+/// has nothing to filter nor to call mine: both hints go.
+fn hints_for(tab: Tab) -> Vec<(&'static str, &'static str)> {
+    let mut hints = HINTS.to_vec();
+    match tab {
+        Tab::Repos => {
+            for hint in &mut hints {
+                if *hint == ("m", "mine") {
+                    *hint = ("space", "tick");
+                }
             }
         }
+        Tab::Releases => hints.retain(|hint| !matches!(hint.0, "m" | "f")),
+        _ => {}
     }
     hints
 }
@@ -495,9 +536,17 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         });
     }
 
+    // A tab without filters (Releases) still answers `f`, with a reason
+    // rather than an empty box.
+    let hint = if lines.is_empty() {
+        lines.push(Line::from(" No filters on this tab: / searches it."));
+        " esc close"
+    } else {
+        " ↑↓ navigate · ←→ change · ⏎ edit · esc close"
+    };
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " ↑↓ navigate · ←→ change · ⏎ edit · esc close",
+        hint,
         Style::new().fg(Color::DarkGray),
     )));
 
@@ -528,6 +577,10 @@ fn render_column_panel(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Issues => (
             " Columns — Issues ",
             column_lines(&app.columns.issues, app.column_cursor, app.column_grabbed),
+        ),
+        Tab::Releases => (
+            " Columns — Releases ",
+            column_lines(&app.columns.releases, app.column_cursor, app.column_grabbed),
         ),
     };
 
@@ -691,7 +744,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("r / q", "reload now / quit"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
-        help_row("tab/1-4", "switch tab (PRs / Actions / Issues / Repos)"),
+        help_row("tab/1-5", "switch tab (PRs/Actions/Issues/Repos/Releases)"),
         help_row("m", "mine: PRs / their runs / issues assigned to me"),
         Line::from(""),
         Line::from(Span::styled("  In the filter panel", Style::new().bold())),
@@ -844,7 +897,7 @@ mod tests {
         assert!(!repos.contains(&("m", "mine")), "m does nothing there");
 
         for tab in [Tab::Prs, Tab::Runs, Tab::Issues] {
-            assert_eq!(hints_for(tab), HINTS, "{tab:?}");
+            assert_eq!(hints_for(tab), HINTS.to_vec(), "{tab:?}");
         }
     }
 
@@ -1147,9 +1200,36 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_help_row_names_the_four_tabs() {
+    fn the_tab_help_row_names_the_five_tabs() {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
-        assert!(text.contains("switch tab (PRs / Actions / Issues / Repos)"));
+        assert!(
+            text.contains("switch tab (PRs/Actions/Issues/Repos/Releases)"),
+            "the row must fit HELP_WIDTH"
+        );
+        assert!(text.contains("tab/1-5"));
+    }
+
+    /// Neither `m` nor `f` has anything to do on the Releases tab: the
+    /// footer leaves them out rather than promise them.
+    #[test]
+    fn the_releases_footer_offers_neither_mine_nor_filters() {
+        let hints = hints_for(Tab::Releases);
+        assert!(!hints.contains(&("m", "mine")));
+        assert!(!hints.contains(&("f", "filters")));
+        assert!(hints.contains(&("tab/1-5", "tab")));
+        assert!(hints.contains(&("/", "search")));
+    }
+
+    /// `f` still opens the panel there (a key that does nothing at all
+    /// reads as broken), and the panel says why it is empty.
+    #[test]
+    fn the_releases_filter_panel_says_there_is_none() {
+        let mut app = App::new(PathBuf::from("."));
+        app.active_tab = Tab::Releases;
+        let text = render_to_text(80, 24, |frame| {
+            render_filter_panel(frame, &app, frame.area())
+        });
+        assert!(text.contains("No filters on this tab"), "got {text}");
     }
 
     #[test]

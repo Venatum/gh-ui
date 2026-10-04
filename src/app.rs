@@ -1,12 +1,15 @@
 //! The application state and its logic (independent of rendering).
 
 use crate::columns::Columns;
-use crate::fetch::{self, FetchResult, IssuesResult, Job, Loaded, ReposResult, RunsResult};
+use crate::fetch::{
+    self, FetchResult, IssuesResult, Job, Loaded, ReleasesResult, ReposResult, RunsResult,
+};
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::issues::{Issue, IssueFilters, IssuesTab};
 use crate::model::{Pr, Run};
 use crate::refresh::{AutoRefresh, RefreshSettings};
+use crate::releases::{ReleasesTab, RepoRelease};
 use crate::repos::{self, CloneEvent, Repo, RepoSettings, ReposTab};
 use crate::runfilters::{self, RunFilters};
 use crate::search;
@@ -134,6 +137,8 @@ pub fn fields_for(tab: Tab) -> &'static [FilterField] {
         Tab::Runs => &RUN_FIELDS,
         Tab::Repos => &REPO_FIELDS,
         Tab::Issues => &ISSUE_FIELDS,
+        // One row per repo needs no narrowing: the panel says so.
+        Tab::Releases => &[],
     }
 }
 
@@ -172,16 +177,18 @@ pub enum Tab {
     Runs,
     Issues,
     Repos,
+    Releases,
 }
 
 impl Tab {
-    /// The next tab (cycle Prs -> Runs -> Issues -> Repos -> Prs).
+    /// The next tab (cycle Prs -> Runs -> Issues -> Repos -> Releases -> Prs).
     pub fn next(self) -> Tab {
         match self {
             Tab::Prs => Tab::Runs,
             Tab::Runs => Tab::Issues,
             Tab::Issues => Tab::Repos,
-            Tab::Repos => Tab::Prs,
+            Tab::Repos => Tab::Releases,
+            Tab::Releases => Tab::Prs,
         }
     }
 }
@@ -194,6 +201,7 @@ struct TabLines {
     runs: String,
     issues: String,
     repos: String,
+    releases: String,
 }
 
 impl TabLines {
@@ -203,6 +211,7 @@ impl TabLines {
             Tab::Runs => &mut self.runs,
             Tab::Issues => &mut self.issues,
             Tab::Repos => &mut self.repos,
+            Tab::Releases => &mut self.releases,
         }
     }
 }
@@ -303,6 +312,10 @@ pub struct App {
     /// The Issues tab: its issues, filters and loading flag.
     pub issue_tab: IssuesTab,
     pub issue_table_state: TableState,
+    /// The Releases tab: the latest release of each repo, and its loading
+    /// flags.
+    pub release_tab: ReleasesTab,
+    pub release_table_state: TableState,
     /// How many rows the table showed at the last draw: the jump of
     /// `PgUp`/`PgDn`. Written by `ui::render`, which alone knows the height.
     pub page_rows: usize,
@@ -363,6 +376,8 @@ impl App {
                 ..Default::default()
             },
             issue_table_state: TableState::default(),
+            release_tab: ReleasesTab::default(),
+            release_table_state: TableState::default(),
             page_rows: 1,
             repos_loading: false,
             repos_pending: false,
@@ -382,18 +397,23 @@ impl App {
                 self.last_refresh = Instant::now();
                 self.refresh_issues();
             }
+            // Same for the releases.
+            Tab::Releases => {
+                self.last_refresh = Instant::now();
+                self.refresh_releases();
+            }
             _ => self.refresh_job(self.active_job()),
         }
     }
 
-    /// The flow the active tab displays — and, on the Repos and Issues tabs,
+    /// The flow the active tab displays — and, on the other tabs,
     /// the one the auto-refresh keeps fresh in the background: the repo list
     /// itself rarely changes and is never auto-reloaded.
     fn active_job(&self) -> Job {
         match self.active_tab {
             Tab::Prs => Job::Prs,
             Tab::Runs => Job::Runs,
-            Tab::Repos | Tab::Issues => {
+            Tab::Repos | Tab::Issues | Tab::Releases => {
                 if self.runs_loaded {
                     Job::Both
                 } else {
@@ -472,7 +492,11 @@ impl App {
 
     /// Is anything loading? Drives the header's spinner.
     pub fn is_busy(&self) -> bool {
-        self.loading || self.repos_loading || self.issue_tab.loading || self.repo_tab.cloning
+        self.loading
+            || self.repos_loading
+            || self.issue_tab.loading
+            || self.release_tab.loading
+            || self.repo_tab.cloning
     }
 
     /// Reloads the Repos tab's list — or queues it behind the one in flight,
@@ -531,13 +555,30 @@ impl App {
         }
     }
 
+    /// Reloads the Releases tab — or queues it behind the load in flight.
+    /// No repo filter to reconcile: the tab always shows the whole folder.
+    pub fn refresh_releases(&mut self) {
+        if self.release_tab.loading {
+            self.release_tab.pending = true;
+            return;
+        }
+        self.release_tab.loading = true;
+        self.release_tab.pending = false;
+        self.set_line(Tab::Releases, String::from("Loading releases…"));
+        fetch::spawn_releases(self.root.clone(), self.tx.clone());
+    }
+
     /// What the auto-refresh reloads: the flow the active tab shows (the
-    /// PRs behind the Repos and Issues tabs), plus the issues once they have
-    /// been loaded — whichever tab is on screen, as the runs are.
+    /// PRs behind the Repos, Issues and Releases tabs), plus the issues and
+    /// the releases once they have been loaded — whichever tab is on screen,
+    /// as the runs are.
     fn background_reload(&mut self) {
         self.refresh_job(self.active_job());
         if self.issue_tab.loaded {
             self.refresh_issues();
+        }
+        if self.release_tab.loaded {
+            self.refresh_releases();
         }
     }
 
@@ -624,6 +665,10 @@ impl App {
                     self.apply_issues(result);
                     Vec::new()
                 }
+                Loaded::Releases(result) => {
+                    self.apply_releases(result);
+                    Vec::new()
+                }
             };
             if !lines.is_empty() {
                 // The dropped-repo note concerns every flow of this load.
@@ -650,6 +695,9 @@ impl App {
         }
         if !self.issue_tab.loading && self.issue_tab.pending {
             self.refresh_issues();
+        }
+        if !self.release_tab.loading && self.release_tab.pending {
+            self.refresh_releases();
         }
 
         // Auto-refresh: if a pace is set, no load is in progress, no prompt
@@ -791,6 +839,24 @@ impl App {
         self.reset_issue_selection();
     }
 
+    /// Stores a release load; its line goes to the Releases tab. It counts
+    /// the repos that have a release against those asked: `2 release(s) —
+    /// 4 repo(s)` says two of the four never released.
+    fn apply_releases(&mut self, result: ReleasesResult) {
+        self.repos = result.all_repos;
+        self.release_tab.apply_load(result.releases);
+        self.set_line(
+            Tab::Releases,
+            format!(
+                "{} release(s) — {} repo(s){}",
+                self.release_tab.released_count(),
+                result.scanned,
+                errors_suffix(result.errors)
+            ),
+        );
+        self.reset_release_selection();
+    }
+
     /// Applies one step of the clone batch. Its end brings new folders: the
     /// PRs (and runs, and issues, once loaded) pick them up, and the list
     /// recomputes its states from the folder.
@@ -809,9 +875,12 @@ impl App {
                 Job::Prs
             });
             self.refresh_repos();
-            // The new repos have issues too.
+            // The new repos have issues and releases too.
             if self.issue_tab.loaded {
                 self.refresh_issues();
+            }
+            if self.release_tab.loaded {
+                self.refresh_releases();
             }
         }
         self.clamp_repo_selection();
@@ -865,9 +934,11 @@ impl App {
         fields_for(self.active_tab)
     }
 
-    /// Moves the panel cursor (clamped, without wrapping).
+    /// Moves the panel cursor (clamped, without wrapping). Saturating: the
+    /// Releases panel has no row at all.
     pub fn filter_cursor_next(&mut self) {
-        self.filter_cursor = (self.filter_cursor + 1).min(self.active_fields().len() - 1);
+        let last = self.active_fields().len().saturating_sub(1);
+        self.filter_cursor = (self.filter_cursor + 1).min(last);
     }
     pub fn filter_cursor_prev(&mut self) {
         self.filter_cursor = self.filter_cursor.saturating_sub(1);
@@ -875,7 +946,10 @@ impl App {
 
     /// Changes the value of the focused field. `forward` = cycle direction (←/→).
     pub fn filter_change(&mut self, forward: bool) {
-        let field = self.active_fields()[self.filter_cursor];
+        // `get`, not `[]`: an empty panel (Releases) has no focused field.
+        let Some(&field) = self.active_fields().get(self.filter_cursor) else {
+            return;
+        };
         if self.active_tab == Tab::Issues {
             self.issue_filter_change(field, forward);
             return;
@@ -978,9 +1052,9 @@ impl App {
 
     /// Enter on the focused field: opens the input (text) or advances (others).
     pub fn filter_activate(&mut self) {
-        match self.active_fields()[self.filter_cursor] {
-            FilterField::Author => self.start_input(InputKind::Author),
-            FilterField::Label => self.start_input(InputKind::Label),
+        match self.active_fields().get(self.filter_cursor) {
+            Some(FilterField::Author) => self.start_input(InputKind::Author),
+            Some(FilterField::Label) => self.start_input(InputKind::Label),
             _ => self.filter_change(true),
         }
     }
@@ -1048,6 +1122,7 @@ impl App {
             Tab::Runs => self.columns.runs.entries.len(),
             Tab::Repos => self.columns.repos.entries.len(),
             Tab::Issues => self.columns.issues.entries.len(),
+            Tab::Releases => self.columns.releases.entries.len(),
         }
     }
 
@@ -1068,6 +1143,7 @@ impl App {
             Tab::Runs => self.columns.runs.toggle(i),
             Tab::Repos => self.columns.repos.toggle(i),
             Tab::Issues => self.columns.issues.toggle(i),
+            Tab::Releases => self.columns.releases.toggle(i),
         }
         self.columns.save();
     }
@@ -1085,6 +1161,8 @@ impl App {
             (Tab::Repos, false) => self.columns.repos.move_down(i),
             (Tab::Issues, true) => self.columns.issues.move_up(i),
             (Tab::Issues, false) => self.columns.issues.move_down(i),
+            (Tab::Releases, true) => self.columns.releases.move_up(i),
+            (Tab::Releases, false) => self.columns.releases.move_down(i),
         };
         self.columns.save();
     }
@@ -1122,6 +1200,12 @@ impl App {
         search::keep_issues(&self.issue_tab.issues, &self.search)
     }
 
+    /// The rows the Releases table shows: one per repo, narrowed by the
+    /// search.
+    pub fn visible_releases(&self) -> Vec<&RepoRelease> {
+        search::keep_releases(&self.release_tab.rows, &self.search)
+    }
+
     /// Opens the search prompt, pre-filled with the active query so it can be
     /// refined rather than retyped.
     pub fn start_search(&mut self) {
@@ -1157,6 +1241,7 @@ impl App {
         self.reset_run_selection();
         self.reset_repo_selection();
         self.reset_issue_selection();
+        self.reset_release_selection();
     }
 
     /// The per-tab halves of `reset_selection`, for the paths that change
@@ -1181,6 +1266,11 @@ impl App {
         let issues = self.visible_issues().len();
         self.issue_table_state
             .select(if issues == 0 { None } else { Some(0) });
+    }
+    fn reset_release_selection(&mut self) {
+        let rows = self.visible_releases().len();
+        self.release_table_state
+            .select(if rows == 0 { None } else { Some(0) });
     }
 
     // --- input mode (author / label / search) ---
@@ -1327,6 +1417,7 @@ impl App {
             Tab::Runs => self.visible_runs().len(),
             Tab::Repos => self.repo_rows(),
             Tab::Issues => self.visible_issues().len(),
+            Tab::Releases => self.visible_releases().len(),
         }
     }
 
@@ -1354,10 +1445,12 @@ impl App {
             Tab::Runs => &mut self.run_table_state,
             Tab::Repos => &mut self.repo_table_state,
             Tab::Issues => &mut self.issue_table_state,
+            Tab::Releases => &mut self.release_table_state,
         }
     }
 
-    /// The URL of the selected item in the active tab (PR, run or issue).
+    /// The URL of the selected item in the active tab (PR, run, issue,
+    /// repo or release).
     pub fn selected_url(&self) -> Option<String> {
         match self.active_tab {
             Tab::Prs => self
@@ -1376,6 +1469,10 @@ impl App {
                 .issue_table_state
                 .selected()
                 .and_then(|i| self.visible_issues().get(i).map(|issue| issue.url.clone())),
+            Tab::Releases => self
+                .release_table_state
+                .selected()
+                .and_then(|i| self.visible_releases().get(i).and_then(|row| row.url())),
         }
     }
 
@@ -1403,6 +1500,9 @@ impl App {
             Tab::Runs if !self.runs_loaded => self.refresh(),
             Tab::Repos if !self.repo_tab.loaded && !self.repos_loading => self.refresh(),
             Tab::Issues if !self.issue_tab.loaded && !self.issue_tab.loading => self.refresh(),
+            Tab::Releases if !self.release_tab.loaded && !self.release_tab.loading => {
+                self.refresh()
+            }
             _ => {}
         }
     }
@@ -1517,8 +1617,9 @@ impl App {
                 self.filters.toggle_mine();
                 self.apply_filter_change(FilterField::Author);
             }
-            // Nothing is "mine" in a list of repos to clone.
-            Tab::Repos => {}
+            // Nothing is "mine" in a list of repos to clone, nor in the
+            // folder's releases.
+            Tab::Repos | Tab::Releases => {}
             // My issues: `assignee:@me`, through `gh` again like the panel.
             Tab::Issues => {
                 self.issue_tab.filters.toggle_mine();
@@ -1551,6 +1652,7 @@ mod tests {
     use super::*;
     use crate::filters::AuthorFilter;
     use crate::issues::{AssigneeFilter, sample_issue};
+    use crate::releases::{RepoRelease, sample_row};
     use crate::repos::{CloneEvent, LocalRepo, RepoFilters, sample_repo};
 
     #[test]
@@ -1701,7 +1803,8 @@ mod tests {
         assert_eq!(Tab::Prs.next(), Tab::Runs);
         assert_eq!(Tab::Runs.next(), Tab::Issues);
         assert_eq!(Tab::Issues.next(), Tab::Repos);
-        assert_eq!(Tab::Repos.next(), Tab::Prs);
+        assert_eq!(Tab::Repos.next(), Tab::Releases);
+        assert_eq!(Tab::Releases.next(), Tab::Prs);
     }
 
     #[test]
@@ -2790,5 +2893,184 @@ mod tests {
         app.filter_cursor = fields_for(Tab::Prs).len() - 1;
         app.set_tab(Tab::Issues);
         assert!(app.filter_cursor < fields_for(Tab::Issues).len());
+    }
+
+    /// An `App` on the Releases tab with a load "in flight", so any reload
+    /// queues (`release_tab.pending`) instead of running `gh`, as
+    /// `issues_app` does.
+    fn releases_app() -> App {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.active_tab = Tab::Releases;
+        app.release_tab.loading = true;
+        app
+    }
+
+    fn releases_answer(rows: Vec<RepoRelease>) -> Loaded {
+        Loaded::Releases(ReleasesResult {
+            releases: rows,
+            all_repos: vec!["api".to_string(), "web".to_string(), "cli".to_string()],
+            scanned: 3,
+            errors: 1,
+        })
+    }
+
+    #[test]
+    fn a_release_load_counts_the_released_repos_and_says_what_failed() {
+        let mut app = releases_app();
+        app.tx
+            .send(releases_answer(vec![
+                sample_row("web", None),
+                sample_row("api", Some("2026-09-01T00:00:00Z")),
+            ]))
+            .unwrap();
+        app.on_tick();
+
+        let repos: Vec<&str> = app
+            .visible_releases()
+            .iter()
+            .map(|r| r.repo.as_str())
+            .collect();
+        assert_eq!(repos, ["api", "web"], "the released repo first");
+        assert_eq!(app.status, "1 release(s) — 3 repo(s) — 1 failed");
+        assert!(!app.release_tab.loading);
+        assert_eq!(
+            app.selected_url().as_deref(),
+            Some("https://github.com/acme/api/releases/tag/v1.0.0")
+        );
+    }
+
+    #[test]
+    fn a_release_load_behind_another_tab_keeps_that_tab_line() {
+        let mut app = releases_app();
+        app.active_tab = Tab::Prs;
+        app.prs_loaded = true;
+        app.status = "3 PR(s) — 2 repo(s)".to_string();
+        app.tx.send(releases_answer(Vec::new())).unwrap();
+        app.on_tick();
+        assert_eq!(app.status, "3 PR(s) — 2 repo(s)");
+
+        app.set_tab(Tab::Releases);
+        assert!(
+            app.status.starts_with("0 release(s)"),
+            "got {:?}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn the_releases_tab_loads_on_its_first_visit_only() {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs_loaded = true;
+        app.set_tab(Tab::Releases);
+        assert!(app.release_tab.loading, "first visit: a load starts");
+        assert_eq!(app.status, "Loading releases…");
+
+        app.release_tab.loading = false;
+        app.release_tab.loaded = true;
+        app.set_tab(Tab::Prs);
+        app.set_tab(Tab::Releases);
+        assert!(!app.release_tab.loading, "second visit: no reload");
+    }
+
+    /// `r` is a reload like the auto-refresh's: the countdown restarts.
+    #[test]
+    fn r_on_the_releases_tab_reloads_them_and_restarts_the_countdown() {
+        let mut app = releases_app();
+        app.auto_refresh = AutoRefresh::M1;
+        app.last_refresh = Instant::now() - Duration::from_secs(50);
+
+        app.refresh();
+
+        assert!(app.release_tab.pending);
+        assert_eq!(app.pending_job, None, "the PRs are not reloaded");
+        assert!(app.time_to_refresh().unwrap() > Duration::from_secs(59));
+    }
+
+    #[test]
+    fn the_auto_refresh_reloads_the_releases_once_they_are_loaded() {
+        let mut app = releases_app();
+        app.loading = true; // the PR job queues instead of running `gh`
+        app.background_reload();
+        assert!(
+            !app.release_tab.pending,
+            "never loaded: the first visit will"
+        );
+
+        app.release_tab.loaded = true;
+        app.background_reload();
+        assert!(app.release_tab.pending);
+        assert!(app.pending_job.is_some(), "the PRs reload too");
+    }
+
+    #[test]
+    fn the_end_of_a_clone_batch_reloads_loaded_releases() {
+        let mut app = releases_app();
+        app.loading = true;
+        app.release_tab.loaded = true;
+        app.tx.send(Loaded::Clone(CloneEvent::Finished)).unwrap();
+        app.on_tick();
+        assert!(app.release_tab.pending);
+    }
+
+    #[test]
+    fn the_search_narrows_the_releases_and_enter_follows_it() {
+        let mut app = releases_app();
+        app.release_tab.apply_load(vec![
+            sample_row("api", Some("2026-09-01T00:00:00Z")),
+            sample_row("web", None),
+        ]);
+        app.start_search();
+        for c in "web".chars() {
+            app.input_push(c);
+        }
+        let repos: Vec<&str> = app
+            .visible_releases()
+            .iter()
+            .map(|r| r.repo.as_str())
+            .collect();
+        assert_eq!(repos, ["web"]);
+        assert_eq!(
+            app.selected_url().as_deref(),
+            Some("https://github.com/acme/web/releases"),
+            "a repo without release opens its releases page"
+        );
+    }
+
+    /// The tab has no filter: `f` opens a panel that says so, and none of
+    /// the panel's keys may index into its empty list of rows.
+    #[test]
+    fn the_releases_filter_panel_is_empty_and_its_keys_do_nothing() {
+        let mut app = releases_app();
+        assert!(app.active_fields().is_empty());
+
+        app.toggle_filter_panel();
+        app.filter_cursor_next();
+        app.filter_cursor_prev();
+        app.filter_change(true);
+        app.filter_activate();
+
+        assert!(app.filter_panel_open);
+        assert_eq!(app.filter_cursor, 0);
+        assert!(app.input_kind.is_none());
+        assert!(!app.release_tab.pending, "nothing to reload");
+    }
+
+    #[test]
+    fn m_on_the_releases_tab_changes_nothing() {
+        let mut app = releases_app();
+        let before = app.filters.clone();
+        app.toggle_mine();
+        assert_eq!(app.filters, before);
+        assert!(!app.release_tab.pending);
+        assert_eq!(app.pending_job, None);
+    }
+
+    #[test]
+    fn the_columns_panel_edits_the_release_columns() {
+        let mut app = releases_app();
+        app.column_cursor_next();
+        app.column_toggle();
+        assert!(!app.columns.releases.entries[1].visible);
+        assert!(app.columns.prs.entries[1].visible, "the PR columns stay");
     }
 }

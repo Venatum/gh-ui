@@ -3,6 +3,7 @@
 
 use crate::issues::Issue;
 use crate::model::{Pr, Run};
+use crate::releases::RepoRelease;
 use crate::repos::Repo;
 
 /// Does `haystack` contain `query`, ignoring case? A blank query matches
@@ -106,11 +107,29 @@ pub fn keep_issues<'a>(issues: &'a [Issue], query: &str) -> Vec<&'a Issue> {
         .collect()
 }
 
+/// The text a release row is searched on: the repo, the tag and the
+/// release's name. Blank tag and name for a repo that never released, so it
+/// is still found by its name.
+pub fn release_haystack(row: &RepoRelease) -> String {
+    match &row.release {
+        Some(release) => format!("{} {} {}", row.repo, release.tag_name, release.name),
+        None => row.repo.clone(),
+    }
+}
+
+/// The release rows matching `query`, in the order they were loaded.
+pub fn keep_releases<'a>(rows: &'a [RepoRelease], query: &str) -> Vec<&'a RepoRelease> {
+    rows.iter()
+        .filter(|row| matches(query, &release_haystack(row)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::issues::sample_issue;
     use crate::model::{Author, Label, Pr, Run};
+    use crate::releases::sample_row;
 
     /// A PR with the fields the search looks at, and plausible filler for the
     /// rest. Written out rather than parsed from JSON so each test can name
@@ -286,5 +305,25 @@ mod tests {
             2,
             "a blank query keeps all"
         );
+    }
+
+    #[test]
+    fn a_release_is_found_by_repo_tag_or_name() {
+        let mut released = sample_row("api", Some("2026-09-20T00:00:00Z"));
+        if let Some(release) = &mut released.release {
+            release.tag_name = "v2.3.0".to_string();
+            release.name = "Faster sync".to_string();
+        }
+        let rows = [released, sample_row("web", None)];
+
+        for query in ["api", "v2.3", "faster"] {
+            let found: Vec<&str> = keep_releases(&rows, query)
+                .iter()
+                .map(|r| r.repo.as_str())
+                .collect();
+            assert_eq!(found, ["api"], "{query:?}");
+        }
+        // A repo without release is still found by its name.
+        assert_eq!(keep_releases(&rows, "web").len(), 1);
     }
 }

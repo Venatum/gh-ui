@@ -4,6 +4,7 @@
 use crate::config;
 use crate::issues::{Issue, linked_prs_label};
 use crate::model::{Label, Pr, Run};
+use crate::releases::RepoRelease;
 use crate::repos::{Repo, RepoState};
 use chrono::NaiveDate;
 use ratatui::layout::Constraint;
@@ -526,6 +527,84 @@ impl IssueColumn {
     }
 }
 
+/// The columns of the Releases tab.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseColumn {
+    Repo,
+    Tag,
+    Name,
+    Published,
+}
+
+const RELEASE_COLUMNS: [ReleaseColumn; 4] = [
+    ReleaseColumn::Repo,
+    ReleaseColumn::Tag,
+    ReleaseColumn::Name,
+    ReleaseColumn::Published,
+];
+
+impl Column for ReleaseColumn {
+    fn all() -> &'static [Self] {
+        &RELEASE_COLUMNS
+    }
+
+    fn header(self) -> &'static str {
+        match self {
+            ReleaseColumn::Repo => "Repo",
+            ReleaseColumn::Tag => "Tag",
+            ReleaseColumn::Name => "Name",
+            ReleaseColumn::Published => "Published",
+        }
+    }
+
+    fn width(self) -> Constraint {
+        match self {
+            ReleaseColumn::Repo => Constraint::Length(16),
+            // `v12.3.0-rc.10 [P]` fits; a longer tag is cut.
+            ReleaseColumn::Tag => Constraint::Length(20),
+            ReleaseColumn::Name => Constraint::Fill(1),
+            ReleaseColumn::Published => Constraint::Length(10),
+        }
+    }
+}
+
+/// A repo that never released fades out whole: it stays listed, since
+/// seeing it is the point, but reads as "nothing here".
+pub fn release_row_style(row: &RepoRelease) -> Style {
+    match row.release {
+        Some(_) => Style::new(),
+        None => Style::new().fg(Color::DarkGray),
+    }
+}
+
+impl ReleaseColumn {
+    /// The cell of this column for `row`; owned, as the other tables'.
+    pub fn cell(self, row: &RepoRelease) -> Cell<'static> {
+        let Some(release) = &row.release else {
+            // No release: the tag's cell says so, the others stay blank.
+            return Cell::from(match self {
+                ReleaseColumn::Repo => row.repo.clone(),
+                ReleaseColumn::Tag => "no release".to_string(),
+                _ => String::new(),
+            });
+        };
+        match self {
+            ReleaseColumn::Repo => Cell::from(row.repo.clone()),
+            // Marked like an archived repo's `[A]`.
+            ReleaseColumn::Tag if release.is_prerelease => {
+                Cell::from(format!("{} [P]", release.tag_name))
+            }
+            ReleaseColumn::Tag => Cell::from(release.tag_name.clone()),
+            ReleaseColumn::Name => Cell::from(release.name.clone()),
+            ReleaseColumn::Published => release
+                .published_at
+                .as_deref()
+                .map_or_else(|| Cell::from(String::new()), date_cell),
+        }
+    }
+}
+
 /// One column and whether it is shown. The ORDER of the entries in
 /// `ColumnLayout` is the order of the table: no second collection to keep in
 /// sync with this one.
@@ -641,6 +720,7 @@ pub struct Columns {
     pub runs: ColumnLayout<RunColumn>,
     pub repos: ColumnLayout<RepoColumn>,
     pub issues: ColumnLayout<IssueColumn>,
+    pub releases: ColumnLayout<ReleaseColumn>,
 }
 
 impl Columns {
@@ -659,6 +739,7 @@ impl Columns {
         columns.runs.normalize();
         columns.repos.normalize();
         columns.issues.normalize();
+        columns.releases.normalize();
         columns
     }
 
@@ -701,7 +782,8 @@ mod tests {
             .map(|c| c.header())
             .chain(RUN_COLUMNS.iter().map(|c| c.header()))
             .chain(REPO_COLUMNS.iter().map(|c| c.header()))
-            .chain(ISSUE_COLUMNS.iter().map(|c| c.header()));
+            .chain(ISSUE_COLUMNS.iter().map(|c| c.header()))
+            .chain(RELEASE_COLUMNS.iter().map(|c| c.header()));
         for header in headers {
             let first = header.chars().next().expect("a non-empty header");
             // `#` and `+/-` are symbols: nothing to capitalize.
@@ -798,6 +880,7 @@ mod tests {
         repo.pushed_at = Some(old.to_string());
         let mut issue = crate::issues::sample_issue("api", 7, old);
         issue.created_at = old.to_string();
+        let release = crate::releases::sample_row("api", Some(old));
 
         assert_eq!(PrColumn::Updated.cell(&pr), gray);
         assert_eq!(RunColumn::Created.cell(&run), gray);
@@ -807,6 +890,7 @@ mod tests {
         );
         assert_eq!(IssueColumn::Updated.cell(&issue), gray);
         assert_eq!(IssueColumn::Created.cell(&issue), gray);
+        assert_eq!(ReleaseColumn::Published.cell(&release), gray);
     }
 
     fn label(name: &str, color: &str) -> Label {
@@ -1323,6 +1407,68 @@ mod tests {
             IssueColumn::Prs.cell(&issue),
             Cell::from(Span::styled("#12", Style::new().fg(Color::Green)))
         );
+    }
+
+    #[test]
+    fn a_release_row_shows_its_tag_name_and_date() {
+        let row = crate::releases::sample_row("api", Some("2026-09-20T10:00:00Z"));
+
+        assert_eq!(
+            ReleaseColumn::Repo.cell(&row),
+            Cell::from("api".to_string())
+        );
+        assert_eq!(
+            ReleaseColumn::Tag.cell(&row),
+            Cell::from("v1.0.0".to_string())
+        );
+        assert_eq!(
+            ReleaseColumn::Name.cell(&row),
+            Cell::from("Release v1.0.0".to_string())
+        );
+        assert_eq!(
+            ReleaseColumn::Published.cell(&row),
+            date_cell("2026-09-20T10:00:00Z")
+        );
+        assert_eq!(release_row_style(&row), Style::new());
+    }
+
+    /// Marked like an archived repo's `[A]`: the suffix says what it is.
+    #[test]
+    fn a_pre_release_tag_is_marked() {
+        let mut row = crate::releases::sample_row("api", Some("2026-09-20T10:00:00Z"));
+        if let Some(release) = &mut row.release {
+            release.tag_name = "v2.0.0-rc.1".to_string();
+            release.is_prerelease = true;
+        }
+        assert_eq!(
+            ReleaseColumn::Tag.cell(&row),
+            Cell::from("v2.0.0-rc.1 [P]".to_string())
+        );
+    }
+
+    /// A repo that never released keeps its row, grayed, and says so where
+    /// the tag would be.
+    #[test]
+    fn a_repo_without_release_reads_no_release_and_is_grayed() {
+        let row = crate::releases::sample_row("docs", None);
+
+        assert_eq!(
+            ReleaseColumn::Tag.cell(&row),
+            Cell::from("no release".to_string())
+        );
+        assert_eq!(ReleaseColumn::Name.cell(&row), Cell::from(String::new()));
+        assert_eq!(
+            ReleaseColumn::Published.cell(&row),
+            Cell::from(String::new())
+        );
+        assert_eq!(release_row_style(&row), Style::new().fg(Color::DarkGray));
+    }
+
+    #[test]
+    fn a_config_written_before_the_releases_tab_gets_the_default_release_layout() {
+        let columns = Columns::from_json(r#"{"prs":{"entries":[]}}"#);
+        assert_eq!(columns.releases, ColumnLayout::<ReleaseColumn>::default());
+        assert_eq!(columns.releases.entries.len(), ReleaseColumn::all().len());
     }
 
     #[test]
