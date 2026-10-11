@@ -49,6 +49,17 @@ Sleep 2s
 Escape
 Sleep 1s
 
+# A Dependabot PR: its release notes and commits folded, as on GitHub,
+# then unfolded with space.
+Down@50ms 13
+Sleep 600ms
+Enter
+Sleep 3s
+Type " "
+Sleep 3.5s
+Escape
+Sleep 1s
+
 Type "m"
 Sleep 2s
 Type "m"
