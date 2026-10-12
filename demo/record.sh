@@ -43,7 +43,13 @@ for name in api web cli docs; do
   demo_git "$name" update-ref refs/remotes/origin/HEAD HEAD
 done
 
-export DEMO_PATH="$repo/demo:$repo/target/release:$PATH"
+# gh-ui as gh installs it: the binary next to a manifest.yml, without which
+# gh-ui knows it is not the installed extension and skips the update check.
+mkdir -p "$work/extension"
+cp target/release/gh-ui "$work/extension/"
+echo "name: gh-ui" > "$work/extension/manifest.yml"
+
+export DEMO_PATH="$repo/demo:$work/extension:$PATH"
 export DEMO_HOME="$work/home"
 export DEMO_WORKSPACE="$work/workspace"
 

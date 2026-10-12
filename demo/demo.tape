@@ -13,7 +13,7 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 80ms
 
 Hide
-Type `export PATH="$DEMO_PATH" HOME="$DEMO_HOME" PS1="$ " && cd "$DEMO_WORKSPACE" && clear`
+Type `export PATH="$DEMO_PATH" HOME="$DEMO_HOME" PS1="$ " && unset GH_NO_EXTENSION_UPDATE_NOTIFIER && cd "$DEMO_WORKSPACE" && clear`
 Enter
 Show
 
@@ -100,6 +100,13 @@ Sleep 3s
 # Releases: each repo's latest, and the commits waiting for the next one.
 Type "5"
 Sleep 3.5s
+
+# gh-ui's own new release, announced in the header: U, then y, upgrades it
+# on quit.
+Type "U"
+Sleep 2s
+Type "y"
+Sleep 2.5s
 
 # Quit off camera: the GIF loops back from the Releases tab, not a shell.
 Hide

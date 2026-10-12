@@ -41,7 +41,8 @@ gh ui ~/dev/workspace       # scan a specific folder
 This is the way in. The repo is named `gh-ui`, which is what makes `gh` expose
 it as the `gh ui` subcommand. The installer downloads the prebuilt binary for
 your platform, so this needs no Rust toolchain. Update with
-`gh extension upgrade gh-ui`.
+`gh extension upgrade gh-ui`, or press `U` when gh-ui announces a new release
+in its header: the upgrade runs when you quit.
 
 ### From a clone
 
@@ -280,6 +281,7 @@ the repo's releases page.
 | `A`          | turn auto-refresh off                        |
 | `f`          | open the filters panel                       |
 | `c`          | open the columns panel                       |
+| `U`          | upgrade gh-ui on quit, when the header announces a new release |
 | `?`          | help screen                                  |
 | `q`          | quit                                         |
 
@@ -294,7 +296,7 @@ the repo's releases page.
 | `space`                | fold / unfold: reviews, run steps, `<details>`   |
 | `r`                    | reload the view                                  |
 | `esc`                  | back to the list, on the same row                |
-| `?`, `q`               | help, quit                                       |
+| `?`, `q`, `U`          | help, quit, upgrade on quit (when announced)     |
 
 The list's own keys (`tab`, `1-5`, `f`, `c`, `m`, `/`) wait until you are
 back on it.
@@ -436,6 +438,7 @@ real account. `./demo/record.sh --shell` opens the same setup in a shell.
 | `search.rs`     | the `/` search: what a row matches on                       |
 | `columns.rs`    | table columns: registry, cells, order/visibility, persistence |
 | `refresh.rs`    | the auto-refresh pace                                       |
+| `update.rs`     | the self-upgrade: `gh`'s dry-run answer, the header chip    |
 | `config.rs`     | where the settings files live                               |
 | `gh.rs`         | repo discovery, and every `gh` / `git` command              |
 | `fetch.rs`      | background loading (threads + `mpsc` channel)               |

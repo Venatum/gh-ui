@@ -8,6 +8,7 @@ use crate::issues::{Issue, IssueFilters};
 use crate::model::{Pr, Run};
 use crate::releases::RepoRelease;
 use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
+use crate::update;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -92,6 +93,9 @@ pub enum Loaded {
     /// One PR's detail. Not a `Job` either: the view has its own loading
     /// flag (`DetailView::loading`).
     Detail(DetailResult),
+    /// The release `gh` would install, `None` when there is none or the
+    /// check failed. Asked once, at startup.
+    UpdateCheck(Option<String>),
 }
 
 /// What we ask the thread to load.
@@ -211,6 +215,21 @@ pub fn spawn_orgs(tx: Sender<Loaded>) {
     thread::spawn(move || {
         // A failure only shrinks the picker to the account itself.
         let _ = tx.send(Loaded::Orgs(gh::fetch_orgs().unwrap_or_default()));
+    });
+}
+
+/// Asks `gh`, once, whether a newer gh-ui is out. A failure is just
+/// "nothing to offer": no banner, the check must never get in the way.
+/// Not asked at all where it does not apply (`gh::update_check_applies`).
+pub fn spawn_update_check(tx: Sender<Loaded>) {
+    if !gh::update_check_applies() {
+        return;
+    }
+    thread::spawn(move || {
+        let version = gh::upgrade_dry_run()
+            .ok()
+            .and_then(|stdout| update::parse_dry_run(&stdout));
+        let _ = tx.send(Loaded::UpdateCheck(version));
     });
 }
 

@@ -15,6 +15,7 @@ use crate::releases::{ReleasesTab, RepoRelease};
 use crate::repos::{self, CloneEvent, Repo, RepoSettings, ReposTab};
 use crate::runfilters::{self, RunFilters};
 use crate::search;
+use crate::update::Update;
 use ratatui::widgets::TableState;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,8 @@ pub enum InputKind {
 pub enum Confirm {
     /// Clone the ticked repos: how many, and into which folder.
     Clone { count: usize, into: String },
+    /// Install the release the header announces.
+    Upgrade { version: String },
     /// Quit while a clone batch runs.
     Quit,
 }
@@ -256,6 +259,8 @@ pub struct App {
 
     /// The authenticated GitHub account, resolved once at startup.
     pub login: Login,
+    /// The self-upgrade (`U`): what the header's chip says, if anything.
+    pub update: Update,
     /// Auto-refresh pace, cycled with key `a`. `Off` = disabled.
     pub auto_refresh: AutoRefresh,
     /// Time of the last load start (to pace the auto-refresh).
@@ -365,6 +370,7 @@ impl App {
             repos: Vec::new(),
             pending_job: None,
             login: Login::Loading,
+            update: Update::None,
             auto_refresh: RefreshSettings::load().auto_refresh,
             last_refresh: Instant::now(),
             last_countdown: None,
@@ -501,6 +507,7 @@ impl App {
     pub fn start(&mut self) {
         self.load_login();
         fetch::spawn_orgs(self.tx.clone());
+        fetch::spawn_update_check(self.tx.clone());
         match initial_tab(&self.root) {
             Tab::Repos => self.set_tab(Tab::Repos),
             _ => self.refresh(),
@@ -691,6 +698,12 @@ impl App {
                 }
                 Loaded::Detail(result) => {
                     self.apply_detail(result);
+                    Vec::new()
+                }
+                Loaded::UpdateCheck(version) => {
+                    if let Some(version) = version {
+                        self.update = Update::Available(version);
+                    }
                     Vec::new()
                 }
             };
@@ -1743,6 +1756,7 @@ impl App {
     pub fn confirm_yes(&mut self) {
         match self.confirm.take() {
             Some(Confirm::Clone { .. }) => self.start_clones(),
+            Some(Confirm::Upgrade { version }) => self.update = Update::Scheduled(version),
             Some(Confirm::Quit) => self.should_quit = true,
             None => {}
         }
@@ -1761,6 +1775,24 @@ impl App {
         }
         self.set_line(Tab::Repos, format!("Cloning {} repo(s)…", batch.len()));
         fetch::spawn_clones(self.root.clone(), batch, self.tx.clone());
+    }
+
+    /// `U`: offers to install the release the header announces. Does
+    /// nothing unless one is announced.
+    pub fn ask_upgrade(&mut self) {
+        if let Update::Available(version) = &self.update {
+            self.confirm = Some(Confirm::Upgrade {
+                version: version.clone(),
+            });
+        }
+    }
+
+    /// The version to install once gh-ui quits, if `U` scheduled one.
+    pub fn upgrade_on_quit(&self) -> Option<&str> {
+        match &self.update {
+            Update::Scheduled(version) => Some(version),
+            _ => None,
+        }
     }
 
     /// `q`: quits, unless a clone batch runs — quitting then leaves a
@@ -2329,6 +2361,22 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_release_is_offered_once_gh_answers() {
+        let mut app = App::new(PathBuf::from("."));
+        assert_eq!(app.update, Update::None);
+
+        app.tx.send(Loaded::UpdateCheck(None)).unwrap();
+        app.on_tick();
+        assert_eq!(app.update, Update::None, "nothing to offer, no chip");
+
+        app.tx
+            .send(Loaded::UpdateCheck(Some("v0.5.2".to_string())))
+            .unwrap();
+        app.on_tick();
+        assert_eq!(app.update, Update::Available("v0.5.2".to_string()));
+    }
+
+    #[test]
     fn without_an_account_the_tab_says_why_it_stays_empty() {
         let mut app = App::new(PathBuf::from("."));
         app.active_tab = Tab::Repos;
@@ -2707,6 +2755,61 @@ mod tests {
 
         app.confirm_yes();
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn u_does_nothing_unless_an_upgrade_is_offered() {
+        let mut app = App::new(PathBuf::from("."));
+        let v = || "v0.5.2".to_string();
+        for state in [Update::None, Update::Scheduled(v())] {
+            app.update = state;
+            app.ask_upgrade();
+            assert_eq!(app.confirm, None, "with {:?}", app.update);
+        }
+
+        app.update = Update::Available(v());
+        app.ask_upgrade();
+        assert_eq!(app.confirm, Some(Confirm::Upgrade { version: v() }));
+    }
+
+    #[test]
+    fn yes_schedules_the_upgrade_for_quit() {
+        let mut app = App::new(PathBuf::from("."));
+        app.update = Update::Available("v0.5.2".to_string());
+        assert_eq!(app.upgrade_on_quit(), None, "offered is not scheduled");
+
+        app.ask_upgrade();
+        app.confirm_yes();
+
+        assert_eq!(app.confirm, None);
+        assert_eq!(app.update, Update::Scheduled("v0.5.2".to_string()));
+        assert_eq!(app.upgrade_on_quit(), Some("v0.5.2"));
+        assert!(!app.should_quit, "it waits for the user to quit");
+    }
+
+    #[test]
+    fn saying_no_keeps_the_upgrade_on_offer() {
+        let mut app = App::new(PathBuf::from("."));
+        app.update = Update::Available("v0.5.2".to_string());
+        app.ask_upgrade();
+
+        app.confirm_no();
+
+        assert_eq!(app.confirm, None);
+        assert_eq!(app.update, Update::Available("v0.5.2".to_string()));
+    }
+
+    #[test]
+    fn the_update_check_leaves_the_pr_loading_flag_alone() {
+        let mut app = App::new(PathBuf::from("."));
+        app.loading = true;
+
+        app.tx
+            .send(Loaded::UpdateCheck(Some("v0.5.2".to_string())))
+            .unwrap();
+        app.on_tick();
+
+        assert!(app.loading, "the PR load still in flight is not cut short");
     }
 
     #[test]

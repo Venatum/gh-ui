@@ -106,6 +106,15 @@ case "${1:-} ${2:-}" in
     git init --quiet "$4"
     git -C "$4" remote add origin "git@github.com:$3.git"
     exit 0 ;;
+  # A newer release to announce in the header; the upgrade itself runs
+  # once gh-ui quits, off camera.
+  "extension upgrade")
+    if [[ " $* " == *" --dry-run "* ]]; then
+      echo "[ui]: would have upgraded from v0.5.1 to v0.6.0"
+    else
+      echo "[ui]: upgraded from v0.5.1 to v0.6.0"
+    fi
+    exit 0 ;;
   *) echo "demo gh: \`$*\` is not part of the demo" >&2; exit 1 ;;
 esac
 shift 2

@@ -12,6 +12,7 @@ use crate::issues::IssueFilters;
 use crate::refresh::{self, AutoRefresh};
 use crate::repos::RepoFilters;
 use crate::runfilters::RunFilters;
+use crate::update::Update;
 use chrono::{Local, Offset, Utc};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -101,15 +102,21 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // The account, flush against the right edge of the header.
-    if let Some(label) = app.login.label() {
-        let account = Span::styled(label, Style::new().fg(Color::DarkGray));
-        let used: usize = top.iter().map(Span::width).sum();
-        if let Some(pad) = right_align_padding(area.width, used, account.width()) {
-            top.push(Span::raw(" ".repeat(pad)));
-            top.push(account);
-        }
-    }
+    // The upgrade chip, yellow while it offers `U`, then the account, flush
+    // against the right edge of the header.
+    let chip = app.update.chip().map(|text| {
+        let color = match app.update {
+            Update::Available(_) => Color::Yellow,
+            Update::None | Update::Scheduled(_) => Color::DarkGray,
+        };
+        Span::styled(text, Style::new().fg(color))
+    });
+    let account = app
+        .login
+        .label()
+        .map(|label| Span::styled(label, Style::new().fg(Color::DarkGray)));
+    let used: usize = top.iter().map(Span::width).sum();
+    top.extend(right_corner(area.width, used, chip, account));
 
     // Line 2: the tabs, [ PRs ] [ Actions ], the active one highlighted.
     let tab_span = |label: &str, active: bool| {
@@ -612,6 +619,7 @@ fn confirm_question(confirm: &Confirm) -> String {
         Confirm::Clone { count, into } => {
             format!("Clone {count} {} into {into}?", repos_word(*count))
         }
+        Confirm::Upgrade { version } => format!("Upgrade gh-ui to {version} when you quit?"),
         Confirm::Quit => "Clones in progress, quit anyway?".to_string(),
     }
 }
@@ -864,7 +872,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         help_row("enter / o", "view it in gh-ui (Repos: GitHub) / o: GitHub"),
         help_row("space", "Repos: tick · enter on the clone button: clone"),
         help_row("/", "search the visible list · esc clears it"),
-        help_row("r / q", "reload now / quit"),
+        help_row("r / q / U", "reload now / quit / U: upgrade on quit"),
         help_row("a / A", "auto-refresh: off/1mn/5mn/10mn/30mn/1h · A: off"),
         help_row("f / c", "open the filters / columns panel"),
         help_row("tab/1-5", "switch tab (PRs/Actions/Issues/Repos/Releases)"),
@@ -922,6 +930,33 @@ fn search_summary(query: &str, shown: usize, total: usize) -> Option<String> {
 fn right_align_padding(width: u16, used: usize, trailing: usize) -> Option<usize> {
     let inner = (width as usize).checked_sub(2)?; // the block's two borders
     (inner > used + trailing).then(|| inner - used - trailing)
+}
+
+/// The header's right corner, flush against the edge: the upgrade chip,
+/// then the account. When both do not fit the chip goes first; when even
+/// the account does not, nothing is shown rather than wrap the line.
+fn right_corner(
+    width: u16,
+    used: usize,
+    chip: Option<Span<'static>>,
+    account: Option<Span<'static>>,
+) -> Vec<Span<'static>> {
+    let both: Vec<Span<'static>> = match (chip, account.clone()) {
+        (Some(chip), Some(account)) => vec![chip, Span::raw("  "), account],
+        (chip, account) => chip.into_iter().chain(account).collect(),
+    };
+    for spans in [both, account.into_iter().collect()] {
+        if spans.is_empty() {
+            continue;
+        }
+        let wide: usize = spans.iter().map(Span::width).sum();
+        if let Some(pad) = right_align_padding(width, used, wide) {
+            let mut corner = vec![Span::raw(" ".repeat(pad))];
+            corner.extend(spans);
+            return corner;
+        }
+    }
+    Vec::new()
 }
 
 /// Computes a centered rectangle of `width` columns and `height` rows.
@@ -1399,6 +1434,64 @@ mod tests {
     }
 
     #[test]
+    fn the_upgrade_chip_gives_way_before_the_account() {
+        let chip = || Some(Span::raw("v0.5.2 ↑ U")); // 10 columns
+        let account = || Some(Span::raw("@vincent")); // 8 columns
+        let text = |spans: Vec<Span>| {
+            spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        // Room for both: the chip, two spaces, the account.
+        assert_eq!(
+            text(right_corner(80, 10, chip(), account())).trim_start(),
+            "v0.5.2 ↑ U  @vincent"
+        );
+        // 28 inner columns, 10 used: the 20 of both do not fit, the 8 do.
+        assert_eq!(
+            text(right_corner(30, 10, chip(), account())).trim_start(),
+            "@vincent"
+        );
+        // Not even the account: nothing, rather than wrap the line.
+        assert!(right_corner(12, 10, chip(), account()).is_empty());
+        // No account yet (`Login::Loading`): the chip alone.
+        assert_eq!(
+            text(right_corner(80, 10, chip(), None)).trim_start(),
+            "v0.5.2 ↑ U"
+        );
+        assert!(right_corner(80, 10, None, None).is_empty());
+    }
+
+    #[test]
+    fn the_header_shows_the_upgrade_chip_before_the_account() {
+        let mut app = App::new(PathBuf::from("."));
+        app.login = crate::app::Login::Known("vincent".to_string());
+        app.update = Update::Available("v0.5.2".to_string());
+
+        let text = render_to_text(100, 4, |frame| render_header(frame, &app, frame.area()));
+
+        assert!(text.contains("v0.5.2 ↑ U  @vincent"), "got {text}");
+    }
+
+    #[test]
+    fn the_footer_asks_before_upgrading() {
+        let mut app = App::new(PathBuf::from("."));
+        app.confirm = Some(Confirm::Upgrade {
+            version: "v0.5.2".to_string(),
+        });
+
+        let text = render_to_text(80, 1, |frame| render_footer(frame, &app, frame.area()));
+
+        assert!(
+            text.contains("Upgrade gh-ui to v0.5.2 when you quit?"),
+            "got {text}"
+        );
+        assert!(text.contains("(y/n)"), "got {text}");
+    }
+
+    #[test]
     fn the_prompts_ask_a_yes_no_question() {
         assert_eq!(
             confirm_question(&Confirm::Clone {
@@ -1418,6 +1511,12 @@ mod tests {
             confirm_question(&Confirm::Quit),
             "Clones in progress, quit anyway?"
         );
+        assert_eq!(
+            confirm_question(&Confirm::Upgrade {
+                version: "v0.5.2".to_string()
+            }),
+            "Upgrade gh-ui to v0.5.2 when you quit?"
+        );
     }
 
     #[test]
@@ -1425,6 +1524,7 @@ mod tests {
         let text = render_to_text(80, 24, |frame| render_help(frame, frame.area()));
         assert!(text.contains("Repos: tick · enter on the clone button: clone"));
         assert!(text.contains("reload now / quit"));
+        assert!(text.contains("U: upgrade"));
         assert!(text.contains("(any key to close)"), "still fits 80x24");
     }
 

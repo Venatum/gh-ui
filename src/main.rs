@@ -13,6 +13,7 @@ mod repos;
 mod runfilters;
 mod search;
 mod ui;
+mod update;
 
 use anyhow::Result;
 use app::{App, EnterAction, Tab};
@@ -48,7 +49,51 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app); // capture the result...
     ratatui::restore(); // ...so we restore the terminal no matter what
-    result
+    // Dropping the terminal shows the cursor again (every frame hid it).
+    // Now, not at the end of `main`: the `exec` below skips destructors.
+    drop(terminal);
+    result?;
+
+    // `U` scheduled an upgrade: run it now that the TUI is gone. Not before:
+    // `gh` rewrites gh-ui's binary in place, which Linux refuses while a
+    // process runs it ("Text file busy") — another gh-ui still open, too.
+    if let Some(version) = app.upgrade_on_quit() {
+        println!("Upgrading gh-ui to {version}…");
+        return upgrade(gh::upgrade_command());
+    }
+    Ok(())
+}
+
+/// Hands the process over to `cmd` (`exec`): this process stops running
+/// gh-ui's binary, so `gh` may rewrite it, and `gh` prints its own result.
+/// `exec` only returns on failure.
+#[cfg(unix)]
+fn upgrade(mut cmd: Command) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let err = cmd.exec();
+    anyhow::bail!("{err}: run `{}` yourself", command_line(&cmd))
+}
+
+/// No `exec` outside Unix: run it and wait. (No such build ships today.)
+#[cfg(not(unix))]
+fn upgrade(mut cmd: Command) -> Result<()> {
+    let status = cmd.status()?;
+    anyhow::ensure!(
+        status.success(),
+        "{status}: run `{}` yourself",
+        command_line(&cmd)
+    );
+    Ok(())
+}
+
+/// `cmd` as one would type it, for the "run it yourself" hint: read from
+/// the command itself, so the hint names what gh-ui actually ran.
+fn command_line(cmd: &Command) -> String {
+    std::iter::once(cmd.get_program())
+        .chain(cmd.get_args())
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What `gh-ui --help` prints. `env!` reads the values Cargo bakes in at
@@ -142,6 +187,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('r') => app.refresh(),
         KeyCode::Char('a') => app.cycle_auto_refresh(),
         KeyCode::Char('A') => app.disable_auto_refresh(),
+        KeyCode::Char('U') => app.ask_upgrade(),
         // enter goes one level deeper (see `App::enter_action`); `o` goes
         // straight to GitHub, on every tab.
         KeyCode::Enter => match app.enter_action() {
@@ -169,13 +215,15 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
     }
 }
 
-/// Keys in the detail view. `?` and `q` work as everywhere; the list's own
-/// keys (tab, 1-5, f, c, m, /) wait until `esc`.
+/// Keys in the detail view. `?` and `q` work as everywhere, and `U` as in
+/// the list: the header, which announces it, stays on screen; the list's
+/// own keys (tab, 1-5, f, c, m, /) wait until `esc`.
 fn handle_detail_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char('q') => app.request_quit(),
         KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('U') => app.ask_upgrade(),
         KeyCode::Char('r') => app.reload_detail(),
         // One level deeper again, or straight there: the section's page.
         KeyCode::Enter | KeyCode::Char('o') => {
@@ -331,6 +379,58 @@ fn is_web_page(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `U` (shift) asks before upgrading; `u` stays free.
+    #[test]
+    fn shift_u_opens_the_upgrade_prompt() {
+        let mut app = App::new(PathBuf::from("."));
+        app.update = update::Update::Available("v0.5.2".to_string());
+
+        handle_normal_key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.confirm, None);
+
+        handle_normal_key(&mut app, KeyCode::Char('U'));
+        assert_eq!(
+            app.confirm,
+            Some(app::Confirm::Upgrade {
+                version: "v0.5.2".to_string()
+            })
+        );
+    }
+
+    /// The detail view keeps the header, chip included: `U` works there too.
+    #[test]
+    fn shift_u_works_in_the_detail_view() {
+        let mut app = App::new(PathBuf::from("."));
+        app.update = update::Update::Available("v0.5.2".to_string());
+        let key = detail::DetailKey::Pr {
+            repo: "api".to_string(),
+            number: 412,
+        };
+        app.detail = Some(detail::DetailView::new(key, "t".to_string()));
+
+        handle_detail_key(&mut app, KeyCode::Char('U'));
+
+        assert_eq!(
+            app.confirm,
+            Some(app::Confirm::Upgrade {
+                version: "v0.5.2".to_string()
+            })
+        );
+        assert!(
+            app.detail.is_some(),
+            "the view stays open behind the prompt"
+        );
+    }
+
+    /// When `exec` fails, the hint names the very command gh-ui ran.
+    #[test]
+    fn the_upgrade_hint_is_the_command_itself() {
+        assert_eq!(
+            command_line(&gh::upgrade_command()),
+            "gh extension upgrade gh-ui"
+        );
+    }
 
     /// Only a web page reaches the system's opener: another scheme
     /// (`file:`, a custom protocol) would run whatever the OS associates

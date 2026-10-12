@@ -474,6 +474,50 @@ pub fn fetch_login() -> Result<String> {
     Ok(login)
 }
 
+/// The extension's name for `gh extension upgrade`: the crate's, `gh-ui`.
+const EXTENSION: &str = env!("CARGO_PKG_NAME");
+
+/// What `gh extension upgrade gh-ui --dry-run` prints: the version it would
+/// install, or why not (see `update::parse_dry_run`).
+pub fn upgrade_dry_run() -> Result<String> {
+    let output = upgrade_command()
+        .arg("--dry-run")
+        .output()
+        .context("launching `gh` (is it installed and in the PATH?)")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`gh extension upgrade --dry-run` failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `gh extension upgrade gh-ui`, built but not run: `main` runs it once
+/// the TUI is gone (see `update::Update::Scheduled`).
+pub fn upgrade_command() -> Command {
+    let mut cmd = Command::new("gh");
+    cmd.args(["extension", "upgrade", EXTENSION]);
+    cmd
+}
+
+/// Whether the update check applies to this run. Not to a binary `gh` did
+/// not install (`cargo run`, `cargo install`): the dry run would describe
+/// the installed extension, another binary, and `U` would upgrade that one.
+/// Nor when the user turned `gh`'s extension update notices off:
+/// `GH_NO_EXTENSION_UPDATE_NOTIFIER`, any value, as `gh` reads it.
+pub fn update_check_applies() -> bool {
+    let opted_out =
+        std::env::var_os("GH_NO_EXTENSION_UPDATE_NOTIFIER").is_some_and(|value| !value.is_empty());
+    !opted_out && std::env::current_exe().is_ok_and(|exe| installed_by_gh(&exe))
+}
+
+/// `gh` writes a `manifest.yml` next to every binary extension it installs
+/// (it tells them apart by it): the mark of the binary it upgrades.
+fn installed_by_gh(exe: &Path) -> bool {
+    exe.parent()
+        .is_some_and(|dir| dir.join("manifest.yml").is_file())
+}
+
 /// The arguments of `gh repo list` for `owner` under `filters`. Split out
 /// so the flags are testable without running `gh`.
 pub fn repo_list_args(owner: &str, filters: &RepoFilters) -> Vec<String> {
@@ -628,6 +672,32 @@ fn last_line(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::issues::{AssigneeFilter, IssueFilters};
+
+    #[test]
+    fn the_upgrade_on_quit_is_a_plain_gh_extension_upgrade() {
+        let cmd = upgrade_command();
+        assert_eq!(cmd.get_program(), "gh");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["extension", "upgrade", "gh-ui"]);
+    }
+
+    /// The update check only runs from the binary `gh` would replace: the
+    /// one with `gh`'s manifest beside it, not a `cargo run` build.
+    #[test]
+    fn only_a_binary_gh_installed_is_checked_for_updates() {
+        let dir = std::env::temp_dir().join(format!("gh-ui-manifest-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("gh-ui");
+
+        let built_here = installed_by_gh(&exe);
+        std::fs::write(dir.join("manifest.yml"), "tag: v0.5.1\n").unwrap();
+        let installed = installed_by_gh(&exe);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(!built_here, "no manifest: not gh's to upgrade");
+        assert!(installed, "gh's manifest next to the binary");
+    }
 
     /// What `gh` printed and how it exited, without running it. The raw
     /// status is the `wait()` encoding: the exit code sits in the high byte.
