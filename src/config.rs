@@ -1,4 +1,5 @@
-//! Where the settings files live: `~/.config/gh-ui/<file>` (Linux/macOS).
+//! Where the settings files live: `~/.config/gh-ui/<file>` on Linux,
+//! `~/Library/Application Support/gh-ui/<file>` on macOS.
 //!
 //! Every `load`/`save` goes through `path`, and both already treat `None` as
 //! "no config": defaults on load, nothing written on save. Under `cargo test`

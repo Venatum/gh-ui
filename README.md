@@ -35,7 +35,7 @@ Every call goes through it, so gh-ui inherits your existing GitHub login.
 ```bash
 gh extension install Venatum/gh-ui
 gh ui                       # scan the current folder
-gh ui ~/dev/workspace       # scan a specific folder
+gh ui ~/dev/workspace       # scan a specific folder holding several git repos
 ```
 
 This is the way in. The repo is named `gh-ui`, which is what makes `gh` expose
@@ -59,11 +59,14 @@ each change to update the installed copy — `cargo run` uses the working tree,
 ## Usage
 
 ```bash
-gh-ui                       # scan the current folder
-gh-ui ~/dev/workspace       # scan a specific folder holding several git repos
-gh-ui --help                # usage summary
-gh-ui --version             # version
+gh ui                       # scan the current folder
+gh ui ~/dev/workspace       # scan a specific folder holding several git repos
+gh ui --help                # usage summary
+gh ui --version             # version
 ```
+
+Installed from a clone, the binary is `gh-ui`: same arguments,
+`gh-ui ~/dev/workspace`.
 
 The app discovers the subfolders that are git repos and aggregates what
 GitHub has for them. The header shows the authenticated account in its
@@ -80,9 +83,11 @@ change costs a reload.
 ### PRs
 
 Every open PR of the scanned repos (at most 50 per repo): a status glyph,
-repo, number, title, author, review decision, `+/-` size and labels, repo by
-repo. A draft reads `[D]` and grayed. `m` shows only
-yours (`author:@me`), and pressing it again shows everyone's.
+repo, last update, number, title, author, review decision, `+/-` size and
+labels, repo by repo. A draft reads `[D]` and grayed. `m` shows only yours
+(`author:@me`, which also unticks `review asked`: nobody asks for a review of
+their own PR), and pressing it again shows everyone's; `review asked` stays
+unticked.
 
 #### The `State` column
 
@@ -107,7 +112,9 @@ green, and a re-run still queued reads `●`.
 
 The two fields this needs, `mergeable` and `statusCheckRollup`, ride the one
 `gh pr list` call each repo already makes: no request per PR, so
-auto-refresh asks GitHub exactly as often as before.
+auto-refresh asks GitHub exactly as often as before. Each answer is heavier
+though: GitHub has to gather every check of every PR, which turns a load of
+a busy repo from under a second into a few seconds.
 
 If you already had a saved layout, `State` is appended to its **right** end
 rather than reshuffling it (see [Memory](#memory)). To bring it to the
@@ -116,7 +123,8 @@ top, `space` to drop it. It is saved.
 
 #### The detail view (`enter`)
 
-`enter` on a PR opens it in place of the table, full screen, to answer
+`enter` on a PR opens it in place of the table, between the header and the
+footer, to answer
 what the browser would otherwise be needed for (`o` still goes straight to
 GitHub). `←/→` walk four sections:
 
@@ -128,11 +136,11 @@ GitHub). `←/→` walk four sections:
   without its backticks, `:rocket:` codes as emoji (the common ones) and
   task boxes as `☑`/`☐`; a PR template's `<!-- … -->` instructions are
   hidden as on GitHub, an image reads `[image: its alt text]`, a link `its
-  text (https://…)` with the URL whole, for your terminal to open. A table lines its columns up, its links' URLs listed
-  under it (or reads row by row when it is wider than the view). The HTML a
-  body may carry (a Dependabot PR's release notes and commits) reads the
-  same way, and a `<details>` block folds to one gray `▸ summary` line until
-  `space`.
+  text (https://…)` with the URL whole, for your terminal to open. A table
+  lines its columns up, its links' URLs listed under it (or reads row by row
+  when it is wider than the view). The HTML a body may carry (a Dependabot
+  PR's release notes and commits) reads the same way, and a `<details>`
+  block folds to one gray `▸ summary` line until `space`.
 - **Checks**: one line per check, failures first, with how long it took or
   how long it has been running. A job re-run counts by its latest attempt
   only, as in the `State` column, which reads the same checks the same way.
@@ -144,15 +152,15 @@ GitHub). `←/→` walk four sections:
   comments on the diff (`commented on the diff`), a dismissed one, and one
   made on an `older commit` — GitHub does not tell `gh pr view` which
   threads are resolved, and code that moved on since is the closest sign.
-  `space` unfolds the folded ones that have a summary (`▾`). The comments
+  `space` unfolds all the folded ones that have a summary (`▾`). The comments
   on a line of the diff themselves are not there: `gh pr view` does not
   give them, `enter` opens them on GitHub.
 
 `enter` (or `o`) opens the matching page on GitHub (the PR, its Checks
-tab, its Files tab), `space` folds and unfolds the Comments' reviews and
-the `<details>` blocks (`▾`, their content indented under them), `r`
-reloads the view, and `esc` goes back to the list with the cursor on that
-PR.
+tab, its Files tab), `space` unfolds every folded review and `<details>`
+block at once, or folds them all back (`▾`, their content indented under
+them), `r` reloads the view, and `esc` goes back to the list with the cursor
+on that PR — or where the list left it, if a reload dropped the PR.
 
 It costs **one `gh pr view` per opening**, about a second, whatever the
 section: the four come in the same answer. Nothing is fetched until you
@@ -166,11 +174,13 @@ see [Actions](#actions), [Issues](#issues) and [Releases](#releases).
 ### Actions
 
 The workflow runs of the same repos. Its `my PRs` filter (`m`, on by
-default) keeps only the runs sitting on a branch that carries an open PR, so
-gh-ui fetches a wide window of runs per repo — a busy `main` or `develop`
-would otherwise fill a narrow one on its own and leave the tab empty. With
-the filter off the tab shows the 20 most recent runs of each repo, all
-branches together.
+default) keeps only the runs sitting on the branch of a PR listed in the PRs
+tab — so it follows that tab's filters: with `author:@me` there, these are
+the runs of your own PRs. gh-ui fetches a wide window of runs per repo for
+it — a busy `main` or `develop` would otherwise fill a narrow one on its own
+and leave the tab empty — and shows every run that matches. With the filter
+off the tab shows the 20 most recent runs of each repo, all branches
+together.
 
 `enter` on a run opens its [detail view](#the-detail-view-enter) on two
 sections, from one `gh run view`:
@@ -204,21 +214,22 @@ then its description) and **Comments** (the conversation, as a PR's reads).
 
 The repositories of an owner — your account, or one of your orgs, picked
 with `owner` in the filters panel. Each row says where it stands against the
-scanned folder, judged by the folder's `origin` remote rather than its name:
-`✓ cloned`, `name taken → other/api` when a folder of that name holds
-another repo, `folder taken (not a repo)` when something else sits there
-(neither is clonable: `gh repo clone` would refuse an existing
-destination), or blank when it can be cloned. Archived repos and forks are hidden unless their box is
-ticked, and show dimmed with `[A]` / `[F]` when they are.
+folder of the same name in the scanned folder, whose `origin` remote tells
+whether it is the same repo: `✓ cloned`, `name taken → other/api` when that
+folder holds another repo (`→ ?` without an `origin`), `folder taken (not a
+repo)` when something else sits there (neither is clonable: `gh repo clone`
+would refuse an existing destination), or blank when there is no such
+folder — a repo cloned under another name reads blank too. Archived repos
+and forks are hidden unless their box is ticked, and show dimmed with `[A]`
+/ `[F]` when they are (`[A]` for an archived fork).
 
 `space` ticks clonable rows; a `[ Clone N repos ]` row then appears under the
 list — go down to it and press `enter`, confirm with `y`, and gh-ui clones
 them one after the other into the scanned folder, each row showing `queued`,
 `cloning…`, then `✓ cloned` or `✗ failed` (tick a failed row again to
 retry). When the batch is over, the new repos show up in the other tabs.
-The owner stays put while a batch runs, and quitting asks first. Started
-in a folder that holds no
-git repo, gh-ui opens on this tab.
+The owner stays put while a batch runs, and quitting asks first (`y` to
+quit). Started in a folder that holds no git repo, gh-ui opens on this tab.
 
 ### Releases
 
@@ -226,16 +237,18 @@ The latest release of every repo in the folder, one row per repo, the most
 recently published first: tag, name and date. "Latest" is the release
 GitHub badges so, whatever the number of pre-releases published since, or
 — for a repo that only ever shipped pre-releases — the most recent one
-that is not a draft; a pre-release reads `[P]` after its tag. A repo that never released keeps its row, grayed, reading
-`no release`, at the bottom of the list. `o` opens the release's page as
-GitHub gives it, or the repo's releases page on a `no release` row.
+that is not a draft; a pre-release reads `[P]` after its tag. A repo that
+never released keeps its row, grayed, reading `no release`, at the bottom of
+the list. `o` opens the release's page as GitHub gives it, or the repo's
+releases page on a `no release` row (or when that page could not be had).
 
 The releases are those of the repo the folder's `origin` points to: in a
 fork, yours, even when `gh repo set-default` points the folder to the
 upstream. An ssh alias (`git@github-perso:o/n`) is resolved through your
 `~/.ssh/config` (`ssh -G`, no connection). An `origin` that is not on
-github.com is left to `gh`, which reads it if it is a GitHub Enterprise
-host you are logged into, and counts the repo as failed otherwise.
+github.com is left to `gh` and its own choice of repo (`set-default`
+included), which reads it if it is a GitHub Enterprise host you are logged
+into, and counts the repo as failed otherwise.
 
 One `gh release view` per repo asks GitHub for its "Latest". A repo
 without one — nothing released, or pre-releases only — takes a
@@ -275,15 +288,15 @@ the repo's releases page.
 | `tab`, `1-5` | switch tab (PRs / Actions / Issues / Repos / Releases) |
 | `/`          | search the visible list (live, client-side)  |
 | `esc`        | clear the search                             |
-| `m`          | mine on/off: my PRs · their runs · issues assigned to me |
+| `m`          | mine on/off: my PRs · the listed PRs' runs · issues assigned to me |
 | `r`          | reload now                                   |
 | `a`          | cycle auto-refresh (off, 1mn … 1h)           |
 | `A`          | turn auto-refresh off                        |
 | `f`          | open the filters panel                       |
 | `c`          | open the columns panel                       |
 | `U`          | upgrade gh-ui on quit, when the header announces a new release |
-| `?`          | help screen                                  |
-| `q`          | quit                                         |
+| `?`          | help screen (any key closes it)              |
+| `q`          | quit (asks `y/n` while a clone batch runs)   |
 
 ### Detail view (`enter` on a PR, run, issue or release)
 
@@ -293,13 +306,13 @@ the repo's releases page.
 | `↑/↓`, `j/k`           | scroll a line (each section keeps its place)     |
 | `PgUp/PgDn`, `Home/End` | scroll a page / to either end                   |
 | `enter`, `o`           | open the section's page on GitHub                |
-| `space`                | fold / unfold: reviews, run steps, `<details>`   |
+| `space`                | unfold / fold everything: reviews, run steps, `<details>` |
 | `r`                    | reload the view                                  |
 | `esc`                  | back to the list, on the same row                |
 | `?`, `q`, `U`          | help, quit, upgrade on quit (when announced)     |
 
-The list's own keys (`tab`, `1-5`, `f`, `c`, `m`, `/`) wait until you are
-back on it.
+The list's own keys (`tab`, `1-5`, `f`, `c`, `m`, `/`, `a`, `A`) wait until
+you are back on it.
 
 ### Filters panel (`f`)
 
@@ -307,8 +320,10 @@ back on it.
 |--------------|----------------------------------------------------|
 | `↑/↓`, `j/k` | choose a filter                                    |
 | `←/→`, `h/l` | change its value (cycles its values, or ticks a box) |
-| `enter`      | edit `author` / `label(s)` (text input)            |
+| `space`      | change its value, as `→`                           |
+| `enter`      | edit `author` / `label(s)` (text input); elsewhere, as `→` |
 | `esc`, `f`   | close the panel                                    |
+| `q`          | quit                                               |
 
 Each tab has its own filters:
 
@@ -322,8 +337,9 @@ Each tab has its own filters:
   memory, so they cost no request and apply instantly. `event` and
   `workflow` cycle over the values present in the loaded runs, so a repo
   with no cron never offers `event:schedule`. They apply *before* the
-  20-runs-per-repo cut, which is what lets `status:failed` surface a failure
-  well past that limit. They are not saved: the tab reopens on `my PRs`.
+  20-runs-per-repo cut (`my PRs` off), which is what lets `status:failed`
+  surface a failure well past that limit. They are not saved: the tab
+  reopens on `my PRs`.
 - **Issues**: `repo`, `author`, `assignee` (`any`, `@me`, or `nobody` for
   the unassigned ones), `since` and `label(s)` — independent of the PR ones.
 - **Repos**: `owner` (your account, then your orgs), `archived`, `forks` and
@@ -339,6 +355,7 @@ Each tab has its own filters:
 | `space`      | grab the focused column, or drop it if already grabbed |
 | `esc`        | drop the grabbed column, or close the panel if none is grabbed |
 | `c`          | close the panel (dropping any grabbed column)      |
+| `q`          | quit                                               |
 
 Moving a column is a direct-manipulation gesture: `space` grabs the column
 under the cursor, then `↑`/`↓` move it left/right in the table (the cursor
@@ -370,8 +387,10 @@ whether or not their column is visible:
 - a repo: `owner/name` and description;
 - a release: repo, tag and name.
 
-It applies to the active tab, and it is deliberately **not** saved between
-runs: a search is a lookup, not a setting.
+It narrows whichever tab is on screen, and stays on when you switch tabs:
+a search typed on PRs keeps narrowing Actions or Issues until `esc`. It is
+deliberately **not** saved between runs: a search is a lookup, not a
+setting.
 
 ## Auto-refresh
 
@@ -394,7 +413,7 @@ them at startup:
 |---------------------|---------------------------------------------------|
 | `filters.json`      | the PR filters                                    |
 | `issuefilters.json` | the issue filters                                 |
-| `repos.json`        | the Repos tab's owner and boxes                   |
+| `repos.json`        | the Repos tab's owner (not its boxes)             |
 | `columns.json`      | every tab's column order and hidden columns       |
 | `refresh.json`      | the auto-refresh pace                             |
 
@@ -404,7 +423,8 @@ resetting it.
 That memory is **global**, while the `repo` filter names a folder inside the
 one you are scanning. So gh-ui checks it against what is actually there before
 every load: a selection that this folder does not hold is dropped, and the
-status line says which one (`repo "api" is not here, showing all`) instead of
+status line says which one (`repo "api" is not here, showing all`, on the
+PRs and the Issues tabs alike) instead of
 leaving you with an empty table. The saved file is left untouched, so the
 selection still applies in the folder you made it for.
 
@@ -412,7 +432,7 @@ selection still applies in the folder you made it for.
 
 ```bash
 cargo run                   # scan the current folder
-cargo run -- ~/dev/workspace  # scan a specific folder
+cargo run -- ~/dev/workspace  # scan a specific folder holding several git repos
 cargo test
 cargo build --release
 ```
@@ -429,7 +449,7 @@ real account. `./demo/record.sh --shell` opens the same setup in a shell.
 | `main.rs`       | event loop, keyboard routing, TUI setup/teardown            |
 | `app.rs`        | application state and its logic                             |
 | `model.rs`      | data structures (`Pr`, `Run`, deserialization of `gh` JSON) |
-| `detail/`       | the detail view (`enter`): `mod.rs` the view, its sections, the markdown and the PR's detail; `issue.rs`, `run.rs`, `release.rs` the others' |
+| `detail/`       | the detail view (`enter`): `mod.rs` the view, its sections and the PR's detail; `markdown.rs` the rendering of bodies and comments; `issue.rs`, `run.rs`, `release.rs` the others' |
 | `filters.rs`    | the PR filters: state, `gh` args, persistence               |
 | `runfilters.rs` | the Actions filters, applied in memory                      |
 | `issues.rs`     | the Issues tab: issue model, filters, linked PRs            |

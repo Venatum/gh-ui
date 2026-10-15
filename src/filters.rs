@@ -259,7 +259,8 @@ impl Filters {
         self.author = self.author.prev();
     }
     /// The `m` shortcut: the `Mine` preset on, or the author back to `any`.
-    /// Neither direction touches the other filters.
+    /// On, it also unticks "review requested" (see `Preset::Mine`); off
+    /// leaves it unticked.
     pub fn toggle_mine(&mut self) {
         if Preset::Mine.is_active(self) {
             self.author = AuthorFilter::Any;
