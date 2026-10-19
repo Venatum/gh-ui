@@ -70,6 +70,60 @@ impl Since {
     }
 }
 
+/// GitHub's review decision, as the `review:` qualifier. A single value:
+/// several `review:` qualifiers would be ANDed by the search, never ORed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub enum ReviewFilter {
+    #[default]
+    Any,
+    Approved,
+    Changes,
+    Required,
+    /// No review submitted yet. Not `None`, which reads as `Option::None`.
+    NoReview,
+}
+
+impl ReviewFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReviewFilter::Any => "any",
+            ReviewFilter::Approved => "approved",
+            ReviewFilter::Changes => "changes",
+            ReviewFilter::Required => "required",
+            ReviewFilter::NoReview => "none",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            ReviewFilter::Any => ReviewFilter::Approved,
+            ReviewFilter::Approved => ReviewFilter::Changes,
+            ReviewFilter::Changes => ReviewFilter::Required,
+            ReviewFilter::Required => ReviewFilter::NoReview,
+            ReviewFilter::NoReview => ReviewFilter::Any,
+        }
+    }
+    pub fn prev(self) -> Self {
+        match self {
+            ReviewFilter::Any => ReviewFilter::NoReview,
+            ReviewFilter::Approved => ReviewFilter::Any,
+            ReviewFilter::Changes => ReviewFilter::Approved,
+            ReviewFilter::Required => ReviewFilter::Changes,
+            ReviewFilter::NoReview => ReviewFilter::Required,
+        }
+    }
+
+    /// The search qualifier, or `None` for `Any`.
+    pub fn qualifier(self) -> Option<&'static str> {
+        match self {
+            ReviewFilter::Any => None,
+            ReviewFilter::Approved => Some("review:approved"),
+            ReviewFilter::Changes => Some("review:changes_requested"),
+            ReviewFilter::Required => Some("review:required"),
+            ReviewFilter::NoReview => Some("review:none"),
+        }
+    }
+}
+
 /// `gh`'s keyword for the logged-in user. An ordinary login value here, exactly
 /// as `gh` treats it: it goes into the query as is.
 pub const ME: &str = "@me";
@@ -233,7 +287,11 @@ pub struct Filters {
     /// `review-requested:@me`.
     pub review_requested: bool,
     pub no_draft: bool,
+    /// `-reviewed-by:@me`: hides the PRs I already reviewed. Shown as
+    /// "Not reviewed by me".
     pub unreviewed: bool,
+    /// The `review:` qualifier: GitHub's review decision. Single value.
+    pub review: ReviewFilter,
     pub since: Since,
     /// `None` = all repos; `Some(name)` = a single one.
     pub repo: Option<String>,
@@ -267,6 +325,12 @@ impl Filters {
         } else {
             Preset::Mine.apply(self);
         }
+    }
+    pub fn cycle_review(&mut self) {
+        self.review = self.review.next();
+    }
+    pub fn cycle_review_back(&mut self) {
+        self.review = self.review.prev();
     }
     pub fn cycle_since(&mut self) {
         self.since = self.since.next();
@@ -307,6 +371,9 @@ impl Filters {
         if self.review_requested {
             parts.push("review-asked".to_string());
         }
+        if self.review != ReviewFilter::Any {
+            parts.push(format!("review:{}", self.review.label()));
+        }
         if self.since != Since::Off {
             parts.push(format!("since:{}", self.since.label()));
         }
@@ -314,7 +381,7 @@ impl Filters {
             parts.push("no-draft".to_string());
         }
         if self.unreviewed {
-            parts.push("unreviewed".to_string());
+            parts.push("not-reviewed-by-me".to_string());
         }
         if !self.labels.is_empty() {
             parts.push(format!("labels:{}", self.labels.join(",")));
@@ -360,6 +427,9 @@ impl Filters {
         }
         if self.unreviewed {
             search.push("-reviewed-by:@me".to_string());
+        }
+        if let Some(review) = self.review.qualifier() {
+            search.push(review.to_string());
         }
 
         if !search.is_empty() {
@@ -446,6 +516,7 @@ struct StoredFilters {
     review_requested: bool,
     no_draft: bool,
     unreviewed: bool,
+    review: ReviewFilter,
     since: Since,
     repo: Option<String>,
     labels: Vec<String>,
@@ -477,6 +548,7 @@ impl From<StoredFilters> for Filters {
             review_requested,
             no_draft: s.no_draft,
             unreviewed: s.unreviewed,
+            review: s.review,
             since: s.since,
             repo: s.repo,
             labels: s.labels,
@@ -517,6 +589,89 @@ mod tests {
         assert!(prs.contains("no-draft"), "got {prs}");
         assert!(prs.contains("author:moi"), "got {prs}");
         assert!(!prs.contains("repo:"), "repo must not appear twice: {prs}");
+    }
+
+    #[test]
+    fn the_review_cycle_goes_round_both_ways() {
+        use ReviewFilter::*;
+        let order = [Any, Approved, Changes, Required, NoReview];
+        for (i, r) in order.iter().enumerate() {
+            let after = order[(i + 1) % order.len()];
+            assert_eq!(r.next(), after);
+            assert_eq!(after.prev(), *r);
+        }
+    }
+
+    #[test]
+    fn each_review_value_goes_to_the_search() {
+        for (review, q) in [
+            (ReviewFilter::Approved, "review:approved"),
+            (ReviewFilter::Changes, "review:changes_requested"),
+            (ReviewFilter::Required, "review:required"),
+            (ReviewFilter::NoReview, "review:none"),
+        ] {
+            let f = Filters {
+                review,
+                ..Default::default()
+            };
+            assert_eq!(f.to_gh_args(), vec!["--search", q]);
+        }
+    }
+
+    #[test]
+    fn review_shares_the_one_search_with_the_other_qualifiers() {
+        let f = Filters {
+            no_draft: true,
+            review: ReviewFilter::Changes,
+            ..Default::default()
+        };
+        let args = f.to_gh_args();
+        assert_eq!(args.iter().filter(|a| *a == "--search").count(), 1);
+        let search = &args[args.iter().position(|a| a == "--search").unwrap() + 1];
+        assert!(
+            search.contains("draft:false") && search.contains("review:changes_requested"),
+            "got {search}"
+        );
+    }
+
+    #[test]
+    fn review_shows_in_the_summary_only_when_set() {
+        assert!(!Filters::default().summary_prs().contains("review:"));
+        let f = Filters {
+            review: ReviewFilter::Required,
+            ..Default::default()
+        };
+        assert!(
+            f.summary_prs().contains("review:required"),
+            "got {}",
+            f.summary_prs()
+        );
+    }
+
+    #[test]
+    fn a_file_without_review_loads_as_any_and_review_round_trips() {
+        let old = from_file(r#"{"no_draft":true,"unreviewed":true}"#);
+        assert_eq!(old.review, ReviewFilter::Any);
+        assert!(old.unreviewed);
+        let f = Filters {
+            review: ReviewFilter::NoReview,
+            ..Default::default()
+        };
+        assert_eq!(from_file(&serde_json::to_string(&f).unwrap()), f);
+    }
+
+    #[test]
+    fn not_reviewed_by_me_reads_so_in_the_summary() {
+        let f = Filters {
+            unreviewed: true,
+            ..Default::default()
+        };
+        assert!(
+            f.summary_prs().contains("not-reviewed-by-me"),
+            "got {}",
+            f.summary_prs()
+        );
+        assert_eq!(f.to_gh_args(), vec!["--search", "-reviewed-by:@me"]);
     }
 
     #[test]

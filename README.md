@@ -331,7 +331,9 @@ you are back on it.
 Each tab has its own filters:
 
 - **PRs**: `repo`, `author`, `review asked`, `since`, `no-draft`,
-  `unreviewed`, `label(s)`. `author` cycles through `any`, `@me` and
+  `not reviewed by me` (hides the PRs you already reviewed), `review`
+  (`any`, `approved`, `changes`, `required`, `none`, GitHub's `review:`
+  qualifier), `label(s)`. `author` cycles through `any`, `@me` and
   `not @me` with `←/→`; `enter` types any other login, `-login` to exclude
   it. `m` sets `author:@me` and unticks `review asked`.
 - **Actions**: `repo` (shared with the PRs tab), plus `only my PRs`,

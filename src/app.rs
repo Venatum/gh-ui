@@ -70,7 +70,10 @@ pub enum Confirm {
 pub enum FilterField {
     Since,
     NoDraft,
-    Unreviewed,
+    /// PRs tab: `-reviewed-by:@me`, hides the PRs I already reviewed.
+    NotReviewedByMe,
+    /// PRs tab: the `review:` qualifier.
+    Review,
     Repo,
     Author,
     /// PRs tab: `review-requested:@me`.
@@ -97,13 +100,14 @@ pub enum FilterField {
 }
 
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
-const PR_FIELDS: [FilterField; 7] = [
+const PR_FIELDS: [FilterField; 8] = [
     FilterField::Repo,
     FilterField::Author,
     FilterField::ReviewAsked,
     FilterField::Since,
     FilterField::NoDraft,
-    FilterField::Unreviewed,
+    FilterField::NotReviewedByMe,
+    FilterField::Review,
     FilterField::Label,
 ];
 
@@ -1095,8 +1099,15 @@ impl App {
                     self.filters.cycle_since_back();
                 }
             }
+            FilterField::Review => {
+                if forward {
+                    self.filters.cycle_review();
+                } else {
+                    self.filters.cycle_review_back();
+                }
+            }
             FilterField::NoDraft => self.filters.toggle_no_draft(),
-            FilterField::Unreviewed => self.filters.toggle_unreviewed(),
+            FilterField::NotReviewedByMe => self.filters.toggle_unreviewed(),
             FilterField::ReviewAsked => self.filters.toggle_review_requested(),
             FilterField::Repo => {
                 if forward {
@@ -2007,7 +2018,7 @@ mod tests {
     use super::*;
     use crate::detail::{Detail, DetailKey, Section};
     use crate::fetch::DetailResult;
-    use crate::filters::AuthorFilter;
+    use crate::filters::{AuthorFilter, ReviewFilter};
     use crate::issues::{AssigneeFilter, sample_issue};
     use crate::model::sample_pr;
     use crate::releases::{RepoRelease, sample_row};
@@ -2319,10 +2330,22 @@ mod tests {
                 FilterField::ReviewAsked,
                 FilterField::Since,
                 FilterField::NoDraft,
-                FilterField::Unreviewed,
+                FilterField::NotReviewedByMe,
+                FilterField::Review,
                 FilterField::Label,
             ]
         );
+    }
+
+    #[test]
+    fn review_cycles_and_reloads_the_prs() {
+        let mut app = app_on(FilterField::Review);
+        app.filter_change(true);
+        assert_eq!(app.filters.review, ReviewFilter::Approved);
+        assert_eq!(app.pending_job, Some(Job::Prs));
+        app.filter_change(false);
+        app.filter_change(false);
+        assert_eq!(app.filters.review, ReviewFilter::NoReview);
     }
 
     #[test]

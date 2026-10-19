@@ -24,7 +24,7 @@ use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, Wrap}
 use std::time::Duration;
 
 /// Width (in columns) of the centered overlays.
-const FILTER_PANEL_WIDTH: u16 = 52;
+const FILTER_PANEL_WIDTH: u16 = 58;
 const COLUMN_PANEL_WIDTH: u16 = 54;
 const HELP_WIDTH: u16 = 64;
 
@@ -686,7 +686,7 @@ fn render_filter_panel(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             field_value(field, f, &app.run_filters, &app.repo_tab.filters)
         };
-        let text = format!("{marker}{:<12} {}", field_name(field), value);
+        let text = format!("{marker}{:<18} {}", field_name(field), value);
         lines.push(if focused {
             Line::from(Span::styled(
                 text,
@@ -805,7 +805,8 @@ fn field_name(field: FilterField) -> &'static str {
     match field {
         FilterField::Since => "Since",
         FilterField::NoDraft => "No draft",
-        FilterField::Unreviewed => "Unreviewed",
+        FilterField::NotReviewedByMe => "Not reviewed by me",
+        FilterField::Review => "Review",
         FilterField::Repo => "Repo",
         FilterField::Author => "Author",
         FilterField::ReviewAsked => "Review asked",
@@ -841,7 +842,8 @@ fn field_value(field: FilterField, f: &Filters, rf: &RunFilters, rpf: &RepoFilte
         FilterField::HideCloned => toggle_box(rpf.hide_cloned),
         FilterField::Since => format!("◂ {} ▸", f.since.label()),
         FilterField::NoDraft => toggle_box(f.no_draft),
-        FilterField::Unreviewed => toggle_box(f.unreviewed),
+        FilterField::NotReviewedByMe => toggle_box(f.unreviewed),
+        FilterField::Review => format!("◂ {} ▸", f.review.label()),
         FilterField::ReviewAsked => toggle_box(f.review_requested),
         FilterField::Repo => format!("◂ {} ▸", f.repo.as_deref().unwrap_or("all")),
         FilterField::Author => format!("◂ {} ▸", author_label(&f.author)),
@@ -1007,6 +1009,7 @@ mod tests {
     use crate::app::Confirm;
     use crate::columns::{ColumnLayout, PrColumn};
     use crate::detail::{Detail, DetailKey, DetailView};
+    use crate::filters::ReviewFilter;
     use crate::repos::RepoFilters;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1342,6 +1345,32 @@ mod tests {
     }
 
     #[test]
+    fn not_reviewed_by_me_is_named_for_what_it_does() {
+        assert_eq!(
+            field_name(FilterField::NotReviewedByMe),
+            "Not reviewed by me"
+        );
+    }
+
+    #[test]
+    fn review_is_a_cycle() {
+        let f = Filters {
+            review: ReviewFilter::Changes,
+            ..Default::default()
+        };
+        assert_eq!(field_name(FilterField::Review), "Review");
+        assert_eq!(
+            field_value(
+                FilterField::Review,
+                &f,
+                &RunFilters::default(),
+                &RepoFilters::default()
+            ),
+            "◂ changes ▸"
+        );
+    }
+
+    #[test]
     fn review_asked_is_a_checkbox() {
         let rf = RunFilters::default();
         let off = Filters::default();
@@ -1359,18 +1388,20 @@ mod tests {
         );
     }
 
-    /// "Review asked" is 12 characters, one more than the name column held.
-    /// Rendered for real, so a narrower column or panel cannot clip it.
+    /// "Not reviewed by me" is 18 characters, the longest name: the name
+    /// column is that wide. Rendered for real, so a narrower column or panel
+    /// cannot clip it.
     #[test]
-    fn the_review_asked_row_is_not_truncated() {
+    fn the_longest_pr_row_is_not_truncated() {
         let app = App::new(PathBuf::from("."));
         let text = render_to_text(80, 24, |frame| {
             render_filter_panel(frame, &app, frame.area())
         });
         assert!(
-            text.contains("Review asked [ ]"),
-            "the Review asked row must fit the name column"
+            text.contains("Not reviewed by me [ ]"),
+            "the Not reviewed by me row must fit the name column"
         );
+        assert!(text.contains("Review asked       [ ]"), "got {text}");
     }
 
     #[test]
@@ -1428,7 +1459,7 @@ mod tests {
         let text = render_to_text(80, 24, |frame| {
             render_filter_panel(frame, &app, frame.area())
         });
-        assert!(text.contains("Hide cloned  [ ]"), "got {text}");
+        assert!(text.contains("Hide cloned        [ ]"), "got {text}");
     }
 
     #[test]
