@@ -82,9 +82,12 @@ change costs a reload.
 
 ### PRs
 
-Every open PR of the scanned repos (at most 50 per repo): a status glyph,
-repo, last update, number, title, author, review decision, `+/-` size and
-labels, repo by repo. A draft reads `[D]` and grayed. `m` shows only yours
+Every open PR of the scanned repos: a status glyph, repo, last update,
+number, title, author, review decision, `+/-` size and labels, repo by repo.
+A draft reads `[D]` and grayed. A repo sends 50 PRs at first; when it has
+more, its last row reads `··· more PRs`, and the cursor reaching that row
+loads the next 50 in place, the rows above kept. A reload asks every repo
+for as many as it already shows, and new filters start each one over at 50. `m` shows only yours
 (`author:@me`, which also unticks `review asked`: nobody asks for a review of
 their own PR), and pressing it again shows everyone's; `review asked` stays
 unticked.
@@ -374,9 +377,10 @@ header, with the counts it hides: `search:"api" 3/57`.
 
 It is a **client-side** filter: it matches the rows already fetched and never
 calls GitHub, which is what makes it instantaneous. The flip side is that it
-searches the fetched window — at most 50 open PRs per repo — so to look wider,
-narrow the fetch itself from the filters panel (`since`, `author`, `label`,
-`repo`).
+searches the fetched window — the PRs loaded so far and at most 50 open issues
+per repo — so to look wider, scroll the PRs down to their `··· more PRs` rows,
+or narrow the fetch itself from the filters panel (`since`, `author`,
+`label`, `repo`).
 
 The match is a case-insensitive substring over a fixed set of fields,
 whether or not their column is visible:

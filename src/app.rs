@@ -3,13 +3,14 @@
 use crate::columns::Columns;
 use crate::detail::{DetailKey, DetailView};
 use crate::fetch::{
-    self, DetailResult, FetchResult, IssuesResult, Job, Loaded, ReleasesResult, ReposResult,
-    RunsResult,
+    self, DetailResult, FetchResult, IssuesResult, Job, Loaded, MorePrsResult, ReleasesResult,
+    ReposResult, RunsResult,
 };
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::issues::{Issue, IssueFilters, IssuesTab};
 use crate::model::{Pr, Run};
+use crate::pages::{self, PrPages, PrRow};
 use crate::refresh::{AutoRefresh, RefreshSettings};
 use crate::releases::{ReleasesTab, RepoRelease};
 use crate::repos::{self, CloneEvent, Repo, RepoSettings, ReposTab};
@@ -243,6 +244,9 @@ pub fn initial_tab(root: &Path) -> Tab {
 pub struct App {
     pub root: PathBuf,
     pub prs: Vec<Pr>,
+    /// How many PRs each repo is asked for, and which have more: the PRs
+    /// tab's infinite scroll.
+    pub pr_pages: PrPages,
     pub table_state: TableState,
     pub status: String,
     pub loading: bool,
@@ -350,6 +354,8 @@ pub enum EnterAction {
     Clone,
     /// A PR: open it in the detail view.
     Detail,
+    /// A repo's `More` row: load its next page (again, if it failed).
+    More,
     /// Anything else: open the selected row on GitHub.
     Browser,
 }
@@ -360,6 +366,7 @@ impl App {
         Self {
             root,
             prs: Vec::new(),
+            pr_pages: PrPages::default(),
             table_state: TableState::default(),
             status: String::from("Starting…"),
             loading: false,
@@ -465,12 +472,90 @@ impl App {
         for &tab in tabs_of(job) {
             self.set_line(tab, String::from("Loading…"));
         }
+        self.pr_pages.sync(&self.filters);
         fetch::spawn(
             job,
             self.root.clone(),
             self.filters.clone(),
+            self.pr_pages.limits(),
             self.tx.clone(),
         );
+    }
+
+    /// Asks for `repo`'s next page of PRs — or remembers it if a load is
+    /// already in flight: a reload landing meanwhile would bring back the
+    /// rows the page is about to replace, or the other way round.
+    fn load_more(&mut self, repo: &str) {
+        if self.loading {
+            self.pr_pages.pending = Some(repo.to_string());
+            return;
+        }
+        self.loading = true;
+        self.pr_pages.pending = None;
+        self.pr_pages.loading = Some(repo.to_string());
+        self.pr_pages.sync(&self.filters);
+        let limit = self.pr_pages.next_page(repo);
+        self.set_line(Tab::Prs, format!("Loading more PRs of {repo}…"));
+        fetch::spawn_more_prs(
+            self.root.clone(),
+            repo.to_string(),
+            self.filters.clone(),
+            limit,
+            self.tx.clone(),
+        );
+    }
+
+    /// Stores a repo's next page in place of its rows, and returns the
+    /// status line describing it. The cursor stays where it was: on the
+    /// `More` row it now points at the first new PR, elsewhere it follows
+    /// its own PR, which new rows above may have pushed down.
+    fn apply_more_prs(&mut self, result: MorePrsResult) -> String {
+        self.pr_pages.loading = None;
+        // Asked with filters since changed: the reload they started brings
+        // the right rows.
+        if result.filters != self.filters {
+            return String::from("Loading…");
+        }
+        let prs = match result.prs {
+            Ok(prs) => prs,
+            Err(message) => {
+                self.pr_pages.drop_page(&result.repo);
+                return format!("{}: {message}", result.repo);
+            }
+        };
+        let selected = self.table_state.selected();
+        let on_pr = selected.and_then(|i| match self.pr_rows().get(i) {
+            Some(PrRow::Pr(pr)) => Some((pr.repo.clone(), pr.number)),
+            _ => None,
+        });
+
+        let before = self.prs.iter().filter(|pr| pr.repo == result.repo).count();
+        let after = prs.len();
+        self.pr_pages.record(&result.repo, after, result.limit);
+        // The repo's rows are contiguous (`fan_out` keeps them grouped):
+        // the new ones take their place.
+        let at = self
+            .prs
+            .iter()
+            .position(|pr| pr.repo == result.repo)
+            .unwrap_or(self.prs.len());
+        self.prs.retain(|pr| pr.repo != result.repo);
+        self.prs.splice(at..at, prs);
+
+        match on_pr {
+            Some((repo, number)) => self.select_pr(&repo, number),
+            None => {
+                let rows = self.pr_rows().len();
+                self.table_state
+                    .select(selected.map(|i| i.min(rows.saturating_sub(1))));
+            }
+        }
+        format!(
+            "{} PR(s) — {} more from {}",
+            self.prs.len(),
+            after.saturating_sub(before),
+            result.repo
+        )
     }
 
     /// How long before the next automatic reload, or `None` when the
@@ -659,6 +744,7 @@ impl App {
             // clearing `loading` here would cut short a fetch still in flight.
             let lines: Vec<(Tab, String)> = match msg {
                 Loaded::Prs(result) => vec![(Tab::Prs, self.apply_prs(result))],
+                Loaded::MorePrs(result) => vec![(Tab::Prs, self.apply_more_prs(result))],
                 Loaded::Runs(result) => vec![(Tab::Runs, self.apply_runs(result))],
                 // PRs FIRST: `apply_runs` counts the visible runs, which are
                 // cross-referenced against `self.prs`.
@@ -727,6 +813,15 @@ impl App {
         {
             self.refresh_job(job);
         }
+        // A queued page goes only if the cursor still waits on its row:
+        // elsewhere, or under filters that changed meanwhile, it would load
+        // rows nobody is looking at. Reaching the row again asks again.
+        if !self.loading
+            && let Some(repo) = self.pr_pages.pending.take()
+            && self.selected_more().as_deref() == Some(repo.as_str())
+        {
+            self.load_more(&repo);
+        }
         if !self.repos_loading && self.repos_pending {
             self.refresh_repos();
         }
@@ -771,6 +866,7 @@ impl App {
     /// Stores a PR load and returns the status line describing it.
     fn apply_prs(&mut self, result: FetchResult) -> String {
         self.prs = result.prs;
+        self.pr_pages.set_full(result.full);
         self.prs_loaded = true;
         self.repos = result.all_repos;
         // The search survives a reload: the new rows go through it before the
@@ -1225,6 +1321,39 @@ impl App {
         search::keep_prs(&self.prs, &self.search)
     }
 
+    /// The rows the PRs table shows: the visible PRs, and a `More` row at
+    /// the end of every repo that has more.
+    pub fn pr_rows(&self) -> Vec<PrRow<'_>> {
+        pages::pr_rows(&self.prs, &self.search, &self.pr_pages)
+    }
+
+    /// The PR under the cursor, `None` on a `More` row.
+    fn selected_pr(&self) -> Option<&Pr> {
+        match self.pr_rows().get(self.table_state.selected()?)? {
+            PrRow::Pr(pr) => Some(pr),
+            PrRow::More(_) => None,
+        }
+    }
+
+    /// The repo of the `More` row under the cursor, if it is on one.
+    fn selected_more(&self) -> Option<String> {
+        match self.pr_rows().get(self.table_state.selected()?)? {
+            PrRow::More(repo) => Some(repo.to_string()),
+            PrRow::Pr(_) => None,
+        }
+    }
+
+    /// Puts the PRs cursor on `repo`'s PR `number`, if it is still visible.
+    fn select_pr(&mut self, repo: &str, number: u64) {
+        let found = self
+            .pr_rows()
+            .iter()
+            .position(|row| matches!(row, PrRow::Pr(pr) if pr.repo == repo && pr.number == number));
+        if let Some(i) = found {
+            self.table_state.select(Some(i));
+        }
+    }
+
     /// The repos the Repos table shows: its list (minus the cloned ones if
     /// `hide cloned`), narrowed by the search.
     pub fn visible_repos(&self) -> Vec<&Repo> {
@@ -1285,7 +1414,7 @@ impl App {
     /// one tab only: a PR load landing behind the Repos tab must not move
     /// the cursor the user is working with there.
     fn reset_pr_selection(&mut self) {
-        let prs = self.visible_prs().len();
+        let prs = self.pr_rows().len();
         self.table_state
             .select(if prs == 0 { None } else { Some(0) });
     }
@@ -1412,6 +1541,14 @@ impl App {
         let state = self.active_table_state();
         let i = target(state.selected()).min(len - 1);
         state.select(Some(i));
+        // The infinite scroll: reaching the end of a repo that has more
+        // loads its next page.
+        if self.active_tab == Tab::Prs
+            && let Some(repo) = self.selected_more()
+            && self.pr_pages.loading.as_deref() != Some(repo.as_str())
+        {
+            self.load_more(&repo);
+        }
     }
 
     /// Moves the selection down, in the ACTIVE tab's list.
@@ -1450,7 +1587,7 @@ impl App {
     /// Number of rows displayed in the active tab.
     fn active_len(&self) -> usize {
         match self.active_tab {
-            Tab::Prs => self.visible_prs().len(),
+            Tab::Prs => self.pr_rows().len(),
             Tab::Runs => self.visible_runs().len(),
             Tab::Repos => self.repo_rows(),
             Tab::Issues => self.visible_issues().len(),
@@ -1490,10 +1627,7 @@ impl App {
     /// repo or release).
     pub fn selected_url(&self) -> Option<String> {
         match self.active_tab {
-            Tab::Prs => self
-                .table_state
-                .selected()
-                .and_then(|i| self.visible_prs().get(i).map(|pr| pr.url.clone())),
+            Tab::Prs => self.selected_pr().map(|pr| pr.url.clone()),
             Tab::Runs => self
                 .run_table_state
                 .selected()
@@ -1520,6 +1654,8 @@ impl App {
     pub fn enter_action(&self) -> EnterAction {
         if self.on_clone_button() {
             EnterAction::Clone
+        } else if self.active_tab == Tab::Prs && self.selected_more().is_some() {
+            EnterAction::More
         } else if self.selected_detail().is_some() {
             EnterAction::Detail
         } else {
@@ -1539,12 +1675,20 @@ impl App {
         fetch::spawn_detail(self.root.clone(), key, self.tx.clone());
     }
 
+    /// `enter` on a `More` row: loads the repo's next page, which the
+    /// cursor landing there already does; enter is the retry after a failure.
+    pub fn load_selected_more(&mut self) {
+        if let Some(repo) = self.selected_more() {
+            self.load_more(&repo);
+        }
+    }
+
     /// Which detail the selected row opens, and the title to show while it
     /// loads. Owned copies: the `visible_*` lists borrow the whole `self`.
     fn selected_detail(&self) -> Option<(DetailKey, String)> {
         match self.active_tab {
             Tab::Prs => {
-                let pr = *self.visible_prs().get(self.table_state.selected()?)?;
+                let pr = self.selected_pr()?;
                 let key = DetailKey::Pr {
                     repo: pr.repo.clone(),
                     number: pr.number,
@@ -1606,15 +1750,7 @@ impl App {
     /// it there.
     fn select_row(&mut self, key: &DetailKey) {
         match key {
-            DetailKey::Pr { repo, number } => {
-                let found = self
-                    .visible_prs()
-                    .iter()
-                    .position(|pr| &pr.repo == repo && pr.number == *number);
-                if let Some(i) = found {
-                    self.table_state.select(Some(i));
-                }
-            }
+            DetailKey::Pr { repo, number } => self.select_pr(repo, *number),
             DetailKey::Issue { repo, number } => {
                 let found = self
                     .visible_issues()
@@ -2952,6 +3088,7 @@ mod tests {
             all_repos: Vec::new(),
             scanned: 0,
             errors: 0,
+            full: Vec::new(),
         })
     }
 
@@ -3523,6 +3660,160 @@ mod tests {
         app.column_toggle();
         assert!(!app.columns.releases.entries[1].visible);
         assert!(app.columns.prs.entries[1].visible, "the PR columns stay");
+    }
+
+    // --- the infinite scroll ---
+
+    /// `api` sent a full page (two PRs stand for it), `web` one PR; the
+    /// cursor on `web`'s PR, nothing loading.
+    fn paged_app() -> App {
+        let mut app = App::new(PathBuf::from("/nonexistent/gh-ui-test"));
+        app.prs = vec![
+            sample_pr("api", 1),
+            sample_pr("api", 2),
+            sample_pr("web", 9),
+        ];
+        app.prs_loaded = true;
+        app.pr_pages.sync(&app.filters);
+        app.pr_pages.set_full(vec!["api".to_string()]);
+        app.table_state.select(Some(3));
+        app
+    }
+
+    /// `api`'s next page, as `spawn_more_prs` would send it.
+    fn api_page(app: &App, numbers: &[u64], limit: usize) -> Loaded {
+        Loaded::MorePrs(MorePrsResult {
+            repo: "api".to_string(),
+            filters: app.filters.clone(),
+            limit,
+            prs: Ok(numbers.iter().map(|&n| sample_pr("api", n)).collect()),
+        })
+    }
+
+    #[test]
+    fn reaching_the_more_row_during_a_load_queues_the_next_page() {
+        let mut app = paged_app();
+        app.loading = true; // a reload in flight: no `gh` started here
+
+        app.previous(); // from web#9 onto `api`'s More row
+
+        assert_eq!(app.selected_more().as_deref(), Some("api"));
+        assert_eq!(app.pr_pages.pending.as_deref(), Some("api"));
+        assert_eq!(app.pr_pages.limit("api"), gh::PR_PAGE, "not asked yet");
+        assert_eq!(app.enter_action(), EnterAction::More);
+        assert_eq!(app.selected_url(), None);
+    }
+
+    /// The reload `paged_app` would get again: same rows, `api` still full.
+    fn same_pr_load() -> Loaded {
+        Loaded::Prs(FetchResult {
+            prs: vec![
+                sample_pr("api", 1),
+                sample_pr("api", 2),
+                sample_pr("web", 9),
+            ],
+            all_repos: vec!["api".to_string(), "web".to_string()],
+            scanned: 2,
+            errors: 0,
+            full: vec!["api".to_string()],
+        })
+    }
+
+    #[test]
+    fn a_queued_page_is_dropped_once_the_cursor_left_its_row() {
+        let mut app = paged_app();
+        app.loading = true;
+        app.previous(); // onto `api`'s More row: queued
+        app.next(); // back on web#9
+        app.tx.send(same_pr_load()).unwrap(); // the reload ends
+        app.on_tick();
+
+        assert_eq!(app.pr_pages.pending, None);
+        assert_eq!(app.pr_pages.loading, None, "no page asked");
+        assert!(!app.loading);
+    }
+
+    #[test]
+    fn a_queued_page_goes_once_the_load_ends_if_the_cursor_waits() {
+        let mut app = paged_app();
+        app.loading = true;
+        app.previous(); // onto `api`'s More row: queued
+        // A run load ends: unlike a PR reload, it leaves the PRs cursor
+        // where it is.
+        app.tx.send(empty_run_load()).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.pr_pages.pending, None);
+        assert_eq!(app.pr_pages.loading.as_deref(), Some("api"));
+        assert_eq!(app.pr_pages.limit("api"), 2 * gh::PR_PAGE);
+    }
+
+    #[test]
+    fn a_page_takes_the_repo_rows_place_the_cursor_on_the_first_new_pr() {
+        let mut app = paged_app();
+        app.table_state.select(Some(2)); // on the More row
+        app.loading = true;
+        app.pr_pages.loading = Some("api".to_string());
+        let limit = app.pr_pages.next_page("api");
+
+        app.tx.send(api_page(&app, &[1, 2, 3, 4], limit)).unwrap();
+        app.on_tick();
+
+        let rows: Vec<u64> = app.visible_prs().iter().map(|pr| pr.number).collect();
+        assert_eq!(rows, [1, 2, 3, 4, 9], "in place, before web");
+        assert_eq!(app.selected_pr().map(|pr| pr.number), Some(3));
+        assert!(!app.loading);
+        assert_eq!(app.pr_pages.loading, None);
+        // Four PRs for a limit of a hundred: api has no more.
+        assert!(!app.pr_pages.has_more("api"));
+        assert_eq!(app.status, "5 PR(s) — 2 more from api");
+    }
+
+    #[test]
+    fn a_page_landing_above_the_cursor_leaves_it_on_its_pr() {
+        let mut app = paged_app();
+        app.loading = true;
+        let limit = app.pr_pages.next_page("api");
+
+        app.tx.send(api_page(&app, &[1, 2, 3], limit)).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.selected_pr().map(|pr| pr.number), Some(9));
+    }
+
+    #[test]
+    fn a_page_asked_with_other_filters_is_dropped() {
+        let mut app = paged_app();
+        app.loading = true;
+        let limit = app.pr_pages.next_page("api");
+        let page = api_page(&app, &[1, 2, 3], limit);
+        app.filters.toggle_no_draft();
+
+        app.tx.send(page).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs.len(), 3, "the rows stay as they were");
+    }
+
+    #[test]
+    fn a_failed_page_keeps_the_more_row_for_another_try() {
+        let mut app = paged_app();
+        app.loading = true;
+        let limit = app.pr_pages.next_page("api");
+
+        app.tx
+            .send(Loaded::MorePrs(MorePrsResult {
+                repo: "api".to_string(),
+                filters: app.filters.clone(),
+                limit,
+                prs: Err("HTTP 502".to_string()),
+            }))
+            .unwrap();
+        app.on_tick();
+
+        assert!(app.pr_pages.has_more("api"));
+        assert_eq!(app.pr_pages.limit("api"), gh::PR_PAGE);
+        assert_eq!(app.status, "api: HTTP 502");
     }
 
     // --- the detail view ---

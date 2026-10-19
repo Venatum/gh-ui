@@ -8,7 +8,9 @@ use crate::columns::{
 };
 use crate::detail::{Context, DetailView, section_bar, section_lines};
 use crate::filters::{AuthorFilter, Filters};
+use crate::gh::PR_PAGE;
 use crate::issues::IssueFilters;
+use crate::pages::PrRow;
 use crate::refresh::{self, AutoRefresh};
 use crate::repos::RepoFilters;
 use crate::runfilters::RunFilters;
@@ -219,10 +221,14 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let header =
         Row::new(columns.iter().map(|c| c.header()).collect::<Vec<_>>()).style(Style::new().bold());
     let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
+    let loading = app.pr_pages.loading.as_deref();
     let rows: Vec<Row<'static>> = app
-        .visible_prs()
+        .pr_rows()
         .into_iter()
-        .map(|pr| Row::new(columns.iter().map(|c| c.cell(pr)).collect::<Vec<_>>()))
+        .map(|row| match row {
+            PrRow::Pr(pr) => Row::new(columns.iter().map(|c| c.cell(pr)).collect::<Vec<_>>()),
+            PrRow::More(repo) => more_row(&columns, repo, loading == Some(repo)),
+        })
         .collect();
 
     let table = Table::new(rows, widths)
@@ -232,6 +238,31 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::bordered());
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
+}
+
+/// The row closing a repo that has more PRs than it sent: the repo under
+/// its column, what the row does under the title (or the first column when
+/// the title is hidden).
+fn more_row(columns: &[PrColumn], repo: &str, loading: bool) -> Row<'static> {
+    let label = if loading {
+        format!("··· loading {PR_PAGE} more…")
+    } else {
+        "··· more PRs".to_string()
+    };
+    let label_at = columns
+        .iter()
+        .position(|c| *c == PrColumn::Title)
+        .unwrap_or(0);
+    let cells = columns.iter().enumerate().map(|(i, c)| {
+        if i == label_at {
+            Cell::from(label.clone())
+        } else if *c == PrColumn::Repo {
+            Cell::from(repo.to_string())
+        } else {
+            Cell::from("")
+        }
+    });
+    Row::new(cells.collect::<Vec<_>>()).style(Style::new().fg(Color::DarkGray).italic())
 }
 
 fn render_run_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -916,7 +947,7 @@ fn help_row(key: &'static str, desc: &'static str) -> Line<'static> {
 
 /// The "search:…" chip of the header, or `None` when no search is active.
 /// `shown`/`total` are deliberate: the search narrows the rows ALREADY
-/// fetched (at most `PR_LIMIT` per repo), so the size of the corpus has to
+/// fetched (a page or more per repo), so the size of the corpus has to
 /// stay on screen.
 fn search_summary(query: &str, shown: usize, total: usize) -> Option<String> {
     let query = query.trim();

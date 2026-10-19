@@ -9,6 +9,7 @@ use crate::model::{Pr, Run};
 use crate::releases::RepoRelease;
 use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
 use crate::update;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -21,6 +22,22 @@ pub struct FetchResult {
     /// Number of repos actually queried (depends on the repo filter).
     pub scanned: usize,
     pub errors: usize,
+    /// The repos whose answer filled their limit: they probably have more
+    /// open PRs than they sent.
+    pub full: Vec<String>,
+}
+
+/// The next page of one repo's PRs: the PRs tab's infinite scroll.
+pub struct MorePrsResult {
+    pub repo: String,
+    /// What the page was asked with: an answer to filters since changed is
+    /// dropped.
+    pub filters: Filters,
+    /// How many PRs were asked for, from the first one: `gh pr list` has no
+    /// cursor, so a page brings back the earlier ones too.
+    pub limit: usize,
+    /// `Err` carries `gh`'s message for the status line.
+    pub prs: Result<Vec<Pr>, String>,
 }
 
 /// Mirror of `FetchResult`, but for the runs.
@@ -72,6 +89,10 @@ pub struct DetailResult {
 /// What the background thread returns: PRs, runs, or both at once.
 pub enum Loaded {
     Prs(FetchResult),
+    /// One repo's next page of PRs. Shares the `loading` flag of the PR and
+    /// run flows: a reload and a page never run at once, so neither can
+    /// overwrite the other's rows.
+    MorePrs(MorePrsResult),
     Runs(RunsResult),
     Both(FetchResult, RunsResult),
     /// The authenticated account, or `None` if `gh` could not tell us.
@@ -291,18 +312,52 @@ pub fn spawn_clones(root: PathBuf, batch: Vec<(String, String)>, tx: Sender<Load
     });
 }
 
+/// Loads `repo`'s first `limit` PRs, the next page included, in the
+/// background.
+pub fn spawn_more_prs(
+    root: PathBuf,
+    repo: String,
+    filters: Filters,
+    limit: usize,
+    tx: Sender<Loaded>,
+) {
+    thread::spawn(move || {
+        let prs = gh::fetch_prs(&root.join(&repo), &filters, limit)
+            .map(|mut prs| {
+                for pr in &mut prs {
+                    pr.set_repo(&repo);
+                }
+                prs
+            })
+            .map_err(|e| e.to_string());
+        let _ = tx.send(Loaded::MorePrs(MorePrsResult {
+            repo,
+            filters,
+            limit,
+            prs,
+        }));
+    });
+}
+
 /// Starts loading `job` in a background thread.
-/// `root` and `filters` are cloned then MOVED into the thread (`move`).
-pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
+/// `root`, `filters` and `limits` (the PRs asked of each repo, `PR_PAGE`
+/// when absent) are cloned then MOVED into the thread (`move`).
+pub fn spawn(
+    job: Job,
+    root: PathBuf,
+    filters: Filters,
+    limits: HashMap<String, usize>,
+    tx: Sender<Loaded>,
+) {
     thread::spawn(move || {
         let result = match job {
-            Job::Prs => Loaded::Prs(load_prs(&root, &filters)),
+            Job::Prs => Loaded::Prs(load_prs(&root, &filters, &limits)),
             Job::Runs => Loaded::Runs(load_runs(&root, &filters)),
             // Both flows at once, side by side rather than one after the other:
             // the total wait stays that of the slowest one.
             Job::Both => {
                 let (prs, runs) = thread::scope(|scope| {
-                    let h = scope.spawn(|| load_prs(&root, &filters));
+                    let h = scope.spawn(|| load_prs(&root, &filters, &limits));
                     let runs = load_runs(&root, &filters);
                     (h.join(), runs)
                 });
@@ -313,6 +368,7 @@ pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
                     all_repos: runs.all_repos.clone(),
                     scanned: 0,
                     errors: 1,
+                    full: Vec::new(),
                 });
                 Loaded::Both(prs, runs)
             }
@@ -324,16 +380,35 @@ pub fn spawn(job: Job, root: PathBuf, filters: Filters, tx: Sender<Loaded>) {
 /// The slow work: discover the repos, filter, fetch the PRs.
 /// The repos are queried IN PARALLEL (one thread each), so the total duration
 /// ≈ that of the slowest repo, instead of their sum.
-fn load_prs(root: &Path, filters: &Filters) -> FetchResult {
+fn load_prs(root: &Path, filters: &Filters, limits: &HashMap<String, usize>) -> FetchResult {
     let all_repos = gh::discover_repos(root).unwrap_or_default();
     let to_scan = repos_to_scan(&all_repos, filters.repo.as_deref());
-    let (prs, errors) = fan_out(root, &to_scan, |dir| gh::fetch_prs(dir, filters));
+    let limit_of = |repo: &str| limits.get(repo).copied().unwrap_or(gh::PR_PAGE);
+    // `fan_out` hands each repo its folder, `root/<repo>`: the folder's name
+    // is the repo's.
+    let (prs, errors) = fan_out(root, &to_scan, |dir| {
+        let repo = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        gh::fetch_prs(dir, filters, limit_of(repo))
+    });
+    let full = full_repos(&prs, &to_scan, limit_of);
     FetchResult {
         prs,
         scanned: to_scan.len(),
         errors,
         all_repos,
+        full,
     }
+}
+
+/// The repos of `scanned` that sent as many PRs as `limit_of` asked of
+/// them. A repo with exactly that many open PRs reads full too: its next
+/// page comes back empty, and that answer clears it.
+fn full_repos(prs: &[Pr], scanned: &[&String], limit_of: impl Fn(&str) -> usize) -> Vec<String> {
+    scanned
+        .iter()
+        .filter(|repo| prs.iter().filter(|pr| &pr.repo == **repo).count() >= limit_of(repo))
+        .map(|repo| repo.to_string())
+        .collect()
 }
 
 /// Like `load_prs`, but for the runs. The repo filter (if set)
@@ -380,6 +455,7 @@ fn load_releases(root: &Path) -> ReleasesResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::sample_pr;
 
     /// A row type of our own: the fan-out must not care what it carries.
     #[derive(Debug)]
@@ -392,6 +468,22 @@ mod tests {
         fn set_repo(&mut self, repo: &str) {
             self.repo = repo.to_string();
         }
+    }
+
+    #[test]
+    fn a_repo_that_filled_its_limit_reads_full() {
+        let prs = vec![
+            sample_pr("api", 1),
+            sample_pr("api", 2),
+            sample_pr("web", 3),
+            sample_pr("cli", 4),
+        ];
+        let all = ["api".to_string(), "web".to_string(), "cli".to_string()];
+        let scanned: Vec<&String> = all.iter().collect();
+        // api asked for two, web for two, cli for one.
+        let limit_of = |repo: &str| if repo == "cli" { 1 } else { 2 };
+
+        assert_eq!(full_repos(&prs, &scanned, limit_of), ["api", "cli"]);
     }
 
     #[test]

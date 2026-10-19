@@ -13,8 +13,9 @@ use serde::de::DeserializeOwned;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-/// Maximum number of PRs fetched per repo (like the script's `--limit`).
-const PR_LIMIT: &str = "50";
+/// How many PRs a repo is asked for at first, and how many more each time
+/// the cursor reaches the end of what it already brought (see `pages.rs`).
+pub const PR_PAGE: usize = 50;
 
 /// JSON fields requested from `gh` for each PR. A field more never costs a
 /// request more: `gh` builds one GraphQL query per repo whatever we ask for.
@@ -106,8 +107,9 @@ fn parse_gh_output<T: DeserializeOwned>(what: &str, output: &Output) -> Result<T
         .with_context(|| format!("parsing the JSON returned by `{what}`"))
 }
 
-/// Runs `gh pr list` (with the filters) in `repo_dir` and parses the JSON.
-pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
+/// Runs `gh pr list` (with the filters) in `repo_dir`, for at most `limit`
+/// PRs, and parses the JSON.
+pub fn fetch_prs(repo_dir: &Path, filters: &Filters, limit: usize) -> Result<Vec<Pr>> {
     // The fields we request from gh, exactly as in the script.
     // We assemble the arguments into a Vec so we can add the filter ones
     // (variable count). The `.to_string()` calls unify the type.
@@ -117,7 +119,7 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters) -> Result<Vec<Pr>> {
         "--state".to_string(),
         "open".to_string(),
         "--limit".to_string(),
-        PR_LIMIT.to_string(),
+        limit.to_string(),
         "--json".to_string(),
         JSON_FIELDS.to_string(),
     ];
@@ -151,7 +153,7 @@ pub fn fetch_runs(repo_dir: &Path) -> Result<Vec<Run>> {
     run_gh_json(&args, Some(repo_dir))
 }
 
-/// Maximum number of open issues fetched per repo, as `PR_LIMIT` for PRs.
+/// Maximum number of open issues fetched per repo, as `PR_PAGE` for PRs.
 const ISSUE_LIMIT: &str = "50";
 
 /// JSON fields requested from `gh` for each issue. Deliberately without

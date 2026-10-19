@@ -7,6 +7,7 @@ mod filters;
 mod gh;
 mod issues;
 mod model;
+mod pages;
 mod refresh;
 mod releases;
 mod repos;
@@ -193,6 +194,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => match app.enter_action() {
             EnterAction::Clone => app.ask_clone(),
             EnterAction::Detail => app.open_detail(),
+            EnterAction::More => app.load_selected_more(),
             EnterAction::Browser => open_selected(app),
         },
         KeyCode::Char('o') => open_selected(app),
