@@ -1,7 +1,8 @@
 # Cuts a release when a `v*` tag is pushed:
 #   1. checks the tag against Cargo.toml and runs the tests
 #   2. builds one binary per platform
-#   3. publishes the GitHub release with the binaries attached
+#   3. publishes the GitHub release with the binaries attached, its notes
+#      written from the commits since the previous tag (see `cliff.toml`)
 #
 # Triggered by: git tag v0.1.0 && git push origin v0.1.0
 name: Release
@@ -100,18 +101,34 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # The whole history and its tags: the notes cover the commits between
+      # the previous tag and this one, which a shallow clone does not have.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
 
+      # GitHub's `--generate-notes` lists merged pull requests, and commits
+      # land on main directly: the notes come from the commits instead.
+      - name: Write the release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current --strip header
+        env:
+          OUTPUT: NOTES.md
+
+      # Notes are only written when the release is created: re-running the
+      # workflow to re-upload binaries keeps any edit made to them since.
       - name: Upload the binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="$GITHUB_REF_NAME"
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "$tag" --generate-notes
+            || gh release create "$tag" --title "$tag" --notes-file NOTES.md
           gh release upload "$tag" artifacts/* --clobber
