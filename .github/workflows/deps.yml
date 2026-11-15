@@ -1,27 +1,21 @@
-# Every Monday, runs `cargo update` and opens a pull request when Cargo.lock
-# moved — the same chore that used to be done by hand.
+# Every Monday: `cargo update`, then push Cargo.lock straight to main (a pull
+# request got forgotten). Not Dependabot: it skips indirect dependencies.
 #
-# Dependabot is not used because its Cargo version updates only follow direct
-# dependencies, and those rarely move: what does is the indirect ones, which
-# a single `cargo update` refreshes all at once while honouring the
-# `rust-version` pinned in Cargo.toml.
+# A GITHUB_TOKEN push does not trigger `ci.yml`, so lints, tests and release
+# builds run here first.
 #
-# A pull request opened with the default GITHUB_TOKEN does not trigger
-# `ci.yml`, so the lints and tests run here, before the pull request exists:
-# one that gets opened has already passed them.
-#
-# `cargo audit` runs on every schedule, even when nothing moved: an advisory
-# can be published against a version already pinned. An advisory still there
-# after the update turns the run red, which is what sends the notification.
-# One with no fixed version yet can be silenced in `.cargo/audit.toml`.
+# The run turns red, which sends the notification, when an advisory remains
+# or when the update fixed one: that calls for a release. Silence an
+# unfixable one in `.cargo/audit.toml`.
 name: Dependencies
 
 on:
   schedule:
-    - cron: "0 6 * * 1"
+    # Monday at 04:00 UTC
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
-# A manual run overlapping the scheduled one would push to the same branch.
+# A manual run must not overlap the scheduled one.
 concurrency:
   group: deps
   cancel-in-progress: true
@@ -30,11 +24,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Builds and tests the freshly bumped crates, whose build scripts and
-  # proc-macros nobody has reviewed yet: this job holds no write access, and
-  # hands its result to `pull-request` as an artifact.
+  # Runs the unreviewed new crates' code (build scripts, proc-macros): no
+  # write access here, the tested Cargo.lock goes to `push` as an artifact.
+  # On main only: started from another branch, `push` would put that
+  # branch's commits on main.
   update:
     name: cargo update, audit
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,8 +43,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Restore only: the key follows main's Cargo.lock, so saving the build
-      # of the updated one under it would hand `ci.yml` the wrong artifacts.
+      # Restore only: the key is main's Cargo.lock, not the updated one.
       - uses: actions/cache/restore@v6
         with:
           path: |
@@ -58,17 +53,14 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # A prebuilt binary: `cargo install` would compile it on every run.
+      # Prebuilt, unlike `cargo install`.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
 
-      # Audits main's Cargo.lock before touching it: an advisory here means
-      # the published version is exposed, so the fix is worth a release.
-      #
-      # `cargo audit` exits 1 both on an advisory and on an error such as an
-      # unreachable advisory database, so the verdict is read from its JSON
-      # report instead: no report at all fails the step.
+      # Main before the update: an advisory here means the release is exposed.
+      # The verdict comes from the JSON, as `cargo audit` also exits 1 on
+      # errors; no report fails the step.
       - name: Audit main
         id: audit_main
         run: |
@@ -77,8 +69,7 @@ jobs:
           jq -r '.vulnerabilities.list[] | "\(.advisory.id) \(.package.name) \(.package.version): \(.advisory.title)"' "$RUNNER_TEMP/audit.json"
           echo "found=$found" >> "$GITHUB_OUTPUT"
 
-      # Its output, which lists every bump, becomes the pull request's body.
-      # `pipefail`, or `tee` would hide a failing `cargo update`.
+      # `pipefail`: `tee` would hide a failing `cargo update`.
       - name: Update
         id: update
         env:
@@ -109,78 +100,108 @@ jobs:
           jq -r '.vulnerabilities.list[] | "\(.advisory.id) \(.package.name) \(.package.version): \(.advisory.title)"' "$RUNNER_TEMP/audit.json"
           echo "found=$found" >> "$GITHUB_OUTPUT"
 
-      - name: Pull request content
-        if: steps.update.outputs.changed == 'true'
-        env:
-          MAIN: ${{ steps.audit_main.outputs.found }}
-          UPDATE: ${{ steps.audit_update.outputs.found }}
-          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          if [ "$UPDATE" = true ]; then
-            security="⚠️ \`cargo audit\` still reports an advisory after the update: see [the run]($RUN)."
-          elif [ "$MAIN" = true ]; then
-            security="⚠️ This update fixes a RustSec advisory that main is exposed to: merge it, then release."
-          else
-            security="\`cargo audit\`: no advisory."
-          fi
-          mkdir "$RUNNER_TEMP/pr"
-          cp Cargo.lock "$RUNNER_TEMP/pr/"
-          {
-            echo "Weekly \`cargo update\`."
-            echo
-            echo "$security"
-            echo
-            echo '```'
-            cat "$RUNNER_TEMP/update.log"
-            echo '```'
-          } > "$RUNNER_TEMP/pr/body.md"
-
       - uses: actions/upload-artifact@v7
         if: steps.update.outputs.changed == 'true'
         with:
-          name: pr
-          path: ${{ runner.temp }}/pr
+          name: cargo-lock
+          path: Cargo.lock
 
-  # Runs no project code: it only carries the tested Cargo.lock into a pull
-  # request, which is why it alone gets write access.
-  pull-request:
-    name: pull request
+  # Every platform `release.yml` ships, so a breaking bump shows before a tag.
+  # Same matrix as `release.yml`: change both together.
+  build:
+    name: Build ${{ matrix.platform }}
     needs: update
+    if: needs.update.outputs.changed == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            target: aarch64-apple-darwin
+            os: macos-latest
+          - platform: darwin-amd64
+            target: x86_64-apple-darwin
+            os: macos-latest
+          - platform: linux-amd64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            cross: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: cargo-lock
+
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install the cross-linker
+        if: matrix.cross != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross }}
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+  # The only job with write access, and it runs no project code. Also runs
+  # when `build` was skipped, to report an advisory left on main.
+  push:
+    name: push to main
+    needs: [ update, build ]
+    if: >-
+      !cancelled() &&
+      needs.update.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
+      # The main the update started from: a push since makes ours fail.
       - uses: actions/checkout@v7
         if: needs.update.outputs.changed == 'true'
 
       - uses: actions/download-artifact@v8
         if: needs.update.outputs.changed == 'true'
         with:
-          name: pr
-          path: ${{ runner.temp }}/pr
+          name: cargo-lock
 
-      - name: Tested Cargo.lock
-        if: needs.update.outputs.changed == 'true'
-        run: cp "$RUNNER_TEMP/pr/Cargo.lock" Cargo.lock
+      # Held back only when the update brings an advisory main did not have:
+      # one main already had must not block the fix of another.
+      - name: Commit and push
+        if: >-
+          needs.update.outputs.changed == 'true' &&
+          (needs.update.outputs.update_vulnerable != 'true' || needs.update.outputs.main_vulnerable == 'true')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --quiet -m "chore(deps): cargo update" Cargo.lock
+          git push origin HEAD:main
 
-      # Always the same branch: a pull request left unmerged is updated in
-      # place the next Monday instead of piling up.
-      - uses: peter-evans/create-pull-request@v8
-        if: needs.update.outputs.changed == 'true'
-        with:
-          branch: deps/cargo-update
-          delete-branch: true
-          add-paths: Cargo.lock
-          commit-message: "chore(deps): cargo update"
-          title: "chore(deps): cargo update"
-          body-path: ${{ runner.temp }}/pr/body.md
-
-      # Red when an advisory remains: in the update itself, or on main when
-      # nothing moved. An update that fixes main's advisory stays green — its
-      # pull request is what carries the warning.
-      - name: Fail on advisory
+      - name: Advisory left
         if: >-
           needs.update.outputs.update_vulnerable == 'true' ||
           (needs.update.outputs.main_vulnerable == 'true' && needs.update.outputs.changed != 'true')
-        run: exit 1
+        run: |
+          echo "::error::cargo audit still reports an advisory: see the update job's audit steps"
+          exit 1
+
+      - name: Advisory fixed
+        if: >-
+          needs.update.outputs.main_vulnerable == 'true' &&
+          needs.update.outputs.changed == 'true' &&
+          needs.update.outputs.update_vulnerable != 'true'
+        run: |
+          echo "::error::the update fixed an advisory the published version is exposed to: cut a release"
+          exit 1
