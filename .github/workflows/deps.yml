@@ -11,8 +11,8 @@ name: Dependencies
 
 on:
   schedule:
-    # Monday at 04:00 UTC
-    - cron: "0 4 * * 1"
+    # Monday at 04:17 UTC: GitHub delays runs at round hours the most.
+    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 # A manual run must not overlap the scheduled one.
@@ -108,13 +108,17 @@ jobs:
 
   # Every platform `release.yml` ships, so a breaking bump shows before a tag.
   # Same matrix as `release.yml`: change both together.
+  #
+  # Its steps, not the job, are skipped when nothing moved: a skipped matrix
+  # job is shown as a literal "Build ${{ matrix.platform }}".
   build:
     name: Build ${{ matrix.platform }}
     needs: update
-    if: needs.update.outputs.changed == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+    env:
+      CHANGED: ${{ needs.update.outputs.changed }}
     strategy:
       fail-fast: false
       matrix:
@@ -135,35 +139,34 @@ jobs:
             linker: aarch64-linux-gnu-gcc
     steps:
       - uses: actions/checkout@v7
+        if: env.CHANGED == 'true'
         with:
           persist-credentials: false
 
       - uses: actions/download-artifact@v8
+        if: env.CHANGED == 'true'
         with:
           name: cargo-lock
 
       - name: Add the Rust target
+        if: env.CHANGED == 'true'
         run: rustup target add ${{ matrix.target }}
 
       - name: Install the cross-linker
-        if: matrix.cross != ''
+        if: env.CHANGED == 'true' && matrix.cross != ''
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.cross }}
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
       - name: Build
+        if: env.CHANGED == 'true'
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-  # The only job with write access, and it runs no project code. Also runs
-  # when `build` was skipped, to report an advisory left on main.
+  # The only job with write access, and it runs no project code.
   push:
     name: push to main
     needs: [ update, build ]
-    if: >-
-      !cancelled() &&
-      needs.update.result == 'success' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
