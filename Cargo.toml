@@ -7,7 +7,6 @@ description = "A terminal UI to explore GitHub pull requests across every repo i
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/Venatum/gh-ui"
-homepage = "https://github.com/Venatum/gh-ui"
 keywords = ["github", "pull-request", "tui", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
 # Distributed as a `gh` extension only, never as a crate.
