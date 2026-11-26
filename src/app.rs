@@ -99,6 +99,10 @@ pub enum FilterField {
     Assignee,
 }
 
+/// How long the filter arrows wait for another press before reloading:
+/// cycling through five repos then loads the fifth only.
+const FILTER_SETTLE: Duration = Duration::from_millis(500);
+
 /// Panel rows on the PRs tab. `Repo` comes first: it is the shared filter.
 const PR_FIELDS: [FilterField; 8] = [
     FilterField::Repo,
@@ -264,6 +268,11 @@ pub struct App {
     /// A refresh asked for while another one was still running (widened with
     /// `Job::merge` if several pile up).
     pending_job: Option<Job>,
+    /// A reload asked for by the filter arrows, and when it goes: each press
+    /// pushes that moment back by `FILTER_SETTLE` (see `settle_filter_change`).
+    filter_reload: Option<(Job, Instant)>,
+    /// The same, for the Issues tab's filter arrows.
+    issue_filter_reload: Option<Instant>,
 
     /// The authenticated GitHub account, resolved once at startup.
     pub login: Login,
@@ -380,6 +389,8 @@ impl App {
             columns: Columns::load(),
             repos: Vec::new(),
             pending_job: None,
+            filter_reload: None,
+            issue_filter_reload: None,
             login: Login::Loading,
             update: Update::None,
             auto_refresh: RefreshSettings::load().auto_refresh,
@@ -461,6 +472,12 @@ impl App {
     /// flight. Two jobs waiting are merged, never replaced: asking for the PRs
     /// then the runs must not lose the PRs.
     fn refresh_job(&mut self, job: Job) {
+        // A reload the filter arrows still hold is taken in: this one reads
+        // the same filters, so letting the held one fire would repeat it.
+        let job = match self.filter_reload.take() {
+            Some((held, _)) => held.merge(job),
+            None => job,
+        };
         if self.loading {
             self.pending_job = Some(match self.pending_job {
                 Some(pending) => pending.merge(job),
@@ -490,7 +507,9 @@ impl App {
     /// already in flight: a reload landing meanwhile would bring back the
     /// rows the page is about to replace, or the other way round.
     fn load_more(&mut self, repo: &str) {
-        if self.loading {
+        // A held filter reload too: the page would come under the new filters
+        // and land in a list loaded under the old ones.
+        if self.loading || self.filter_reload.is_some() {
             self.pr_pages.pending = Some(repo.to_string());
             return;
         }
@@ -605,7 +624,11 @@ impl App {
 
     /// Is anything loading? Drives the header's spinner.
     pub fn is_busy(&self) -> bool {
+        // A reload held by the filter arrows counts: the spinner says at once
+        // that the rows on screen are about to change.
         self.loading
+            || self.filter_reload.is_some()
+            || self.issue_filter_reload.is_some()
             || self.repos_loading
             || self.issue_tab.loading
             || self.release_tab.loading
@@ -644,6 +667,8 @@ impl App {
     /// Reloads the Issues tab — or queues it behind the load in flight. The
     /// repo filter is checked against the folder first, as for the PRs.
     pub fn refresh_issues(&mut self) {
+        // Same as `refresh_job`: a held arrow reload would only repeat this one.
+        self.issue_filter_reload = None;
         if self.issue_tab.loading {
             self.issue_tab.pending = true;
             return;
@@ -810,6 +835,27 @@ impl App {
                 self.loading = false;
             }
             changed = true;
+        }
+
+        // The filter arrows' reload, once no press has come for a while. Its
+        // own queue still applies: `refresh_job` holds it while a load runs.
+        // Held too while a prompt is open, like the auto-refresh: rows must
+        // not move under the user's typing, and submitting reloads anyway.
+        let now = Instant::now();
+        let prompt_open = self.is_prompt_open();
+        if let Some((job, at)) = self.filter_reload
+            && now >= at
+            && !prompt_open
+        {
+            self.filter_reload = None;
+            self.refresh_job(job);
+        }
+        if let Some(at) = self.issue_filter_reload
+            && now >= at
+            && !prompt_open
+        {
+            self.issue_filter_reload = None;
+            self.refresh_issues();
         }
 
         if !self.loading
@@ -1191,7 +1237,7 @@ impl App {
             // Issues tab only: handled by `issue_filter_change`.
             FilterField::Assignee => return,
         }
-        self.apply_filter_change(field);
+        self.settle_filter_change(field);
     }
 
     /// Enter on the focused field: opens the input (text) or advances (others).
@@ -1199,13 +1245,36 @@ impl App {
         match self.active_fields().get(self.filter_cursor) {
             Some(FilterField::Author) => self.start_input(InputKind::Author),
             Some(FilterField::Label) => self.start_input(InputKind::Label),
-            _ => self.filter_change(true),
+            _ => {
+                self.filter_change(true);
+                // Enter means the choice is made: no other press to wait for.
+                if let Some((job, _)) = self.filter_reload.take() {
+                    self.refresh_job(job);
+                }
+                if self.issue_filter_reload.take().is_some() {
+                    self.refresh_issues();
+                }
+            }
         }
     }
 
     fn apply_filter_change(&mut self, field: FilterField) {
         self.filters.save();
         self.refresh_job(self.job_after_change(field));
+    }
+
+    /// `apply_filter_change` for the arrows: the reload waits until they
+    /// stop, so cycling through values does not load each one on the way.
+    /// `on_tick` starts it once the moment set here has passed.
+    fn settle_filter_change(&mut self, field: FilterField) {
+        self.filters.save();
+        let job = self.job_after_change(field);
+        // Merged like `pending_job`: Repo then Since must still reload both.
+        let job = match self.filter_reload {
+            Some((held, _)) => held.merge(job),
+            None => job,
+        };
+        self.filter_reload = Some((job, Instant::now() + FILTER_SETTLE));
     }
 
     /// What to reload after `field` changed. A common filter narrows both
@@ -1236,7 +1305,8 @@ impl App {
             // text field: edited with Enter, not with ←/→
             _ => return,
         }
-        self.apply_issue_filter_change();
+        self.issue_tab.filters.save();
+        self.issue_filter_reload = Some(Instant::now() + FILTER_SETTLE);
     }
 
     fn apply_issue_filter_change(&mut self) {
@@ -2308,6 +2378,120 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Ends the filter arrows' wait as if `FILTER_SETTLE` had passed, then
+    /// ticks once so the held reload goes. `now` already counts as passed;
+    /// subtracting from it could fall before the clock's origin and panic.
+    fn settle(app: &mut App) {
+        let now = Instant::now();
+        if let Some((_, at)) = &mut app.filter_reload {
+            *at = now;
+        }
+        if let Some(at) = &mut app.issue_filter_reload {
+            *at = now;
+        }
+        app.on_tick();
+    }
+
+    #[test]
+    fn the_filter_arrows_reload_once_the_user_stops_pressing_them() {
+        let mut app = app_on(FilterField::Repo);
+        app.repos = vec!["api".to_string(), "cli".to_string(), "web".to_string()];
+
+        app.filter_change(true);
+        app.filter_change(true);
+        app.filter_change(true);
+        app.on_tick();
+        assert_eq!(
+            app.filters.repo.as_deref(),
+            Some("web"),
+            "the filter moves at once"
+        );
+        assert_eq!(
+            app.pending_job, None,
+            "nothing reloads while the arrows move"
+        );
+
+        settle(&mut app);
+        assert_eq!(
+            app.pending_job,
+            Some(Job::Prs),
+            "one reload, for the last repo"
+        );
+        assert_eq!(app.filter_reload, None);
+    }
+
+    #[test]
+    fn a_reload_started_meanwhile_takes_in_the_held_one() {
+        let mut app = app_on(FilterField::Since);
+        app.filter_change(true);
+
+        // `m` reloads at once, with the Since the arrow just set.
+        app.toggle_mine();
+
+        assert_eq!(app.pending_job, Some(Job::Prs));
+        assert_eq!(app.filter_reload, None, "no second load once the wait ends");
+    }
+
+    #[test]
+    fn enter_on_a_cycling_field_reloads_at_once() {
+        let mut app = app_on(FilterField::Review);
+        app.filter_activate();
+        assert_eq!(app.pending_job, Some(Job::Prs));
+        assert_eq!(app.filter_reload, None);
+    }
+
+    #[test]
+    fn a_held_reload_waits_for_an_open_prompt() {
+        let mut app = app_on(FilterField::Review);
+        app.filter_change(true);
+        app.start_input(InputKind::Author);
+
+        settle(&mut app);
+
+        assert_eq!(app.pending_job, None, "no reload under the user's typing");
+        assert!(app.filter_reload.is_some());
+    }
+
+    #[test]
+    fn the_spinner_turns_while_the_arrows_hold_a_reload() {
+        let mut app = app_on(FilterField::Review);
+        app.loading = false;
+        app.filter_change(true);
+        assert!(app.is_busy());
+    }
+
+    #[test]
+    fn a_page_waits_while_the_arrows_hold_a_reload() {
+        let mut app = app_on(FilterField::Review);
+        app.loading = false;
+        app.filter_change(true);
+
+        app.load_more("api");
+
+        assert!(
+            !app.loading,
+            "no page under filters the list was not loaded with"
+        );
+        assert_eq!(app.pr_pages.pending.as_deref(), Some("api"));
+    }
+
+    #[test]
+    fn the_issue_filter_arrows_wait_too() {
+        let mut app = issues_app();
+        app.repos = vec!["api".to_string(), "web".to_string()];
+        app.filter_cursor = 0; // Repo
+
+        app.filter_change(true);
+        app.on_tick();
+        assert!(
+            !app.issue_tab.pending,
+            "nothing reloads while the arrows move"
+        );
+
+        settle(&mut app);
+        assert!(app.issue_tab.pending);
+    }
+
     /// An `App` with the PRs panel cursor on `field`, and a load "in flight"
     /// so a filter change queues its reload instead of spawning `gh`.
     fn app_on(field: FilterField) -> App {
@@ -2342,6 +2526,7 @@ mod tests {
         let mut app = app_on(FilterField::Review);
         app.filter_change(true);
         assert_eq!(app.filters.review, ReviewFilter::Approved);
+        settle(&mut app);
         assert_eq!(app.pending_job, Some(Job::Prs));
         app.filter_change(false);
         app.filter_change(false);
@@ -2353,6 +2538,7 @@ mod tests {
         let mut app = app_on(FilterField::ReviewAsked);
         app.filter_change(true);
         assert!(app.filters.review_requested);
+        settle(&mut app);
         assert_eq!(app.pending_job, Some(Job::Prs));
     }
 
@@ -2379,6 +2565,7 @@ mod tests {
 
         app.filter_change(true);
         assert_eq!(app.filters.author, AuthorFilter::me());
+        settle(&mut app);
         assert_eq!(app.pending_job, Some(Job::Prs));
 
         app.filter_change(false);
@@ -3417,6 +3604,7 @@ mod tests {
             .position(|f| *f == FilterField::Assignee)
             .unwrap();
         app.filter_change(true);
+        settle(&mut app);
 
         assert_eq!(app.issue_tab.filters.assignee, AssigneeFilter::Me);
         assert!(app.issue_tab.pending, "the issues reload");
