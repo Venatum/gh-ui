@@ -153,7 +153,7 @@ mod tests {
             }],
             head_ref_name: branch.to_string(),
             mergeable: String::new(),
-            status_check_rollup: None,
+            checks: None,
             repo: repo.to_string(),
         }
     }

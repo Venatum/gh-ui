@@ -103,6 +103,8 @@ exactly one glyph, the first line of this table that matches:
 | `·`   | draft                                      | nobody, it is dormant |
 | `!`   | the branch conflicts with its base         | the author: rebase  |
 | `✗`   | changes requested, or a check failed       | the author: fix     |
+| `…`   | its checks are still loading (see below)   | nobody: a few seconds |
+| `?`   | its checks could not be read: the request failed, or the list moved between the two | you: `r` to retry |
 | `●`   | a check is queued or running               | nobody: wait        |
 | `✓`   | approved, nothing failing nor running      | whoever merges      |
 |       | *(blank)* anything else, typically waiting on a reviewer | a reviewer |
@@ -113,11 +115,11 @@ is a normal outcome, not a problem. A job that was re-run counts by its
 latest attempt only, as on GitHub's checks tab: a failure re-run green is
 green, and a re-run still queued reads `●`.
 
-The two fields this needs, `mergeable` and `statusCheckRollup`, ride the one
-`gh pr list` call each repo already makes: no request per PR, so
-auto-refresh asks GitHub exactly as often as before. Each answer is heavier
-though: GitHub has to gather every check of every PR, which turns a load of
-a busy repo from under a second into a few seconds.
+The checks are the slow part: GitHub has to gather every check of every PR,
+which turns a load of a busy repo from about 2 seconds into 9. So each repo
+gets two `gh pr list` calls, never one per PR: the list shows as soon as the
+first lands, and the second fills the `State` column in as each repo
+answers. Until then a PR reads `…`, or keeps what it showed before a reload.
 
 If you already had a saved layout, `State` is appended to its **right** end
 rather than reshuffling it (see [Memory](#memory)). To bring it to the

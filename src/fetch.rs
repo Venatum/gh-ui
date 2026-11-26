@@ -5,7 +5,7 @@ use crate::detail::{Detail, DetailKey};
 use crate::filters::Filters;
 use crate::gh;
 use crate::issues::{Issue, IssueFilters};
-use crate::model::{Pr, Run};
+use crate::model::{ChecksState, Pr, Run};
 use crate::releases::RepoRelease;
 use crate::repos::{CloneEvent, LocalRepo, Repo, RepoFilters};
 use crate::update;
@@ -38,6 +38,18 @@ pub struct MorePrsResult {
     pub limit: usize,
     /// `Err` carries `gh`'s message for the status line.
     pub prs: Result<Vec<Pr>, String>,
+}
+
+/// One repo's PR checks, the second request of a PR load: each PR's number
+/// and what its checks add up to, already reduced in the background so the
+/// full rollup never reaches the UI thread.
+pub struct ChecksResult {
+    pub repo: String,
+    /// Which load asked (see `App::checks_seq`): an answer older than the
+    /// one the repo already shows is dropped.
+    pub seq: u64,
+    /// `Err` carries `gh`'s message for the status line.
+    pub checks: Result<Vec<(u64, ChecksState)>, String>,
 }
 
 /// Mirror of `FetchResult`, but for the runs.
@@ -93,6 +105,12 @@ pub enum Loaded {
     /// run flows: a reload and a page never run at once, so neither can
     /// overwrite the other's rows.
     MorePrs(MorePrsResult),
+    /// One repo's PR checks, sent after its PRs. Not a load: the list is
+    /// already on screen, so it never touches the `loading` flag.
+    Checks(ChecksResult),
+    /// Every repo of load `seq` has sent its checks (or failed to). Sent
+    /// by every PR, run or page load, even one with no checks to ask.
+    ChecksDone(u64),
     Runs(RunsResult),
     Both(FetchResult, RunsResult),
     /// The authenticated account, or `None` if `gh` could not tell us.
@@ -313,12 +331,13 @@ pub fn spawn_clones(root: PathBuf, batch: Vec<(String, String)>, tx: Sender<Load
 }
 
 /// Loads `repo`'s first `limit` PRs, the next page included, in the
-/// background.
+/// background, then their checks (`seq`: see `ChecksResult`).
 pub fn spawn_more_prs(
     root: PathBuf,
     repo: String,
     filters: Filters,
     limit: usize,
+    seq: u64,
     tx: Sender<Loaded>,
 ) {
     thread::spawn(move || {
@@ -330,23 +349,36 @@ pub fn spawn_more_prs(
                 prs
             })
             .map_err(|e| e.to_string());
+        let page_ok = prs.is_ok();
         let _ = tx.send(Loaded::MorePrs(MorePrsResult {
-            repo,
-            filters,
+            repo: repo.clone(),
+            filters: filters.clone(),
             limit,
             prs,
         }));
+        // Called even for a failed page: it is what sends `ChecksDone`.
+        let repos = if page_ok {
+            vec![repo.clone()]
+        } else {
+            Vec::new()
+        };
+        let limits = HashMap::from([(repo, limit)]);
+        load_checks(&root, &repos, &filters, &limits, seq, &tx);
     });
 }
 
 /// Starts loading `job` in a background thread.
 /// `root`, `filters` and `limits` (the PRs asked of each repo, `PR_PAGE`
 /// when absent) are cloned then MOVED into the thread (`move`).
+///
+/// The PRs come in two requests: the list, sent as soon as it lands, then
+/// its checks (`seq`: see `ChecksResult`), several times slower to fetch.
 pub fn spawn(
     job: Job,
     root: PathBuf,
     filters: Filters,
     limits: HashMap<String, usize>,
+    seq: u64,
     tx: Sender<Loaded>,
 ) {
     thread::spawn(move || {
@@ -373,8 +405,70 @@ pub fn spawn(
                 Loaded::Both(prs, runs)
             }
         };
+        let repos = match &result {
+            Loaded::Prs(prs) | Loaded::Both(prs, _) => repos_of(&prs.prs),
+            _ => Vec::new(),
+        };
         let _ = tx.send(result);
+        // The list is on screen: now the slow part, its checks.
+        load_checks(&root, &repos, &filters, &limits, seq, &tx);
     });
+}
+
+/// The repos `prs` come from, once each. `fan_out` keeps a repo's rows
+/// together, so dropping consecutive duplicates is enough.
+fn repos_of(prs: &[Pr]) -> Vec<String> {
+    let mut repos: Vec<String> = prs.iter().map(|pr| pr.repo.clone()).collect();
+    repos.dedup();
+    repos
+}
+
+/// The second request of a PR load: every repo's checks AT ONCE, each sent
+/// as soon as it lands, so a small repo's `State` column does not wait for
+/// the busiest one. Then `ChecksDone`, once all of them have answered.
+fn load_checks(
+    root: &Path,
+    repos: &[String],
+    filters: &Filters,
+    limits: &HashMap<String, usize>,
+    seq: u64,
+    tx: &Sender<Loaded>,
+) {
+    thread::scope(|scope| {
+        let handles: Vec<_> = repos
+            .iter()
+            .map(|repo| {
+                // Each thread sends on its own handle of the channel.
+                let tx = tx.clone();
+                let handle = scope.spawn(move || {
+                    let limit = limits.get(repo).copied().unwrap_or(gh::PR_PAGE);
+                    let checks = gh::fetch_pr_checks(&root.join(repo), filters, limit)
+                        .map(|list| list.iter().map(|c| (c.number, c.state())).collect())
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(Loaded::Checks(ChecksResult {
+                        repo: repo.clone(),
+                        seq,
+                        checks,
+                    }));
+                });
+                (repo, handle)
+            })
+            .collect();
+        // Joined here: left to `thread::scope`, a panic would resurface
+        // after it and skip the `ChecksDone` below, leaving the app busy for
+        // good. A panicked thread sent nothing: its repo's rows read `?`
+        // rather than `…` forever.
+        for (repo, handle) in handles {
+            if handle.join().is_err() {
+                let _ = tx.send(Loaded::Checks(ChecksResult {
+                    repo: repo.clone(),
+                    seq,
+                    checks: Err("the checks thread panicked".to_string()),
+                }));
+            }
+        }
+    });
+    let _ = tx.send(Loaded::ChecksDone(seq));
 }
 
 /// The slow work: discover the repos, filter, fetch the PRs.

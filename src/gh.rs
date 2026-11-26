@@ -5,7 +5,7 @@
 use crate::detail::{Detail, DetailKey, IssueDetail, PrDetail, RunDetail};
 use crate::filters::Filters;
 use crate::issues::{Issue, IssueFilters};
-use crate::model::{Pr, Run};
+use crate::model::{Pr, PrChecks, Run};
 use crate::releases::{self, Release, ReleaseSource, RepoRelease};
 use crate::repos::{LocalRepo, Repo, RepoFilters, is_name, parse_origin, parse_remote};
 use anyhow::{Context, Result};
@@ -20,11 +20,15 @@ pub const PR_PAGE: usize = 50;
 /// JSON fields requested from `gh` for each PR. A field more never costs a
 /// request more: `gh` builds one GraphQL query per repo whatever we ask for.
 /// It can cost time, though: `statusCheckRollup` (the full array of checks,
-/// every attempt, no way to narrow it) is by far the heaviest. Measured on
-/// `cli/cli`, 50 PRs: 0.65 s and 4 KB without it, 3.8 s and 259 KB with it,
-/// on every load and auto-refresh. It is what feeds the `State` column's ✗
-/// and ● glyphs; a normal repo, with a few PRs and checks, pays far less.
-const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName,mergeable,statusCheckRollup";
+/// every attempt, no way to narrow it) is by far the heaviest. Measured on a
+/// busy repo, 50 PRs: 2.5 s and 25 KB without it, 9.4 s and 450 KB with it.
+/// So the list leaves it out and shows at once, and `CHECKS_FIELDS` brings
+/// the `State` column's ✗ and ● in a second request.
+const JSON_FIELDS: &str = "number,title,author,reviewDecision,isDraft,url,updatedAt,additions,deletions,labels,headRefName,mergeable";
+
+/// The second request of a PR load: only what the `State` column needs from
+/// the checks, matched to the list's PRs by number.
+const CHECKS_FIELDS: &str = "number,statusCheckRollup";
 
 /// Number of runs fetched per repo (most recent runs, all branches).
 /// 100 is the largest page GitHub serves, so it costs exactly the same single
@@ -110,7 +114,18 @@ fn parse_gh_output<T: DeserializeOwned>(what: &str, output: &Output) -> Result<T
 /// Runs `gh pr list` (with the filters) in `repo_dir`, for at most `limit`
 /// PRs, and parses the JSON.
 pub fn fetch_prs(repo_dir: &Path, filters: &Filters, limit: usize) -> Result<Vec<Pr>> {
-    // The fields we request from gh, exactly as in the script.
+    // In the repo's folder: `gh` reads which repo it is from there.
+    run_gh_json(&pr_list_args(JSON_FIELDS, filters, limit), Some(repo_dir))
+}
+
+/// The checks of the PRs `fetch_prs` lists with the same `filters` and
+/// `limit`: the same `gh pr list`, asking for the checks only.
+pub fn fetch_pr_checks(repo_dir: &Path, filters: &Filters, limit: usize) -> Result<Vec<PrChecks>> {
+    run_gh_json(&pr_list_args(CHECKS_FIELDS, filters, limit), Some(repo_dir))
+}
+
+/// `gh pr list`'s arguments, asking for `fields`.
+fn pr_list_args(fields: &str, filters: &Filters, limit: usize) -> Vec<String> {
     // We assemble the arguments into a Vec so we can add the filter ones
     // (variable count). The `.to_string()` calls unify the type.
     let mut args: Vec<String> = vec![
@@ -121,11 +136,10 @@ pub fn fetch_prs(repo_dir: &Path, filters: &Filters, limit: usize) -> Result<Vec
         "--limit".to_string(),
         limit.to_string(),
         "--json".to_string(),
-        JSON_FIELDS.to_string(),
+        fields.to_string(),
     ];
     args.extend(filters.to_gh_args());
-    // In the repo's folder: `gh` reads which repo it is from there.
-    run_gh_json(&args, Some(repo_dir))
+    args
 }
 
 /// Runs `gh run list` in `repo_dir` and parses the JSON into `Vec<Run>`.
@@ -713,22 +727,30 @@ mod tests {
         }
     }
 
-    /// `model::Pr` reads `mergeable` and `statusCheckRollup` with serde
-    /// defaults: if the request stopped asking for them, every PR would
+    /// `model::Pr` reads `mergeable`, and `model::PrChecks` the rollup, with
+    /// serde defaults: if a request stopped asking for them, every PR would
     /// silently read "no conflict, no checks" instead of failing loudly.
     #[test]
-    fn the_pr_request_asks_for_the_fields_the_status_column_needs() {
-        for field in [
-            "isDraft",
-            "reviewDecision",
-            "mergeable",
-            "statusCheckRollup",
-        ] {
+    fn the_pr_requests_ask_for_the_fields_the_status_column_needs() {
+        for field in ["isDraft", "reviewDecision", "mergeable"] {
             assert!(
                 JSON_FIELDS.split(',').any(|f| f == field),
                 "JSON_FIELDS must request {field}"
             );
         }
+        for field in ["number", "statusCheckRollup"] {
+            assert!(
+                CHECKS_FIELDS.split(',').any(|f| f == field),
+                "CHECKS_FIELDS must request {field}"
+            );
+        }
+    }
+
+    /// The whole point of the second request: the list must not pay for
+    /// the checks.
+    #[test]
+    fn the_list_leaves_the_checks_to_the_second_request() {
+        assert!(!JSON_FIELDS.split(',').any(|f| f == "statusCheckRollup"));
     }
 
     #[cfg(unix)]

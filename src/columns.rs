@@ -136,6 +136,12 @@ enum PrStatus {
     Conflict,
     /// Changes requested or a check failed: the author has work to do.
     Failing,
+    /// The checks have not arrived yet (they come after the list), and every
+    /// verdict below depends on them. Only changes requested can beat it to
+    /// `Failing`: a failed check needs the checks too.
+    Checking,
+    /// Same place, but the checks could not be read: `…` would promise them.
+    Unknown,
     /// A check is queued or running: nothing to do yet but wait.
     Running,
     /// Approved with nothing against it: merge it.
@@ -155,9 +161,18 @@ fn pr_status(pr: &Pr) -> PrStatus {
     if pr.mergeable == "CONFLICTING" {
         return PrStatus::Conflict;
     }
-    let checks = pr.checks_state();
     // Before `Running`: with changes requested, "just wait" would be a lie.
-    if pr.review_decision == "CHANGES_REQUESTED" || checks == ChecksState::Failing {
+    // Before the checks, too: they would not change the verdict.
+    if pr.review_decision == "CHANGES_REQUESTED" {
+        return PrStatus::Failing;
+    }
+    let Some(checks) = pr.checks else {
+        return PrStatus::Checking;
+    };
+    if checks == ChecksState::Unknown {
+        return PrStatus::Unknown;
+    }
+    if checks == ChecksState::Failing {
         return PrStatus::Failing;
     }
     if checks == ChecksState::Running {
@@ -180,6 +195,9 @@ fn status_look(status: PrStatus) -> (&'static str, Style) {
         PrStatus::Draft => ("·", Style::new().fg(Color::DarkGray)),
         PrStatus::Conflict => ("!", Style::new().fg(Color::Red)),
         PrStatus::Failing => ("✗", Style::new().fg(Color::Red)),
+        // The ellipsis of the status line's "Loading…".
+        PrStatus::Checking => ("…", Style::new().fg(Color::DarkGray)),
+        PrStatus::Unknown => ("?", Style::new().fg(Color::DarkGray)),
         // The Actions tab's running run, glyph and color alike.
         PrStatus::Running => ("●", Style::new().fg(Color::Yellow)),
         PrStatus::Ready => ("✓", Style::new().fg(Color::Green)),
@@ -191,7 +209,9 @@ fn status_look(status: PrStatus) -> (&'static str, Style) {
 
 /// The `State` column's legend, one line of the help popup. Next to
 /// `status_look` so the two cannot drift apart, and short enough to fit
-/// `HELP_WIDTH` after the 12 columns a help row spends on its key.
+/// `HELP_WIDTH` after the 12 columns a help row spends on its key. `…`
+/// (checks loading) and `?` (checks unreadable) are left out: transient
+/// or rare, and the line has no room left. The README lists them.
 pub const STATUS_LEGEND: &str = "· draft  ! conflict  ✗ failed  ● running  ✓ ready";
 
 /// How loud a date reads: bold today, plain within 30 days, gray beyond. No
@@ -883,6 +903,7 @@ impl Columns {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::PrChecks;
 
     #[test]
     fn every_header_starts_with_a_capital() {
@@ -904,17 +925,22 @@ mod tests {
     }
 
     /// A `Pr` built from JSON with `extra` spliced in as its last field, so
-    /// each test only spells out the part it is about.
+    /// each test only spells out the part it is about. Its checks are read
+    /// from the same JSON's `statusCheckRollup` (none when absent, like a
+    /// repo without CI), as if both requests of a load had landed.
     fn pr_with(extra: &str) -> Pr {
-        serde_json::from_str(&format!(
+        let json = format!(
             r#"{{
                 "number": 42, "title": "fixes a bug", "author": {{"login": "moi"}},
                 "isDraft": false, "url": "u", "updatedAt": "2026-01-02T03:04:05Z",
                 "additions": 7, "deletions": 3, "labels": [{{"name": "bug"}}],
                 "headRefName": "feature/x", {extra}
             }}"#
-        ))
-        .unwrap()
+        );
+        let mut pr: Pr = serde_json::from_str(&json).unwrap();
+        let checks: PrChecks = serde_json::from_str(&json).unwrap();
+        pr.checks = Some(checks.state());
+        pr
     }
 
     fn sample_pr() -> Pr {
@@ -1327,6 +1353,8 @@ mod tests {
             PrStatus::Draft,
             PrStatus::Conflict,
             PrStatus::Failing,
+            PrStatus::Checking,
+            PrStatus::Unknown,
             PrStatus::Running,
             PrStatus::Ready,
             PrStatus::Idle,
@@ -1420,6 +1448,22 @@ mod tests {
         assert_eq!(pr_status(&green), PrStatus::Ready);
     }
 
+    /// Until its checks arrive, a PR cannot read ready, running nor failed
+    /// on CI: it waits. What needs no checks still shows at once.
+    #[test]
+    fn a_pr_whose_checks_are_loading_reads_checking() {
+        let mut approved = pr_with(r#""reviewDecision": "APPROVED""#);
+        let mut changes = pr_with(r#""reviewDecision": "CHANGES_REQUESTED""#);
+        let mut conflict = pr_with(r#""mergeable": "CONFLICTING""#);
+        for pr in [&mut approved, &mut changes, &mut conflict] {
+            pr.checks = None;
+        }
+
+        assert_eq!(pr_status(&approved), PrStatus::Checking);
+        assert_eq!(pr_status(&changes), PrStatus::Failing);
+        assert_eq!(pr_status(&conflict), PrStatus::Conflict);
+    }
+
     /// No checks at all is no reason to withhold the green tick.
     #[test]
     fn approved_in_a_repo_without_ci_is_still_ready() {
@@ -1430,6 +1474,7 @@ mod tests {
 
     /// The legend and `status_look` sit side by side; this is what actually
     /// holds them together. `Idle` draws a space: nothing to explain.
+    /// `Checking` and `Unknown` are left out on purpose (see `STATUS_LEGEND`).
     #[test]
     fn the_legend_names_every_glyph_the_column_can_draw() {
         for status in [

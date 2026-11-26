@@ -3,13 +3,13 @@
 use crate::columns::Columns;
 use crate::detail::{DetailKey, DetailView};
 use crate::fetch::{
-    self, DetailResult, FetchResult, IssuesResult, Job, Loaded, MorePrsResult, ReleasesResult,
-    ReposResult, RunsResult,
+    self, ChecksResult, DetailResult, FetchResult, IssuesResult, Job, Loaded, MorePrsResult,
+    ReleasesResult, ReposResult, RunsResult,
 };
 use crate::filters::Filters;
 use crate::gh::{self, RUN_DISPLAY_LIMIT};
 use crate::issues::{Issue, IssueFilters, IssuesTab};
-use crate::model::{Pr, Run};
+use crate::model::{ChecksState, Pr, Run};
 use crate::pages::{self, PrPages, PrRow};
 use crate::refresh::{AutoRefresh, RefreshSettings};
 use crate::releases::{ReleasesTab, RepoRelease};
@@ -18,7 +18,7 @@ use crate::runfilters::{self, RunFilters};
 use crate::search;
 use crate::update::Update;
 use ratatui::widgets::TableState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -273,6 +273,17 @@ pub struct App {
     filter_reload: Option<(Job, Instant)>,
     /// The same, for the Issues tab's filter arrows.
     issue_filter_reload: Option<Instant>,
+    /// Numbers the PR loads, in the order they start: their checks arrive
+    /// after the list, maybe after those of a later load. Lists never
+    /// overlap (`loading`), so the one landing is always number `checks_seq`.
+    checks_seq: u64,
+    /// The load each repo's rows on screen come from: checks of an older
+    /// load are about rows since replaced, and are dropped.
+    rows_seq: HashMap<String, u64>,
+    /// The loads whose checks are still on their way: while any is, the
+    /// spinner keeps turning and the auto-refresh waits rather than pile
+    /// slow `gh` calls on top of those still running.
+    checks_running: HashSet<u64>,
 
     /// The authenticated GitHub account, resolved once at startup.
     pub login: Login,
@@ -391,6 +402,9 @@ impl App {
             pending_job: None,
             filter_reload: None,
             issue_filter_reload: None,
+            checks_seq: 0,
+            rows_seq: HashMap::new(),
+            checks_running: HashSet::new(),
             login: Login::Loading,
             update: Update::None,
             auto_refresh: RefreshSettings::load().auto_refresh,
@@ -494,11 +508,17 @@ impl App {
             self.set_line(tab, String::from("Loading…"));
         }
         self.pr_pages.sync(&self.filters);
+        self.checks_seq += 1;
+        // A runs-only load asks for no checks: nothing to wait for.
+        if job != Job::Runs {
+            self.checks_running.insert(self.checks_seq);
+        }
         fetch::spawn(
             job,
             self.root.clone(),
             self.filters.clone(),
             self.pr_pages.limits(),
+            self.checks_seq,
             self.tx.clone(),
         );
     }
@@ -519,11 +539,14 @@ impl App {
         self.pr_pages.sync(&self.filters);
         let limit = self.pr_pages.next_page(repo);
         self.set_line(Tab::Prs, format!("Loading more PRs of {repo}…"));
+        self.checks_seq += 1;
+        self.checks_running.insert(self.checks_seq);
         fetch::spawn_more_prs(
             self.root.clone(),
             repo.to_string(),
             self.filters.clone(),
             limit,
+            self.checks_seq,
             self.tx.clone(),
         );
     }
@@ -539,13 +562,15 @@ impl App {
         if result.filters != self.filters {
             return String::from("Loading…");
         }
-        let prs = match result.prs {
+        let mut prs = match result.prs {
             Ok(prs) => prs,
             Err(message) => {
                 self.pr_pages.drop_page(&result.repo);
                 return format!("{}: {message}", result.repo);
             }
         };
+        carry_checks(&self.prs, &mut prs);
+        self.rows_seq.insert(result.repo.clone(), self.checks_seq);
         let selected = self.table_state.selected();
         let on_pr = selected.and_then(|i| match self.pr_rows().get(i) {
             Some(PrRow::Pr(pr)) => Some((pr.repo.clone(), pr.number)),
@@ -627,6 +652,7 @@ impl App {
         // A reload held by the filter arrows counts: the spinner says at once
         // that the rows on screen are about to change.
         self.loading
+            || !self.checks_running.is_empty()
             || self.filter_reload.is_some()
             || self.issue_filter_reload.is_some()
             || self.repos_loading
@@ -774,6 +800,14 @@ impl App {
             let lines: Vec<(Tab, String)> = match msg {
                 Loaded::Prs(result) => vec![(Tab::Prs, self.apply_prs(result))],
                 Loaded::MorePrs(result) => vec![(Tab::Prs, self.apply_more_prs(result))],
+                Loaded::Checks(result) => {
+                    self.apply_checks(result);
+                    Vec::new()
+                }
+                Loaded::ChecksDone(seq) => {
+                    self.checks_running.remove(&seq);
+                    Vec::new()
+                }
                 Loaded::Runs(result) => vec![(Tab::Runs, self.apply_runs(result))],
                 // PRs FIRST: `apply_runs` counts the visible runs, which are
                 // cross-referenced against `self.prs`.
@@ -890,6 +924,7 @@ impl App {
         // prompt closes rather than skipping a beat.
         if let Some(interval) = self.auto_refresh.interval()
             && !self.loading
+            && self.checks_running.is_empty()
             && !self.is_prompt_open()
             && self.last_refresh.elapsed() >= interval
         {
@@ -915,7 +950,12 @@ impl App {
 
     /// Stores a PR load and returns the status line describing it.
     fn apply_prs(&mut self, result: FetchResult) -> String {
-        self.prs = result.prs;
+        let mut prs = result.prs;
+        carry_checks(&self.prs, &mut prs);
+        for pr in &prs {
+            self.rows_seq.insert(pr.repo.clone(), self.checks_seq);
+        }
+        self.prs = prs;
         self.pr_pages.set_full(result.full);
         self.prs_loaded = true;
         self.repos = result.all_repos;
@@ -930,6 +970,39 @@ impl App {
             result.scanned,
             errors_suffix(result.errors)
         )
+    }
+
+    /// Fills in a repo's PR checks, the second request of a load. Only the
+    /// checks of the load the repo's rows come from (see `rows_seq`): an
+    /// older load's describe rows since replaced, a discarded page's rows
+    /// never shown. These checks are the last word on the rows: a PR they
+    /// leave out (opened or closed between the two requests shifted the
+    /// window), or every PR when the request failed, reads
+    /// `ChecksState::Unknown` — neither `…` nor checks carried over, which
+    /// were only meant to last until now.
+    fn apply_checks(&mut self, result: ChecksResult) {
+        if self.rows_seq.get(&result.repo) != Some(&result.seq) {
+            return;
+        }
+        let states: HashMap<u64, ChecksState> = match result.checks {
+            Ok(checks) => checks.into_iter().collect(),
+            Err(message) => {
+                let line = if self.active_tab == Tab::Prs {
+                    self.status.clone()
+                } else {
+                    self.lines.slot(Tab::Prs).clone()
+                };
+                // `gh`'s message may span lines: the status bar has one.
+                let first = message.lines().next().unwrap_or_default();
+                let note = format!("{line} · {}: checks failed: {first}", result.repo);
+                self.set_line(Tab::Prs, note);
+                HashMap::new()
+            }
+        };
+        for pr in self.prs.iter_mut().filter(|pr| pr.repo == result.repo) {
+            let state = states.get(&pr.number).copied();
+            pr.checks = Some(state.unwrap_or(ChecksState::Unknown));
+        }
     }
 
     /// Same for a run load. Call it AFTER `apply_prs` when both arrive together.
@@ -2083,6 +2156,26 @@ fn errors_suffix(errors: usize) -> String {
     }
 }
 
+/// Gives each PR of `fresh` the checks it showed in `shown`, until its own
+/// arrive: a reload would otherwise blank the whole `State` column for the
+/// seconds its checks take. Only a PR that has not changed since: after a
+/// push, its old `✓` would be a confident lie. Anything else stays `None`.
+fn carry_checks(shown: &[Pr], fresh: &mut [Pr]) {
+    let known: HashMap<(&str, u64), (&str, ChecksState)> = shown
+        .iter()
+        .filter_map(|pr| {
+            let key = (pr.repo.as_str(), pr.number);
+            Some((key, (pr.updated_at.as_str(), pr.checks?)))
+        })
+        .collect();
+    for pr in fresh {
+        pr.checks = match known.get(&(pr.repo.as_str(), pr.number)) {
+            Some(&(updated_at, state)) if updated_at == pr.updated_at => Some(state),
+            _ => None,
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2418,6 +2511,196 @@ mod tests {
             "one reload, for the last repo"
         );
         assert_eq!(app.filter_reload, None);
+    }
+
+    fn checks(repo: &str, seq: u64, checks: Vec<(u64, ChecksState)>) -> Loaded {
+        Loaded::Checks(ChecksResult {
+            repo: repo.to_string(),
+            seq,
+            checks: Ok(checks),
+        })
+    }
+
+    #[test]
+    fn failed_checks_say_so_on_the_status_line() {
+        let mut app = App::new(PathBuf::from("."));
+        app.prs = vec![sample_pr("api", 1)];
+        app.rows_seq.insert("api".to_string(), 1);
+        app.status = "1 PR(s) — 1 repo(s)".to_string();
+
+        app.tx
+            .send(Loaded::Checks(ChecksResult {
+                repo: "api".to_string(),
+                seq: 1,
+                checks: Err("HTTP 502\nretry later".to_string()),
+            }))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(
+            app.status,
+            "1 PR(s) — 1 repo(s) · api: checks failed: HTTP 502"
+        );
+        assert_eq!(
+            app.prs[0].checks,
+            Some(ChecksState::Unknown),
+            "`…` would promise checks that are not coming"
+        );
+    }
+
+    #[test]
+    fn a_replaced_load_s_failed_checks_stay_quiet() {
+        let mut app = App::new(PathBuf::from("."));
+        app.rows_seq.insert("api".to_string(), 2);
+        app.status = "1 PR(s) — 1 repo(s)".to_string();
+
+        app.tx
+            .send(Loaded::Checks(ChecksResult {
+                repo: "api".to_string(),
+                seq: 1,
+                checks: Err("HTTP 502".to_string()),
+            }))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.status, "1 PR(s) — 1 repo(s)");
+    }
+
+    /// A page dropped because the filters changed never put its rows on
+    /// screen: its checks describe nothing shown.
+    #[test]
+    fn a_discarded_page_s_checks_are_dropped() {
+        let mut app = App::new(PathBuf::from("."));
+        let mut pr = sample_pr("api", 1);
+        pr.checks = Some(ChecksState::Failing);
+        app.prs = vec![pr];
+        app.rows_seq.insert("api".to_string(), 2);
+
+        app.tx
+            .send(checks("api", 3, vec![(1, ChecksState::Passing)]))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs[0].checks, Some(ChecksState::Failing));
+    }
+
+    /// Carried checks only last until the load's own: a PR its answer
+    /// leaves out must not keep an old ● that may be long over.
+    #[test]
+    fn carried_checks_give_way_to_unknown_when_the_answer_leaves_the_pr_out() {
+        let mut app = App::new(PathBuf::from("."));
+        let mut pr = sample_pr("api", 1);
+        pr.checks = Some(ChecksState::Running);
+        app.prs = vec![pr];
+        app.rows_seq.insert("api".to_string(), 1);
+
+        app.tx.send(checks("api", 1, Vec::new())).unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs[0].checks, Some(ChecksState::Unknown));
+    }
+
+    /// The spinner and the auto-refresh wait until every load's checks are
+    /// in: a page's (2) ending first must not hide those of the load still
+    /// running (1).
+    #[test]
+    fn the_checks_keep_the_app_busy_until_every_load_is_done() {
+        let mut app = App::new(PathBuf::from("."));
+        app.checks_running = HashSet::from([1, 2]);
+
+        app.tx.send(Loaded::ChecksDone(2)).unwrap();
+        app.on_tick();
+        assert!(app.is_busy(), "load 1 still runs");
+
+        app.tx.send(Loaded::ChecksDone(1)).unwrap();
+        app.on_tick();
+        assert!(!app.is_busy());
+    }
+
+    #[test]
+    fn a_pr_pushed_to_since_does_not_keep_its_old_checks() {
+        let mut shown = sample_pr("api", 1);
+        shown.checks = Some(ChecksState::Passing);
+        let mut pushed = sample_pr("api", 1);
+        pushed.updated_at = "2026-10-05T09:00:00Z".to_string();
+        let mut fresh = vec![pushed];
+
+        carry_checks(&[shown], &mut fresh);
+
+        assert_eq!(fresh[0].checks, None);
+    }
+
+    #[test]
+    fn checks_fill_in_their_repo_s_prs_only() {
+        let mut app = App::new(PathBuf::from("."));
+        app.prs = vec![
+            sample_pr("api", 1),
+            sample_pr("api", 2),
+            sample_pr("web", 1),
+        ];
+        app.rows_seq.insert("api".to_string(), 1);
+        app.rows_seq.insert("web".to_string(), 1);
+
+        app.tx
+            .send(checks("api", 1, vec![(1, ChecksState::Failing)]))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs[0].checks, Some(ChecksState::Failing));
+        assert_eq!(
+            app.prs[1].checks,
+            Some(ChecksState::Unknown),
+            "left out of the answer: `…` must not stay"
+        );
+        assert_eq!(app.prs[2].checks, None, "another repo's PR #1");
+    }
+
+    /// The checks of an older load can land after the rows of a newer one
+    /// (or its checks): they describe rows since replaced, and are dropped.
+    #[test]
+    fn late_checks_of_an_older_load_are_dropped() {
+        let mut app = App::new(PathBuf::from("."));
+        app.prs = vec![sample_pr("api", 1)];
+        app.rows_seq.insert("api".to_string(), 2);
+
+        app.tx
+            .send(checks("api", 2, vec![(1, ChecksState::Passing)]))
+            .unwrap();
+        app.tx
+            .send(checks("api", 1, vec![(1, ChecksState::Running)]))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs[0].checks, Some(ChecksState::Passing));
+    }
+
+    /// A reload keeps what each PR showed until its own checks arrive,
+    /// instead of blanking the whole column for seconds.
+    #[test]
+    fn a_reload_keeps_the_checks_shown_until_new_ones_arrive() {
+        let mut app = App::new(PathBuf::from("."));
+        let mut shown = sample_pr("api", 1);
+        shown.checks = Some(ChecksState::Failing);
+        app.prs = vec![shown];
+
+        app.tx
+            .send(Loaded::Prs(FetchResult {
+                prs: vec![sample_pr("api", 1), sample_pr("api", 2)],
+                all_repos: vec!["api".to_string()],
+                scanned: 1,
+                errors: 0,
+                full: Vec::new(),
+            }))
+            .unwrap();
+        app.on_tick();
+
+        assert_eq!(app.prs[0].checks, Some(ChecksState::Failing));
+        assert_eq!(app.prs[1].checks, None, "new to the list: nothing to keep");
+        assert_eq!(
+            app.rows_seq.get("api"),
+            Some(&app.checks_seq),
+            "the rows are this load's: older checks no longer apply"
+        );
     }
 
     #[test]

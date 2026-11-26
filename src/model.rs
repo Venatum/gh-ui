@@ -82,7 +82,7 @@ pub enum Bucket {
 
 impl Check {
     /// This check's bucket. Failing first, then running: the same order
-    /// `Pr::checks_state` reads, so the `State` column and the detail view
+    /// `PrChecks::state` reads, so the `State` column and the detail view
     /// always agree. Anything else unknown counts as passed, as it always
     /// did in the `State` column.
     pub fn bucket(&self) -> Bucket {
@@ -145,6 +145,9 @@ pub enum ChecksState {
     Passing,
     Running,
     Failing,
+    /// Never a reduction's result: set by the app when a PR's checks could
+    /// not be read (the request failed, or its answer left the PR out).
+    Unknown,
 }
 
 // The `gh` JSON uses camelCase (reviewDecision, isDraft...).
@@ -182,11 +185,11 @@ pub struct Pr {
     #[serde(default, deserialize_with = "null_as_empty")]
     pub mergeable: String,
 
-    /// The PR's checks. An `Option` so that both a missing key and a JSON
-    /// `null` (no status on the head commit) degrade to "no checks" instead
-    /// of failing the whole parse.
-    #[serde(default)]
-    pub status_check_rollup: Option<Vec<Check>>,
+    /// What the PR's checks add up to, `None` until they arrive: the list
+    /// comes first, its checks in a second, slower request (see
+    /// `fetch::spawn`). Not in the list's JSON: filled in by us.
+    #[serde(skip)]
+    pub checks: Option<ChecksState>,
 
     // This field is NOT in gh's JSON: we fill it ourselves with the name of the
     // directory/repo the PR comes from. `#[serde(skip)]` = serde ignores it at
@@ -195,11 +198,25 @@ pub struct Pr {
     pub repo: String,
 }
 
-impl Pr {
+/// One PR's checks, as the second request of a load returns them
+/// (`gh pr list --json number,statusCheckRollup`): matched to its `Pr` by
+/// number, then reduced to a `ChecksState` before reaching the UI thread.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrChecks {
+    pub number: u64,
+    /// An `Option` so that both a missing key and a JSON `null` (no status
+    /// on the head commit) degrade to "no checks" instead of failing the
+    /// whole parse.
+    #[serde(default)]
+    pub status_check_rollup: Option<Vec<Check>>,
+}
+
+impl PrChecks {
     /// Reduces the whole rollup to one verdict. Failing beats running beats
     /// passing, so one failed job among twenty running ones still reads as
     /// a failure.
-    pub fn checks_state(&self) -> ChecksState {
+    pub fn state(&self) -> ChecksState {
         let checks = latest_attempts(self.status_check_rollup.as_deref().unwrap_or_default());
         // The worst bucket wins: `Bucket`'s order puts failing first, then
         // running, so the smallest one is the verdict.
@@ -315,8 +332,15 @@ mod tests {
         serde_json::from_str(&json).unwrap()
     }
 
-    /// Every JSON literal of the other tests omits the two fields: they
-    /// must default rather than fail the whole parse.
+    /// Same for a PR's checks, the second request of a load.
+    fn checks_with(extra: &str) -> PrChecks {
+        let json = format!(r#"{{"number": 1, {extra}}}"#);
+        serde_json::from_str(&json).unwrap()
+    }
+
+    /// Every JSON literal of the other tests omits `mergeable`: it must
+    /// default rather than fail the whole parse. The checks are not in the
+    /// list's JSON at all: they read as not loaded yet.
     #[test]
     fn a_pr_without_merge_nor_check_fields_still_parses() {
         let json = r#"{
@@ -328,46 +352,52 @@ mod tests {
         let pr: Pr = serde_json::from_str(json).unwrap();
 
         assert_eq!(pr.mergeable, "");
-        assert_eq!(pr.checks_state(), ChecksState::None);
+        assert_eq!(pr.checks, None);
+    }
+
+    #[test]
+    fn checks_without_a_rollup_read_as_no_checks() {
+        let checks: PrChecks = serde_json::from_str(r#"{"number": 1}"#).unwrap();
+        assert_eq!(checks.state(), ChecksState::None);
     }
 
     /// `gh` sends null when the head commit carries no status at all.
     #[test]
     fn a_null_rollup_is_read_as_no_checks() {
-        let pr = pr_with(r#""statusCheckRollup": null"#);
+        let pr = checks_with(r#""statusCheckRollup": null"#);
 
-        assert_eq!(pr.checks_state(), ChecksState::None);
+        assert_eq!(pr.state(), ChecksState::None);
     }
 
     #[test]
     fn one_failed_check_outweighs_the_ones_still_running() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"name": "build", "status": "IN_PROGRESS", "conclusion": ""},
                 {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Failing);
+        assert_eq!(pr.state(), ChecksState::Failing);
     }
 
     #[test]
     fn a_check_still_running_outweighs_the_ones_that_passed() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"name": "test", "status": "QUEUED", "conclusion": ""}
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Running);
+        assert_eq!(pr.state(), ChecksState::Running);
     }
 
     /// A job skipped by a path filter is a normal outcome: painting it red
     /// would light up the whole table.
     #[test]
     fn skipped_cancelled_and_neutral_checks_are_not_failures() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"name": "a", "status": "COMPLETED", "conclusion": "SKIPPED"},
                 {"name": "b", "status": "COMPLETED", "conclusion": "CANCELLED"},
@@ -376,7 +406,7 @@ mod tests {
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Passing);
+        assert_eq!(pr.state(), ChecksState::Passing);
     }
 
     /// The same array mixes CheckRun entries (status + conclusion) with
@@ -384,13 +414,13 @@ mod tests {
     /// only `state`.
     #[test]
     fn a_legacy_status_context_is_read_from_its_state() {
-        let failing = pr_with(r#""statusCheckRollup": [{"state": "ERROR"}]"#);
-        let pending = pr_with(r#""statusCheckRollup": [{"state": "PENDING"}]"#);
-        let green = pr_with(r#""statusCheckRollup": [{"state": "SUCCESS"}]"#);
+        let failing = checks_with(r#""statusCheckRollup": [{"state": "ERROR"}]"#);
+        let pending = checks_with(r#""statusCheckRollup": [{"state": "PENDING"}]"#);
+        let green = checks_with(r#""statusCheckRollup": [{"state": "SUCCESS"}]"#);
 
-        assert_eq!(failing.checks_state(), ChecksState::Failing);
-        assert_eq!(pending.checks_state(), ChecksState::Running);
-        assert_eq!(green.checks_state(), ChecksState::Passing);
+        assert_eq!(failing.state(), ChecksState::Failing);
+        assert_eq!(pending.state(), ChecksState::Running);
+        assert_eq!(green.state(), ChecksState::Passing);
     }
 
     /// GitHub keeps every attempt of a job: a failure re-run green must
@@ -406,7 +436,7 @@ mod tests {
             format!(r#""statusCheckRollup": [{failure}, {success}]"#),
         ] {
             assert_eq!(
-                pr_with(&rollup).checks_state(),
+                checks_with(&rollup).state(),
                 ChecksState::Passing,
                 "{rollup}"
             );
@@ -421,14 +451,14 @@ mod tests {
             r#"{"workflowName": "CI", "name": "test", "status": "QUEUED", "startedAt": null}"#,
             r#"{"workflowName": "CI", "name": "test", "status": "QUEUED"}"#,
         ] {
-            let pr = pr_with(&format!(
+            let pr = checks_with(&format!(
                 r#""statusCheckRollup": [
                     {waiting},
                     {{"workflowName": "CI", "name": "test", "status": "COMPLETED",
                       "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"}}
                 ]"#
             ));
-            assert_eq!(pr.checks_state(), ChecksState::Running, "{waiting}");
+            assert_eq!(pr.state(), ChecksState::Running, "{waiting}");
         }
     }
 
@@ -437,16 +467,16 @@ mod tests {
     #[test]
     fn every_failing_and_running_word_is_read() {
         for conclusion in ["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"] {
-            let pr = pr_with(&format!(
+            let pr = checks_with(&format!(
                 r#""statusCheckRollup": [{{"name": "t", "status": "COMPLETED", "conclusion": "{conclusion}"}}]"#
             ));
-            assert_eq!(pr.checks_state(), ChecksState::Failing, "{conclusion}");
+            assert_eq!(pr.state(), ChecksState::Failing, "{conclusion}");
         }
         for status in ["QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED"] {
-            let pr = pr_with(&format!(
+            let pr = checks_with(&format!(
                 r#""statusCheckRollup": [{{"name": "t", "status": "{status}"}}]"#
             ));
-            assert_eq!(pr.checks_state(), ChecksState::Running, "{status}");
+            assert_eq!(pr.state(), ChecksState::Running, "{status}");
         }
         for (state, expected) in [
             ("FAILURE", ChecksState::Failing),
@@ -454,10 +484,10 @@ mod tests {
             ("PENDING", ChecksState::Running),
             ("EXPECTED", ChecksState::Running),
         ] {
-            let pr = pr_with(&format!(
+            let pr = checks_with(&format!(
                 r#""statusCheckRollup": [{{"context": "c", "state": "{state}"}}]"#
             ));
-            assert_eq!(pr.checks_state(), expected, "{state}");
+            assert_eq!(pr.state(), expected, "{state}");
         }
     }
 
@@ -465,7 +495,7 @@ mod tests {
     /// newest attempt, and says "wait", not the failure it replaces.
     #[test]
     fn a_queued_re_run_hides_the_failure_it_replaces() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"workflowName": "CI", "name": "test", "status": "COMPLETED",
                  "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
@@ -474,13 +504,13 @@ mod tests {
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Running);
+        assert_eq!(pr.state(), ChecksState::Running);
     }
 
     /// Two workflows may both have a `test` job: they are two checks.
     #[test]
     fn the_same_job_name_in_two_workflows_is_two_checks() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"workflowName": "CI", "name": "test", "status": "COMPLETED",
                  "conclusion": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
@@ -489,21 +519,21 @@ mod tests {
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Failing);
+        assert_eq!(pr.state(), ChecksState::Failing);
     }
 
     /// A commit status posted again under the same context replaces the
     /// earlier one too.
     #[test]
     fn a_status_context_posted_again_replaces_the_earlier_one() {
-        let pr = pr_with(
+        let pr = checks_with(
             r#""statusCheckRollup": [
                 {"context": "ci/deploy", "state": "FAILURE", "startedAt": "2026-10-02T09:00:00Z"},
                 {"context": "ci/deploy", "state": "SUCCESS", "startedAt": "2026-10-02T10:00:00Z"}
             ]"#,
         );
 
-        assert_eq!(pr.checks_state(), ChecksState::Passing);
+        assert_eq!(pr.state(), ChecksState::Passing);
     }
 
     /// `#[serde(default)]` only covers a missing key: a `null` in one PR
@@ -511,16 +541,16 @@ mod tests {
     /// today; this keeps a future `null` to a blank instead.
     #[test]
     fn a_null_text_field_reads_as_blank() {
-        let pr = pr_with(
-            r#""reviewDecision": null, "mergeable": null,
-               "statusCheckRollup": [
+        let pr = pr_with(r#""reviewDecision": null, "mergeable": null"#);
+        let checks = checks_with(
+            r#""statusCheckRollup": [
                    {"name": "test", "status": null, "conclusion": null, "state": null}
                ]"#,
         );
 
         assert_eq!(pr.review_decision, "");
         assert_eq!(pr.mergeable, "");
-        assert_eq!(pr.checks_state(), ChecksState::Passing);
+        assert_eq!(checks.state(), ChecksState::Passing);
     }
 
     /// The five groups of `gh pr checks`. A check of an unknown kind reads
